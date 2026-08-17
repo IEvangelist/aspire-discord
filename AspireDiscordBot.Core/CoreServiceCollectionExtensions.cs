@@ -90,6 +90,7 @@ public static class CoreServiceCollectionExtensions
         services.AddSingleton<DocumentChunker>();
         services.AddSingleton<QdrantVectorStore>();
         services.AddSingleton<DocumentIngestor>();
+        services.AddSingleton<IngestionRunner>();
         services.AddSingleton<QuestionSafetyGuard>();
         services.AddSingleton<GroundedAnswerService>();
 

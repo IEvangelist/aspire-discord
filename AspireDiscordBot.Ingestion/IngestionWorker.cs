@@ -1,24 +1,42 @@
+using AspireDiscordBot.Core.Configuration;
 using AspireDiscordBot.Core.Documents;
+using Microsoft.Extensions.Options;
 
 namespace AspireDiscordBot.Ingestion;
 
 /// <summary>
-/// Runs the documentation ingestion pipeline on startup: reads the Aspire docs from the
-/// configured source of truth, embeds them, and upserts them into Qdrant.
+/// Drives ingestion over the service's lifetime: it runs the startup ingest, then — when a
+/// refresh interval is configured — periodically re-ingests so the index tracks site updates.
+/// Manual refreshes via the dashboard command share the same <see cref="IngestionRunner"/>.
 /// </summary>
 public sealed class IngestionWorker(
-    DocumentIngestor ingestor,
+    IngestionRunner runner,
+    IOptions<IngestionOptions> options,
     ILogger<IngestionWorker> logger) : BackgroundService
 {
+    private readonly IngestionOptions _options = options.Value;
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         try
         {
-            logger.LogInformation("Starting Aspire documentation ingestion...");
-            var result = await ingestor.IngestAsync(stoppingToken);
-            logger.LogInformation(
-                "Ingestion finished: {Files} files, {Chunks} chunks via '{Mode}'. The bot is ready to answer questions.",
-                result.Files, result.Chunks, result.Mode);
+            await runner.RunStartupAsync(stoppingToken);
+
+            var intervalHours = _options.RefreshIntervalHours;
+            if (intervalHours <= 0)
+            {
+                logger.LogInformation("Scheduled refresh disabled (RefreshIntervalHours <= 0).");
+                return;
+            }
+
+            var interval = TimeSpan.FromHours(intervalHours);
+            logger.LogInformation("Scheduled refresh enabled: every {Hours}h.", intervalHours);
+
+            using var timer = new PeriodicTimer(interval);
+            while (await timer.WaitForNextTickAsync(stoppingToken))
+            {
+                await runner.RunAsync(force: false, "scheduled", stoppingToken);
+            }
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
         {
@@ -26,7 +44,7 @@ public sealed class IngestionWorker(
         }
         catch (Exception ex)
         {
-            logger.LogError(ex, "Documentation ingestion failed.");
+            logger.LogError(ex, "Ingestion worker terminated unexpectedly.");
         }
     }
 }

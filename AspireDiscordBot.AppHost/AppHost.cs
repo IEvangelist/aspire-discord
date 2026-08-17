@@ -1,3 +1,5 @@
+using Aspire.Hosting.ApplicationModel;
+
 var builder = DistributedApplication.CreateBuilder(args);
 
 // --- AI provider configuration ---
@@ -17,14 +19,38 @@ var qdrant = builder.AddQdrant("qdrant")
     .WithLifetime(ContainerLifetime.Persistent);
 
 // --- Ingestion worker: pulls Aspire docs (source of truth) -> embeds -> Qdrant ---
+// Exposes dashboard commands to refresh the index on demand (backed by its /admin endpoints).
 builder.AddProject<Projects.AspireDiscordBot_Ingestion>("ingestion")
+    .WithHttpEndpoint()
     .WithReference(qdrant)
     .WaitFor(qdrant)
     .WithEnvironment("Ai__Provider", aiProvider)
     .WithEnvironment("Ai__Endpoint", aiEndpoint)
     .WithEnvironment("Ai__ApiKey", aiApiKey)
     .WithEnvironment("Ai__ChatModel", aiChatModel)
-    .WithEnvironment("Ai__EmbeddingModel", aiEmbeddingModel);
+    .WithEnvironment("Ai__EmbeddingModel", aiEmbeddingModel)
+    .WithHttpCommand(
+        "/admin/reingest",
+        "Re-ingest docs",
+        endpointName: "http",
+        commandOptions: new HttpCommandOptions
+        {
+            Method = HttpMethod.Post,
+            Description = "Re-read the Aspire docs and update the index (incremental).",
+            IconName = "ArrowSync",
+        })
+    .WithHttpCommand(
+        "/admin/rebuild",
+        "Force rebuild index",
+        endpointName: "http",
+        commandOptions: new HttpCommandOptions
+        {
+            Method = HttpMethod.Post,
+            Description = "Drop and rebuild the whole index from scratch (prunes deleted pages).",
+            IconName = "DatabaseArrowUp",
+            ConfirmationMessage = "This drops the current index and re-embeds every page. Continue?",
+            IsHighlighted = false,
+        });
 
 // --- Discord bot: answers questions grounded in the ingested docs ---
 builder.AddProject<Projects.AspireDiscordBot_Bot>("bot")

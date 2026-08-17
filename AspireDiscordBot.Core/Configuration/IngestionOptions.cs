@@ -26,6 +26,19 @@ public sealed class IngestionOptions
     /// <summary>Re-embed and upsert everything on startup even if the collection already exists.</summary>
     public bool ForceReindex { get; set; }
 
+    /// <summary>
+    /// When true, the startup ingest is skipped if the Qdrant collection is already populated
+    /// (fast restarts). Refreshes then happen on the schedule or via the dashboard command.
+    /// Ignored when <see cref="ForceReindex"/> is true.
+    /// </summary>
+    public bool SkipStartupIngestWhenPopulated { get; set; } = true;
+
+    /// <summary>
+    /// Interval, in hours, for the automatic background refresh. Set to 0 to disable the
+    /// scheduled refresh (manual re-ingest via the dashboard command still works).
+    /// </summary>
+    public double RefreshIntervalHours { get; set; }
+
     /// <summary>The documentation sources to ingest. Defaults are provided in <c>DocSourceCatalog</c>.</summary>
     public List<DocRepoOptions> Sources { get; set; } = [];
 }

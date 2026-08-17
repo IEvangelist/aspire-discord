@@ -141,6 +141,28 @@ Once ingestion completes, ask the bot in Discord:
 - Slash command: `/ask question: How do I add a Postgres resource to my app host?`
 - Mention: `@YourBot how do resource lifetimes work?`
 
+## Keeping the index fresh
+
+Ingestion doesn't watch aspire.dev for changes — it refreshes in three ways:
+
+1. **On startup** — the first run populates Qdrant. On later restarts the startup ingest is
+   **skipped if the index is already populated** (`SkipStartupIngestWhenPopulated`, default true),
+   so restarts are fast and don't re-embed everything.
+2. **On a schedule** — a background refresh runs every `Ingestion:RefreshIntervalHours` hours
+   (default **24**; set to `0` to disable). This is an incremental update (adds/updates pages).
+3. **On demand from the Aspire dashboard** — the `ingestion` resource exposes two command
+   buttons:
+   - **Re-ingest docs** — incremental refresh (adds + updates pages).
+   - **Force rebuild index** — drops and rebuilds the whole index (prunes pages deleted from the
+     site); asks for confirmation first.
+
+   These are backed by `POST /admin/reingest` and `POST /admin/rebuild` on the ingestion service.
+   Only one run executes at a time — a request made while a run is in progress is rejected
+   (HTTP 409) rather than queued.
+
+> Incremental refreshes update and add pages but don't remove ones deleted from the site (their
+> chunks linger). Use **Force rebuild** for a clean prune.
+
 ## Grounding & safety
 
 This bot is designed to only answer Aspire questions, from the docs, and to resist manipulation.
@@ -195,7 +217,9 @@ The ingestion source is set by `Ingestion:SourceMode`:
   "CollectionName": "aspire_docs",
   "MaxChunkChars": 1200,
   "ChunkOverlapChars": 150,
-  "ForceReindex": false,
+  "ForceReindex": false,                    // drop + rebuild on startup
+  "SkipStartupIngestWhenPopulated": true,   // fast restarts when the index already exists
+  "RefreshIntervalHours": 24,               // scheduled refresh; 0 disables it
   "Cli": {
     "ResolveDeepLinks": true,   // resolve exact aspire.dev URLs for citations
     "MaxConcurrency": 6,        // parallel `aspire docs get` calls

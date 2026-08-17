@@ -24,11 +24,15 @@ public sealed class DocumentIngestor(
     private const int EmbeddingBatchSize = 16;
     private readonly IngestionOptions _options = options.Value;
 
-    public async Task<IngestionResult> IngestAsync(CancellationToken cancellationToken = default)
+    public Task<IngestionResult> IngestAsync(CancellationToken cancellationToken = default)
+        => IngestAsync(_options.ForceReindex, cancellationToken);
+
+    /// <param name="forceReindex">When true, the collection is dropped and rebuilt from scratch.</param>
+    public async Task<IngestionResult> IngestAsync(bool forceReindex, CancellationToken cancellationToken = default)
     {
         var sources = _options.Sources.Count > 0 ? _options.Sources : DocSourceCatalog.Default();
 
-        await vectorStore.EnsureCollectionAsync(recreate: _options.ForceReindex, cancellationToken);
+        await vectorStore.EnsureCollectionAsync(recreate: forceReindex, cancellationToken);
 
         var fileCount = 0;
         var chunkCount = 0;
