@@ -1,0 +1,27 @@
+## .NET / build output
+bin/
+obj/
+artifacts/
+[Bb]uild/
+*.user
+*.suo
+.vs/
+
+## Rider / VS Code
+.idea/
+.vscode/*
+!.vscode/launch.json
+!.vscode/tasks.json
+
+## Aspire / local dev
+**/appsettings.*.local.json
+*.received.*
+
+## Secrets — never commit
+.env
+*.secrets.json
+secrets.json
+
+## OS
+.DS_Store
+Thumbs.db

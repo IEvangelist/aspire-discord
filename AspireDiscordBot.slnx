@@ -1,0 +1,8 @@
+<Solution>
+  <Project Path="AspireDiscordBot.AppHost/AspireDiscordBot.AppHost.csproj" />
+  <Project Path="AspireDiscordBot.Bot/AspireDiscordBot.Bot.csproj" />
+  <Project Path="AspireDiscordBot.Core/AspireDiscordBot.Core.csproj" />
+  <Project Path="AspireDiscordBot.Ingestion/AspireDiscordBot.Ingestion.csproj" />
+  <Project Path="AspireDiscordBot.ServiceDefaults/AspireDiscordBot.ServiceDefaults.csproj" />
+  <Project Path="AspireDiscordBot.Tests/AspireDiscordBot.Tests.csproj" />
+</Solution>
