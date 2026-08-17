@@ -44,16 +44,22 @@ public sealed class DocumentIngestor(
                 continue;
             }
 
-            var title = !string.IsNullOrWhiteSpace(cleaned.Title)
-                ? cleaned.Title!
-                : DocSourceCatalog.TitleFromPath(raw.Path);
+            var title = !string.IsNullOrWhiteSpace(raw.Title)
+                ? raw.Title!
+                : !string.IsNullOrWhiteSpace(cleaned.Title)
+                    ? cleaned.Title!
+                    : DocSourceCatalog.TitleFromPath(raw.Path);
+
+            var url = !string.IsNullOrWhiteSpace(raw.ResolvedUrl)
+                ? raw.ResolvedUrl!
+                : DocSourceCatalog.BuildUrl(raw.Repo, raw.Branch, raw.Path, raw.UrlStyle);
 
             var source = new DocSource
             {
                 Repo = raw.Repo,
                 Path = raw.Path,
                 Title = title,
-                Url = DocSourceCatalog.BuildUrl(raw.Repo, raw.Branch, raw.Path, raw.UrlStyle),
+                Url = url,
             };
 
             foreach (var chunk in chunker.Chunk(source, cleaned.Body))

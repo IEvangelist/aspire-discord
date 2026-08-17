@@ -11,7 +11,7 @@ using Qdrant.Client;
 namespace AspireDiscordBot.Tests;
 
 /// <summary>
-/// End-to-end tests of the wired <see cref="GroundedAnswerService"/> defense-in-depth pipeline,
+/// End-to-end tests of the wired <see cref="GroundedAnswerService"/> layered-safety pipeline,
 /// using fake AI models (so we control embeddings + completions deterministically) and a real
 /// Qdrant instance. Runs only when QDRANT_TEST_ENDPOINT is set.
 /// </summary>

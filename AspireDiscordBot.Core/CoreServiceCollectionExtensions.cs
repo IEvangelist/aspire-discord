@@ -43,6 +43,14 @@ public static class CoreServiceCollectionExtensions
         // OpenAI-compatible AI client shared as both chat + embedding model (named-client factory
         // avoids captive HttpClient handlers when consumed by singleton services).
         services.AddHttpClient("ai");
+        // Dedicated client for GitHub Copilot device-flow login + token exchange.
+        services.AddHttpClient("github-auth", http =>
+        {
+            http.Timeout = TimeSpan.FromSeconds(30);
+            http.DefaultRequestHeaders.UserAgent.ParseAdd("aspire-discord-bot/1.0");
+            http.DefaultRequestHeaders.Accept.ParseAdd("application/json");
+        });
+        services.AddSingleton<CopilotTokenProvider>();
         services.AddSingleton<OpenAiCompatibleClient>();
         services.AddSingleton<IChatModel>(sp => sp.GetRequiredService<OpenAiCompatibleClient>());
         services.AddSingleton<IEmbeddingModel>(sp => sp.GetRequiredService<OpenAiCompatibleClient>());
@@ -64,14 +72,19 @@ public static class CoreServiceCollectionExtensions
         });
         services.AddSingleton<GitHubDocSourceReader>();
         services.AddSingleton<LocalDocSourceReader>();
+        services.AddSingleton<AspireDocUrlIndex>();
+        services.AddSingleton<AspireCliDocSourceReader>();
 
         // Select the reader implementation based on the configured source mode.
         services.AddSingleton<IDocSourceReader>(sp =>
         {
             var mode = sp.GetRequiredService<IOptions<IngestionOptions>>().Value.SourceMode;
-            return string.Equals(mode, "local", StringComparison.OrdinalIgnoreCase)
-                ? sp.GetRequiredService<LocalDocSourceReader>()
-                : sp.GetRequiredService<GitHubDocSourceReader>();
+            return mode.ToLowerInvariant() switch
+            {
+                "local" => sp.GetRequiredService<LocalDocSourceReader>(),
+                "github" => sp.GetRequiredService<GitHubDocSourceReader>(),
+                _ => sp.GetRequiredService<AspireCliDocSourceReader>(),
+            };
         });
 
         services.AddSingleton<DocumentChunker>();

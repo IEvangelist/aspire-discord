@@ -10,40 +10,35 @@ namespace AspireDiscordBot.Core.Ai;
 
 /// <summary>
 /// A single <see cref="HttpClient"/>-based client that speaks the OpenAI chat/embeddings
-/// wire format, which Azure OpenAI, Azure AI Foundry and OpenAI all implement. The provider
-/// differences (URL shape + auth header) are resolved from <see cref="AiOptions.Provider"/>.
+/// wire format, which GitHub Copilot, Azure OpenAI, Azure AI Foundry and OpenAI all implement.
+/// The provider differences (URL shape + auth header) are resolved from <see cref="AiOptions.Provider"/>.
 /// </summary>
-public sealed class OpenAiCompatibleClient : IChatModel, IEmbeddingModel
+public sealed class OpenAiCompatibleClient(
+    IHttpClientFactory httpFactory,
+    CopilotTokenProvider copilotTokenProvider,
+    IOptions<AiOptions> options,
+    ILogger<OpenAiCompatibleClient> logger) : IChatModel, IEmbeddingModel
 {
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web)
     {
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
     };
-
-    private readonly IHttpClientFactory _httpFactory;
-    private readonly AiOptions _options;
-    private readonly ILogger<OpenAiCompatibleClient> _logger;
-
-    public OpenAiCompatibleClient(IHttpClientFactory httpFactory, IOptions<AiOptions> options, ILogger<OpenAiCompatibleClient> logger)
-    {
-        _httpFactory = httpFactory;
-        _options = options.Value;
-        _logger = logger;
-    }
+    private readonly AiOptions _options = options.Value;
 
     public async Task<string> CompleteAsync(IReadOnlyList<AiChatMessage> messages, CancellationToken cancellationToken = default)
     {
-        var url = BuildUrl(isEmbedding: false, _options.ChatModel);
+        var provider = _options.Provider;
+        var url = BuildUrl(provider, isEmbedding: false, _options.ChatModel);
         var body = new ChatRequest
         {
-            Model = ModelInBody ? _options.ChatModel : null,
+            Model = ModelInBody(provider) ? _options.ChatModel : null,
             Messages = messages.Select(m => new ChatRequestMessage { Role = m.Role, Content = m.Content }).ToList(),
             Temperature = _options.Temperature,
             MaxTokens = _options.MaxOutputTokens,
         };
 
-        var http = _httpFactory.CreateClient("ai");
-        using var request = CreateRequest(HttpMethod.Post, url, body);
+        var http = httpFactory.CreateClient("ai");
+        using var request = await CreateRequestAsync(provider, HttpMethod.Post, url, body, cancellationToken);
         using var response = await http.SendAsync(request, cancellationToken);
         await EnsureSuccessAsync(response, cancellationToken);
 
@@ -59,15 +54,17 @@ public sealed class OpenAiCompatibleClient : IChatModel, IEmbeddingModel
             return [];
         }
 
-        var url = BuildUrl(isEmbedding: true, _options.EmbeddingModel);
+        // Embeddings may use a different provider than chat (see AiOptions.EmbeddingProvider).
+        var provider = string.IsNullOrWhiteSpace(_options.EmbeddingProvider) ? _options.Provider : _options.EmbeddingProvider!;
+        var url = BuildUrl(provider, isEmbedding: true, _options.EmbeddingModel);
         var body = new EmbeddingRequest
         {
-            Model = ModelInBody ? _options.EmbeddingModel : null,
+            Model = ModelInBody(provider) ? _options.EmbeddingModel : null,
             Input = inputs,
         };
 
-        var http = _httpFactory.CreateClient("ai");
-        using var request = CreateRequest(HttpMethod.Post, url, body);
+        var http = httpFactory.CreateClient("ai");
+        using var request = await CreateRequestAsync(provider, HttpMethod.Post, url, body, cancellationToken);
         using var response = await http.SendAsync(request, cancellationToken);
         await EnsureSuccessAsync(response, cancellationToken);
 
@@ -81,39 +78,49 @@ public sealed class OpenAiCompatibleClient : IChatModel, IEmbeddingModel
             .ToList();
     }
 
-    private bool ModelInBody => !string.Equals(_options.Provider, "azureopenai", StringComparison.OrdinalIgnoreCase);
+    // Azure OpenAI puts the model in the URL (deployment); every other provider puts it in the body.
+    private static bool ModelInBody(string provider) => !string.Equals(provider, "azureopenai", StringComparison.OrdinalIgnoreCase);
 
-    private bool UsesApiKeyHeader => !string.Equals(_options.Provider, "openai", StringComparison.OrdinalIgnoreCase);
-
-    private string BuildUrl(bool isEmbedding, string model)
+    private string BuildUrl(string provider, bool isEmbedding, string model)
     {
-        var endpoint = _options.Endpoint.TrimEnd('/');
         var op = isEmbedding ? "embeddings" : "chat/completions";
 
-        return _options.Provider.ToLowerInvariant() switch
+        return provider.ToLowerInvariant() switch
         {
-            "azureopenai" => $"{endpoint}/openai/deployments/{model}/{op}?api-version={_options.ApiVersion}",
-            "azureaifoundry" => $"{endpoint}/{op}?api-version={_options.ApiVersion}",
-            "openai" => $"{endpoint}/v1/{op}",
+            "copilot" => $"{_options.Copilot.ApiBase.TrimEnd('/')}/{op}",
+            "azureopenai" => $"{_options.Endpoint.TrimEnd('/')}/openai/deployments/{model}/{op}?api-version={_options.ApiVersion}",
+            "azureaifoundry" => $"{_options.Endpoint.TrimEnd('/')}/{op}?api-version={_options.ApiVersion}",
+            "openai" => $"{_options.Endpoint.TrimEnd('/')}/v1/{op}",
             _ => throw new InvalidOperationException(
-                $"Unknown AI provider '{_options.Provider}'. Use azureopenai, azureaifoundry, or openai."),
+                $"Unknown AI provider '{provider}'. Use copilot, azureopenai, azureaifoundry, or openai."),
         };
     }
 
-    private HttpRequestMessage CreateRequest<T>(HttpMethod method, string url, T body)
+    private async Task<HttpRequestMessage> CreateRequestAsync<T>(
+        string provider, HttpMethod method, string url, T body, CancellationToken cancellationToken)
     {
         var request = new HttpRequestMessage(method, url)
         {
             Content = JsonContent.Create(body, options: SerializerOptions),
         };
 
-        if (UsesApiKeyHeader)
+        switch (provider.ToLowerInvariant())
         {
-            request.Headers.TryAddWithoutValidation("api-key", _options.ApiKey);
-        }
-        else
-        {
-            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _options.ApiKey);
+            case "copilot":
+                var token = await copilotTokenProvider.GetTokenAsync(cancellationToken);
+                request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+                request.Headers.TryAddWithoutValidation("Copilot-Integration-Id", _options.Copilot.IntegrationId);
+                request.Headers.TryAddWithoutValidation("Editor-Version", _options.Copilot.EditorVersion);
+                request.Headers.TryAddWithoutValidation("Editor-Plugin-Version", _options.Copilot.EditorPluginVersion);
+                break;
+
+            case "openai":
+                request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _options.ApiKey);
+                break;
+
+            default: // azureopenai, azureaifoundry
+                request.Headers.TryAddWithoutValidation("api-key", _options.ApiKey);
+                break;
         }
 
         return request;
@@ -127,7 +134,7 @@ public sealed class OpenAiCompatibleClient : IChatModel, IEmbeddingModel
         }
 
         var content = await response.Content.ReadAsStringAsync(cancellationToken);
-        _logger.LogError("AI provider request failed ({StatusCode}): {Body}", (int)response.StatusCode, content);
+        logger.LogError("AI provider request failed ({StatusCode}): {Body}", (int)response.StatusCode, content);
         throw new HttpRequestException(
             $"AI provider request failed with status {(int)response.StatusCode}. See logs for details.");
     }

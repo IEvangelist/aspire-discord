@@ -8,7 +8,7 @@ using Microsoft.Extensions.Options;
 namespace AspireDiscordBot.Core.Rag;
 
 /// <summary>
-/// Orchestrates retrieval-augmented generation with defense-in-depth safety:
+/// Orchestrates retrieval-augmented generation with layered safety checks:
 ///   1. Input guard   — reject prompt-injection / jailbreak / extraction attempts up front.
 ///   2. Topic gating  — the vector store holds only Aspire docs, so an off-topic question
 ///                      retrieves nothing above the score threshold and is refused.

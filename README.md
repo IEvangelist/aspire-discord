@@ -8,7 +8,7 @@ worker, and the Discord bot.
 
 Every answer is produced with retrieval-augmented generation (RAG) over the ingested docs and
 is **fact-grounded**: if the docs don't cover a question, the bot says so instead of guessing.
-It ships with a defense-in-depth safety layer to resist prompt injection and keep the bot
+It ships with layered safety checks to resist prompt injection and keep the bot
 on-topic.
 
 ## How it works
@@ -16,19 +16,23 @@ on-topic.
 ```
                  ┌────────────────────────── AppHost (orchestration) ──────────────────────────┐
                  │                                                                              │
-  GitHub /       │   ┌───────────────┐      ┌──────────────┐          ┌───────────────────┐    │
   aspire docs ───┼──▶│  Ingestion    │─────▶│    Qdrant    │◀─────────│   Discord Bot     │◀───┼──▶ Discord
-  (source of     │   │  worker       │ embed│ vector store │  search  │  (/ask + @mention)│    │
-   truth)        │   └───────────────┘      └──────────────┘          └─────────┬─────────┘    │
+  CLI (source    │   │  worker       │ embed│ vector store │  search  │  (/ask + @mention)│    │
+   of truth)     │   └───────────────┘      └──────────────┘          └─────────┬─────────┘    │
                  │                                                              │              │
-                 │                                          Azure OpenAI (chat + embeddings)   │
+                 │                                   GitHub Copilot (chat + embeddings)        │
                  └──────────────────────────────────────────────────────────────┴─────────────┘
 ```
 
-1. **Ingestion** pulls `.md`/`.mdx` docs from both repos, cleans the Markdown/MDX, splits it
-   into heading-aware overlapping chunks, embeds them, and upserts them into Qdrant.
+1. **Ingestion** reads the published Aspire documentation via the `aspire docs` CLI (the
+   authoritative source of truth), cleans the Markdown, splits it into heading-aware overlapping
+   chunks, embeds them, and upserts them into Qdrant. Citation URLs are resolved to exact
+   aspire.dev deep links by matching page titles to the aspire.dev repo.
 2. **The bot** embeds each incoming question, retrieves the most similar chunks, and asks the
    chat model to answer **using only those chunks**, returning the answer with source citations.
+
+The ingestion source is configurable — `cli` (default), `github` (reads `.md`/`.mdx` from both
+repos), or `local` (on-disk clones). See [Configuration reference](#configuration-reference).
 
 ## Projects
 
@@ -43,16 +47,40 @@ on-topic.
 
 ## Prerequisites
 
-- [.NET 10 SDK](https://dotnet.microsoft.com/) and the Aspire CLI (`aspire`).
+- [.NET 10 SDK](https://dotnet.microsoft.com/) and the Aspire CLI (`aspire`). The CLI is also
+  the default documentation source (`aspire docs`).
 - A container runtime (Docker Desktop or Podman) for the Qdrant database.
-- An **Azure OpenAI** resource with a **chat** deployment (e.g. `gpt-4o-mini`) and an
-  **embedding** deployment (e.g. `text-embedding-3-small`).
-  The AI client is OpenAI-compatible, so OpenAI and Azure AI Foundry also work — see
-  [Choosing an AI provider](#choosing-an-ai-provider).
+- **AI access** — by default the bot uses **GitHub Copilot** and inherits the operator's Copilot
+  entitlement via a one-time sign-in (no keys to manage). Azure OpenAI, Azure AI Foundry, and
+  OpenAI are also supported — see [Choosing an AI provider](#choosing-an-ai-provider).
 - A **Discord application + bot** (see [Create the Discord bot](#create-the-discord-bot)).
 
-> **Note on GitHub Models:** GitHub Models was retired on **July 30, 2026**, so it is not used.
-> Azure OpenAI is the default provider.
+> **Note on GitHub Models:** GitHub Models was retired on **July 30, 2026**. This bot uses
+> **GitHub Copilot** (a different service) by default, or Azure OpenAI / OpenAI if you prefer.
+
+## AI access with GitHub Copilot (default)
+
+With the default `copilot` provider, the bot signs in to GitHub once using the OAuth
+**device flow** and inherits your GitHub Copilot access:
+
+1. On first run, the ingestion worker (and bot) print a message to their logs — visible in the
+   Aspire dashboard — like:
+
+   ```
+   Sign in to GitHub to grant Copilot access to the bot:
+     1. Open: https://github.com/login/device
+     2. Enter code: XXXX-XXXX
+   ```
+
+2. Open the URL, enter the code, and approve. The OAuth token is cached at
+   `~/.aspire-discord/copilot-oauth.json` and reused by both services, so you only sign in once.
+   The short-lived Copilot token is exchanged and refreshed automatically thereafter.
+
+No API keys or endpoints are required for the `copilot` provider.
+
+> **Embeddings:** chat always works with your Copilot entitlement. If your account can't reach
+> Copilot embeddings, set `Ai:EmbeddingProvider` to another provider (e.g. `azureopenai`) — chat
+> stays on Copilot while embeddings use the override.
 
 ## Create the Discord bot
 
@@ -78,15 +106,16 @@ user-secrets on the AppHost project:
 ```bash
 cd AspireDiscordBot.AppHost
 
-# Azure OpenAI
-dotnet user-secrets set "Parameters:AiEndpoint"       "https://YOUR-RESOURCE.openai.azure.com"
-dotnet user-secrets set "Parameters:AiApiKey"         "YOUR-AZURE-OPENAI-KEY"
-dotnet user-secrets set "Parameters:AiProvider"       "azureopenai"
-dotnet user-secrets set "Parameters:AiChatModel"      "gpt-4o-mini"          # your chat *deployment* name
-dotnet user-secrets set "Parameters:AiEmbeddingModel" "text-embedding-3-small" # your embedding *deployment* name
-
-# Discord
+# Discord bot token (always required)
 dotnet user-secrets set "Parameters:DiscordToken"     "YOUR-DISCORD-BOT-TOKEN"
+
+# AI provider — the default is GitHub Copilot, which needs NO keys (interactive sign-in on first
+# run). Only set the following if you switch to Azure OpenAI / Azure AI Foundry / OpenAI:
+# dotnet user-secrets set "Parameters:AiProvider"       "azureopenai"
+# dotnet user-secrets set "Parameters:AiEndpoint"       "https://YOUR-RESOURCE.openai.azure.com"
+# dotnet user-secrets set "Parameters:AiApiKey"         "YOUR-AZURE-OPENAI-KEY"
+# dotnet user-secrets set "Parameters:AiChatModel"      "gpt-4o-mini"            # chat *deployment* name (Azure)
+# dotnet user-secrets set "Parameters:AiEmbeddingModel" "text-embedding-3-small" # embedding *deployment* name
 ```
 
 > For Azure OpenAI, `AiChatModel` / `AiEmbeddingModel` are your **deployment names**, not model
@@ -99,10 +128,13 @@ cd AspireDiscordBot.AppHost
 aspire run           # or: dotnet run
 ```
 
-The Aspire dashboard opens. On first run the **ingestion** worker downloads and embeds the docs
-(a few minutes; watch its logs for `Ingestion finished: N files, M chunks`). Qdrant uses a
-persistent data volume, so subsequent runs reuse the existing index — set
-`Ingestion:ForceReindex=true` to rebuild.
+The Aspire dashboard opens. On first run:
+- If using the default **Copilot** provider, complete the one-time device-flow sign-in shown in
+  the ingestion/bot logs (see [AI access with GitHub Copilot](#ai-access-with-github-copilot-default)).
+- The **ingestion** worker reads the docs via `aspire docs`, embeds them, and upserts to Qdrant
+  (a few minutes; watch its logs for `Ingestion finished: N files, M chunks`). Qdrant uses a
+  persistent data volume, so subsequent runs reuse the existing index — set
+  `Ingestion:ForceReindex=true` to rebuild.
 
 Once ingestion completes, ask the bot in Discord:
 
@@ -120,7 +152,7 @@ This bot is designed to only answer Aspire questions, from the docs, and to resi
 - Every grounded answer includes **source citations** (linking to aspire.dev / GitHub) so users
   can verify.
 
-**Defense-in-depth against prompt injection & off-topic steering** — four independent layers,
+**Layered safety checks against prompt injection & off-topic steering** — four independent layers,
 each verified by tests:
 1. **Input guard** (`QuestionSafetyGuard`) — rejects prompt-injection, jailbreak, and
    system-prompt-extraction attempts *before* the model is called, with de-obfuscation of
@@ -142,29 +174,44 @@ Tunable knobs live under the `Safety` and `Retrieval` configuration sections
 
 Set `Ai:Provider` to one of:
 
-| Provider | `Ai:Provider` | `Ai:Endpoint` | Auth header | Model fields |
-| --- | --- | --- | --- | --- |
-| Azure OpenAI (default) | `azureopenai` | `https://<resource>.openai.azure.com` | `api-key` | deployment names |
-| Azure AI Foundry | `azureaifoundry` | your models inference endpoint | `api-key` | model ids |
-| OpenAI | `openai` | `https://api.openai.com` | `Bearer` | model ids |
+| Provider | `Ai:Provider` | Endpoint / auth | Model fields |
+| --- | --- | --- | --- |
+| GitHub Copilot (default) | `copilot` | device-flow sign-in; no keys | model ids (`gpt-5.6-sol`, …) |
+| Azure OpenAI | `azureopenai` | `Ai:Endpoint` + `Ai:ApiKey` (`api-key` header) | deployment names |
+| Azure AI Foundry | `azureaifoundry` | `Ai:Endpoint` + `Ai:ApiKey` (`api-key` header) | model ids |
+| OpenAI | `openai` | `Ai:Endpoint` + `Ai:ApiKey` (`Bearer`) | model ids |
+
+`Ai:EmbeddingProvider` optionally overrides the provider for embeddings only (chat keeps
+`Ai:Provider`). Useful if your Copilot account lacks embeddings — point embeddings at Azure OpenAI.
 
 ## Configuration reference
 
-The docs source can be switched between GitHub (default, always fresh) and local clones:
+The ingestion source is set by `Ingestion:SourceMode`:
 
 ```jsonc
 // Ingestion project appsettings.json
 "Ingestion": {
-  "SourceMode": "github",      // or "local"
+  "SourceMode": "cli",          // "cli" (default), "github", or "local"
   "CollectionName": "aspire_docs",
   "MaxChunkChars": 1200,
   "ChunkOverlapChars": 150,
-  "ForceReindex": false
+  "ForceReindex": false,
+  "Cli": {
+    "ResolveDeepLinks": true,   // resolve exact aspire.dev URLs for citations
+    "MaxConcurrency": 6,        // parallel `aspire docs get` calls
+    // Optional: read the deep-link title index from a local aspire.dev clone (instant) instead
+    // of GitHub. When unset, titles are fetched from GitHub.
+    "AspireDevLocalPath": "D:/GitHub/aspire.dev"
+  }
 }
 ```
 
-To ingest from local clones instead of GitHub, set `SourceMode` to `local` and provide
-`LocalPath` for each configured source.
+- **`cli`** (default) — reads published docs via the `aspire docs` CLI. Citation deep links are
+  resolved by matching each page's title to the aspire.dev repo (~93% resolve to an exact page;
+  the rest fall back to an aspire.dev search link). Setting `Cli:AspireDevLocalPath` to a local
+  clone makes deep-link resolution instant.
+- **`github`** — reads `.md`/`.mdx` directly from `microsoft/aspire` and `microsoft/aspire.dev`.
+- **`local`** — reads from on-disk clones; set `LocalPath` for each configured source.
 
 ## Tests
 

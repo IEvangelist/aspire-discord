@@ -80,7 +80,8 @@ public sealed class OpenAiCompatibleClientTests : IDisposable
         });
 
         var factory = new SingleClientFactory();
-        return new OpenAiCompatibleClient(factory, options, NullLogger<OpenAiCompatibleClient>.Instance);
+        var copilot = new CopilotTokenProvider(factory, options, NullLogger<CopilotTokenProvider>.Instance);
+        return new OpenAiCompatibleClient(factory, copilot, options, NullLogger<OpenAiCompatibleClient>.Instance);
     }
 
     private async Task HandleRequestsAsync()

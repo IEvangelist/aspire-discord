@@ -5,11 +5,18 @@ namespace AspireDiscordBot.Core.Documents;
 
 /// <summary>A raw, unprocessed documentation file read from a source.</summary>
 /// <param name="Repo">Owning repository, e.g. <c>microsoft/aspire.dev</c>.</param>
-/// <param name="Path">Repo-relative path.</param>
+/// <param name="Path">Repo-relative path, or a slug for CLI-sourced docs.</param>
 /// <param name="Raw">Raw file contents.</param>
-/// <param name="UrlStyle">How to build the citation URL (<c>aspiredev</c> or <c>github</c>).</param>
+/// <param name="UrlStyle">How to build the citation URL (<c>aspiredev</c>, <c>github</c>, or <c>resolved</c>).</param>
 /// <param name="Branch">Branch used for GitHub URLs.</param>
-public readonly record struct RawDocument(string Repo, string Path, string Raw, string UrlStyle, string Branch);
+public readonly record struct RawDocument(string Repo, string Path, string Raw, string UrlStyle, string Branch)
+{
+    /// <summary>Authoritative title when the source already knows it (e.g. the Aspire CLI). Optional.</summary>
+    public string? Title { get; init; }
+
+    /// <summary>Pre-resolved canonical citation URL. When set, it is used verbatim. Optional.</summary>
+    public string? ResolvedUrl { get; init; }
+}
 
 /// <summary>
 /// Default set of documentation sources (the source of truth) and helpers for path
@@ -49,6 +56,9 @@ public static partial class DocSourceCatalog
             UrlStyle = "github",
         },
     ];
+
+    /// <summary>Whether the given first URL/path segment is a known non-English locale directory.</summary>
+    public static bool IsLocaleSegment(string segment) => LocaleSegments.Contains(segment);
 
     /// <summary>Whether a repo-relative path should be ingested for the given source.</summary>
     public static bool ShouldInclude(DocRepoOptions repo, string path)
