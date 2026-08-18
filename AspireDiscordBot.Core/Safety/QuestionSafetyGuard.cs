@@ -1,5 +1,4 @@
 using System.Text.RegularExpressions;
-using AspireDiscordBot.Core.Configuration;
 using Microsoft.Extensions.Options;
 
 namespace AspireDiscordBot.Core.Safety;

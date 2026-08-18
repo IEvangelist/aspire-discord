@@ -4,31 +4,29 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
-#pragma warning disable ASPIREINTERACTION001 // InteractionInput / PromptInputsAsync are experimental.
-
 var builder = DistributedApplication.CreateBuilder(args);
 
 // Optionally orchestrate a local Ollama container for fully-local runs (set "Ollama:Enabled": true,
-// e.g. via user-secrets or environment). When enabled, AI is served by this container and the
-// setup dialog only needs the Discord token.
+// e.g. via user-secrets or environment). When enabled, AI is served by this container.
 var ollamaEnabled = builder.Configuration.GetValue<bool>("Ollama:Enabled");
 var ollamaChatModel = builder.Configuration["Ollama:ChatModel"] ?? "llama3.1";
 var ollamaEmbeddingModel = builder.Configuration["Ollama:EmbeddingModel"] ?? "nomic-embed-text";
 var ollamaEmbeddingDimensions = builder.Configuration.GetValue("Ollama:EmbeddingDimensions", 768);
 
-// Collects the Discord token + AI settings through a single dashboard dialog on first run.
-var setup = new BotSetup(builder.Configuration, ollamaForced: ollamaEnabled);
+// The Discord bot token is the one always-required secret. As an unresolved secret parameter,
+// Aspire prompts for it once in the dashboard (a single dialog) when it isn't already provided via
+// user-secrets, and offers to save it back to user-secrets so later runs don't prompt.
+var discordToken = builder.AddParameter("DiscordToken", secret: true);
 
-// Prompt once, before any resource starts (like Aspire's own parameter prompting). The env
-// callbacks below then read the already-resolved values synchronously.
-if (builder.ExecutionContext.IsRunMode)
-{
-    builder.Eventing.Subscribe<BeforeStartEvent>(async (evt, cancellationToken) =>
-    {
-        setup.Interaction = evt.Services.GetService<IInteractionService>();
-        await setup.ResolveAsync(cancellationToken);
-    });
-}
+// AI settings resolved from configuration with defaults. The default Copilot provider needs no
+// endpoint/key, so it stays zero-config. Override any of these via user-secrets on the AppHost,
+// e.g. `dotnet user-secrets set "Parameters:AiProvider" "azureopenai"`. Ignored in Ollama mode.
+var aiProvider = builder.Configuration["Parameters:AiProvider"] ?? "copilot";
+var aiEndpoint = builder.Configuration["Parameters:AiEndpoint"] ?? "";
+var aiApiKey = builder.Configuration["Parameters:AiApiKey"] ?? "";
+var aiChatModel = builder.Configuration["Parameters:AiChatModel"] ?? "gpt-5.6-sol";
+var aiEmbeddingModel = builder.Configuration["Parameters:AiEmbeddingModel"] ?? "text-embedding-3-small";
+var aiEmbeddingDimensions = builder.Configuration["Parameters:AiEmbeddingDimensions"] ?? "1536";
 
 // --- Qdrant vector database (persisted across runs) ---
 var qdrant = builder.AddQdrant("qdrant")
@@ -54,37 +52,26 @@ if (ollamaEnabled)
     });
 }
 
-// Applies AI settings (and, for the bot, the Discord token) resolved by the setup dialog.
-void ApplyRuntimeConfig<T>(IResourceBuilder<T> resource, bool includeDiscordToken)
-    where T : IResourceWithEnvironment
+// Applies the AI environment to a service (the same for ingestion + bot).
+IResourceBuilder<T> WithAiEnvironment<T>(IResourceBuilder<T> resource) where T : IResourceWithEnvironment
 {
-    resource.WithEnvironment(context =>
+    if (ollamaEnabled)
     {
-        var settings = setup.Current;
+        return resource
+            .WithEnvironment("Ai__Provider", "ollama")
+            .WithEnvironment("Ai__Endpoint", ollama!.GetEndpoint("http"))
+            .WithEnvironment("Ai__ChatModel", ollamaChatModel)
+            .WithEnvironment("Ai__EmbeddingModel", ollamaEmbeddingModel)
+            .WithEnvironment("Ai__EmbeddingDimensions", ollamaEmbeddingDimensions.ToString());
+    }
 
-        if (ollamaEnabled)
-        {
-            context.EnvironmentVariables["Ai__Provider"] = "ollama";
-            context.EnvironmentVariables["Ai__Endpoint"] = ollama!.GetEndpoint("http");
-            context.EnvironmentVariables["Ai__ChatModel"] = ollamaChatModel;
-            context.EnvironmentVariables["Ai__EmbeddingModel"] = ollamaEmbeddingModel;
-            context.EnvironmentVariables["Ai__EmbeddingDimensions"] = ollamaEmbeddingDimensions.ToString();
-        }
-        else
-        {
-            context.EnvironmentVariables["Ai__Provider"] = settings.AiProvider;
-            context.EnvironmentVariables["Ai__Endpoint"] = settings.AiEndpoint;
-            context.EnvironmentVariables["Ai__ApiKey"] = settings.AiApiKey;
-            context.EnvironmentVariables["Ai__ChatModel"] = settings.ChatModel;
-            context.EnvironmentVariables["Ai__EmbeddingModel"] = settings.EmbeddingModel;
-            context.EnvironmentVariables["Ai__EmbeddingDimensions"] = settings.EmbeddingDimensions.ToString();
-        }
-
-        if (includeDiscordToken)
-        {
-            context.EnvironmentVariables["Discord__Token"] = settings.DiscordToken;
-        }
-    });
+    return resource
+        .WithEnvironment("Ai__Provider", aiProvider)
+        .WithEnvironment("Ai__Endpoint", aiEndpoint)
+        .WithEnvironment("Ai__ApiKey", aiApiKey)
+        .WithEnvironment("Ai__ChatModel", aiChatModel)
+        .WithEnvironment("Ai__EmbeddingModel", aiEmbeddingModel)
+        .WithEnvironment("Ai__EmbeddingDimensions", aiEmbeddingDimensions);
 }
 
 // --- Ingestion worker: pulls Aspire docs (source of truth) -> embeds -> Qdrant ---
@@ -115,13 +102,14 @@ var ingestion = builder.AddProject<Projects.AspireDiscordBot_Ingestion>("ingesti
             ConfirmationMessage = "This drops the current index and re-embeds every page. Continue?",
             IsHighlighted = false,
         });
-ApplyRuntimeConfig(ingestion, includeDiscordToken: false);
+WithAiEnvironment(ingestion);
 
 // --- Discord bot: answers questions grounded in the ingested docs ---
 var bot = builder.AddProject<Projects.AspireDiscordBot_Bot>("bot")
     .WithReference(qdrant)
-    .WaitFor(qdrant);
-ApplyRuntimeConfig(bot, includeDiscordToken: true);
+    .WaitFor(qdrant)
+    .WithEnvironment("Discord__Token", discordToken);
+WithAiEnvironment(bot);
 
 if (ollama is not null)
 {
@@ -129,5 +117,4 @@ if (ollama is not null)
     bot.WaitFor(ollama);
 }
 
-var app = builder.Build();
-app.Run();
+builder.Build().Run();

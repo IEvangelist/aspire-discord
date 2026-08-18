@@ -100,17 +100,17 @@ No API keys or endpoints are required for the `copilot` provider.
 
 ## Configure the bot
 
-On first run the AppHost shows a **single Aspire dashboard dialog** that collects everything it
-needs together — the Discord bot token, the AI provider, and any provider credentials — and
-applies them to both services for that run. Just run it (next section) and fill in the dialog.
+On first run, if the Discord bot token isn't already set, Aspire prompts for it in the dashboard
+(a single input dialog) and offers to **save it to user-secrets** so later runs don't ask again.
+That's the only value you must provide interactively — the default GitHub Copilot provider needs
+no keys.
 
-Prefer not to be prompted? Provide any value ahead of time via user-secrets on the AppHost and
-that field is used as-is (a fully pre-configured setup shows no dialog):
+You can also set the token (and switch AI provider) ahead of time via user-secrets on the AppHost:
 
 ```bash
 cd AspireDiscordBot.AppHost
 
-# Discord bot token (the one always-required value)
+# Discord bot token (the one always-required value; omit to be prompted in the dashboard)
 dotnet user-secrets set "Parameters:DiscordToken"     "YOUR-DISCORD-BOT-TOKEN"
 
 # AI provider — default is GitHub Copilot, which needs NO keys. Only set these to switch provider:
@@ -132,8 +132,8 @@ aspire run           # or: dotnet run
 ```
 
 The Aspire dashboard opens. On first run:
-- A **setup dialog** appears (unless you pre-configured everything via user-secrets) — fill in the
-  Discord token, choose the AI provider, and add any credentials, then start.
+- If the Discord token isn't set, the dashboard prompts for it — enter it (and optionally save it
+  to user-secrets), and the resources continue.
 - If using the default **Copilot** provider, complete the one-time device-flow sign-in shown in
   the ingestion/bot logs (see [AI access with GitHub Copilot](#ai-access-with-github-copilot-default)).
 - The **ingestion** worker reads the docs via `aspire docs`, embeds them, and upserts to Qdrant
@@ -232,7 +232,7 @@ ollama pull nomic-embed-text  # embeddings (768 dims)
 
 **B. Let the AppHost orchestrate Ollama.** Set `Ollama:Enabled=true` on the AppHost and it adds an
 `ollama/ollama` container (persistent model volume), wires the services to it, and pulls the
-configured models automatically. The setup dialog then only asks for the Discord token.
+configured models automatically. You're then only prompted for the Discord token.
 
 ```bash
 cd AspireDiscordBot.AppHost

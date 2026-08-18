@@ -4,7 +4,6 @@ using AspireDiscordBot.Core.Documents;
 using AspireDiscordBot.Core.Rag;
 using AspireDiscordBot.Core.Safety;
 using AspireDiscordBot.Core.Vectors;
-using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;

@@ -1,6 +1,5 @@
 using System.Net;
 using System.Text;
-using System.Text.Json;
 using AspireDiscordBot.Core.Ai;
 using AspireDiscordBot.Core.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
