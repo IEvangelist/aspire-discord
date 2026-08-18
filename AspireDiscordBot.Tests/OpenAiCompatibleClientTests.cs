@@ -67,13 +67,25 @@ public sealed class OpenAiCompatibleClientTests : IDisposable
         Assert.Equal("test-key", request.Auth); // api-key header, not Bearer
     }
 
-    private OpenAiCompatibleClient CreateClient(string provider)
+    [Fact]
+    public async Task Ollama_UsesV1Path_AndSendsNoAuthWhenKeyEmpty()
+    {
+        var client = CreateClient("ollama", apiKey: "");
+
+        await client.CompleteAsync([AiChatMessage.User("hi")]);
+
+        var request = _requests.Single(r => r.Path.Contains("chat/completions"));
+        Assert.Contains("/v1/chat/completions", request.Path);
+        Assert.Equal("", request.Auth); // no Authorization / api-key header for local Ollama
+    }
+
+    private OpenAiCompatibleClient CreateClient(string provider, string apiKey = "test-key")
     {
         var options = Options.Create(new AiOptions
         {
             Provider = provider,
             Endpoint = _prefix.TrimEnd('/'),
-            ApiKey = "test-key",
+            ApiKey = apiKey,
             ChatModel = "gpt-4o-mini",
             EmbeddingModel = "text-embedding-3-small",
             ApiVersion = "2024-10-21",

@@ -90,9 +90,9 @@ public sealed class OpenAiCompatibleClient(
             "copilot" => $"{_options.Copilot.ApiBase.TrimEnd('/')}/{op}",
             "azureopenai" => $"{_options.Endpoint.TrimEnd('/')}/openai/deployments/{model}/{op}?api-version={_options.ApiVersion}",
             "azureaifoundry" => $"{_options.Endpoint.TrimEnd('/')}/{op}?api-version={_options.ApiVersion}",
-            "openai" => $"{_options.Endpoint.TrimEnd('/')}/v1/{op}",
+            "openai" or "ollama" => $"{_options.Endpoint.TrimEnd('/')}/v1/{op}",
             _ => throw new InvalidOperationException(
-                $"Unknown AI provider '{provider}'. Use copilot, azureopenai, azureaifoundry, or openai."),
+                $"Unknown AI provider '{provider}'. Use copilot, azureopenai, azureaifoundry, openai, or ollama."),
         };
     }
 
@@ -112,6 +112,14 @@ public sealed class OpenAiCompatibleClient(
                 request.Headers.TryAddWithoutValidation("Copilot-Integration-Id", _options.Copilot.IntegrationId);
                 request.Headers.TryAddWithoutValidation("Editor-Version", _options.Copilot.EditorVersion);
                 request.Headers.TryAddWithoutValidation("Editor-Plugin-Version", _options.Copilot.EditorPluginVersion);
+                break;
+
+            case "ollama":
+                // Local Ollama needs no authentication; send only the API key if one was configured.
+                if (!string.IsNullOrEmpty(_options.ApiKey))
+                {
+                    request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _options.ApiKey);
+                }
                 break;
 
             case "openai":

@@ -98,24 +98,27 @@ No API keys or endpoints are required for the `copilot` provider.
    so the `/ask` command registers instantly instead of waiting up to an hour for global
    propagation.
 
-## Configure secrets
+## Configure the bot
 
-Secrets are supplied to the AppHost as parameters. The simplest path for local development is
-user-secrets on the AppHost project:
+On first run the AppHost shows a **single Aspire dashboard dialog** that collects everything it
+needs together — the Discord bot token, the AI provider, and any provider credentials — and
+applies them to both services for that run. Just run it (next section) and fill in the dialog.
+
+Prefer not to be prompted? Provide any value ahead of time via user-secrets on the AppHost and
+that field is used as-is (a fully pre-configured setup shows no dialog):
 
 ```bash
 cd AspireDiscordBot.AppHost
 
-# Discord bot token (always required)
+# Discord bot token (the one always-required value)
 dotnet user-secrets set "Parameters:DiscordToken"     "YOUR-DISCORD-BOT-TOKEN"
 
-# AI provider — the default is GitHub Copilot, which needs NO keys (interactive sign-in on first
-# run). Only set the following if you switch to Azure OpenAI / Azure AI Foundry / OpenAI:
-# dotnet user-secrets set "Parameters:AiProvider"       "azureopenai"
+# AI provider — default is GitHub Copilot, which needs NO keys. Only set these to switch provider:
+# dotnet user-secrets set "Parameters:AiProvider"       "azureopenai"   # or azureaifoundry / openai / ollama
 # dotnet user-secrets set "Parameters:AiEndpoint"       "https://YOUR-RESOURCE.openai.azure.com"
 # dotnet user-secrets set "Parameters:AiApiKey"         "YOUR-AZURE-OPENAI-KEY"
-# dotnet user-secrets set "Parameters:AiChatModel"      "gpt-4o-mini"            # chat *deployment* name (Azure)
-# dotnet user-secrets set "Parameters:AiEmbeddingModel" "text-embedding-3-small" # embedding *deployment* name
+# dotnet user-secrets set "Parameters:AiChatModel"      "gpt-5.6-sol"            # chat model / Azure deployment
+# dotnet user-secrets set "Parameters:AiEmbeddingModel" "text-embedding-3-small" # embedding model / Azure deployment
 ```
 
 > For Azure OpenAI, `AiChatModel` / `AiEmbeddingModel` are your **deployment names**, not model
@@ -129,6 +132,8 @@ aspire run           # or: dotnet run
 ```
 
 The Aspire dashboard opens. On first run:
+- A **setup dialog** appears (unless you pre-configured everything via user-secrets) — fill in the
+  Discord token, choose the AI provider, and add any credentials, then start.
 - If using the default **Copilot** provider, complete the one-time device-flow sign-in shown in
   the ingestion/bot logs (see [AI access with GitHub Copilot](#ai-access-with-github-copilot-default)).
 - The **ingestion** worker reads the docs via `aspire docs`, embeds them, and upserts to Qdrant
@@ -202,9 +207,44 @@ Set `Ai:Provider` to one of:
 | Azure OpenAI | `azureopenai` | `Ai:Endpoint` + `Ai:ApiKey` (`api-key` header) | deployment names |
 | Azure AI Foundry | `azureaifoundry` | `Ai:Endpoint` + `Ai:ApiKey` (`api-key` header) | model ids |
 | OpenAI | `openai` | `Ai:Endpoint` + `Ai:ApiKey` (`Bearer`) | model ids |
+| Ollama (local) | `ollama` | `Ai:Endpoint` (e.g. `http://localhost:11434`); no key | model ids (`llama3.1`, …) |
 
 `Ai:EmbeddingProvider` optionally overrides the provider for embeddings only (chat keeps
 `Ai:Provider`). Useful if your Copilot account lacks embeddings — point embeddings at Azure OpenAI.
+
+> **Embedding dimensions must match the model.** `text-embedding-3-small` = 1536, Ollama's
+> `nomic-embed-text` = 768, `mxbai-embed-large` = 1024. Set `Ai:EmbeddingDimensions` accordingly.
+> Changing it requires a **Force rebuild** of the Qdrant index (the vector size is fixed at
+> collection creation).
+
+## Local runs with Ollama
+
+Two ways to use [Ollama](https://ollama.com) for a fully-local, no-cloud setup:
+
+**A. Point at your own Ollama.** Run Ollama yourself and pull the models, then pick `ollama` in
+the setup dialog (or set `Parameters:AiProvider=ollama`, `Parameters:AiEndpoint=http://localhost:11434`):
+
+```bash
+ollama serve
+ollama pull llama3.1          # chat
+ollama pull nomic-embed-text  # embeddings (768 dims)
+```
+
+**B. Let the AppHost orchestrate Ollama.** Set `Ollama:Enabled=true` on the AppHost and it adds an
+`ollama/ollama` container (persistent model volume), wires the services to it, and pulls the
+configured models automatically. The setup dialog then only asks for the Discord token.
+
+```bash
+cd AspireDiscordBot.AppHost
+dotnet user-secrets set "Ollama:Enabled" "true"
+# optional overrides:
+# dotnet user-secrets set "Ollama:ChatModel" "llama3.1"
+# dotnet user-secrets set "Ollama:EmbeddingModel" "nomic-embed-text"
+# dotnet user-secrets set "Ollama:EmbeddingDimensions" "768"
+```
+
+> Ollama embeddings use different dimensions than the cloud default, so switching to/from Ollama
+> requires a **Force rebuild** of the index.
 
 ## Configuration reference
 

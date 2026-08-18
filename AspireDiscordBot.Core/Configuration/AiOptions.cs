@@ -8,7 +8,7 @@ public sealed class AiOptions
 {
     public const string SectionName = "Ai";
 
-    /// <summary>One of: <c>copilot</c>, <c>azureopenai</c>, <c>azureaifoundry</c>, <c>openai</c>.</summary>
+    /// <summary>One of: <c>copilot</c>, <c>azureopenai</c>, <c>azureaifoundry</c>, <c>openai</c>, <c>ollama</c>.</summary>
     public string Provider { get; set; } = "copilot";
 
     /// <summary>
@@ -21,6 +21,7 @@ public sealed class AiOptions
     /// <summary>
     /// Base endpoint. For Azure OpenAI: <c>https://{resource}.openai.azure.com</c>.
     /// For Azure AI Foundry: the models inference endpoint. For OpenAI: <c>https://api.openai.com</c>.
+    /// For Ollama: the server base URL (e.g. <c>http://localhost:11434</c>).
     /// Ignored for the <c>copilot</c> provider (it targets the GitHub Copilot API).
     /// </summary>
     public string Endpoint { get; set; } = "";
@@ -34,7 +35,11 @@ public sealed class AiOptions
     /// <summary>Embedding model. For Azure OpenAI this is the <b>deployment name</b>; otherwise the model id.</summary>
     public string EmbeddingModel { get; set; } = "text-embedding-3-small";
 
-    /// <summary>Dimensionality of the embedding vectors (text-embedding-3-small = 1536).</summary>
+    /// <summary>
+    /// Dimensionality of the embedding vectors. Must match the embedding model:
+    /// text-embedding-3-small = 1536; Ollama's nomic-embed-text = 768; mxbai-embed-large = 1024.
+    /// Changing this requires rebuilding the Qdrant collection (use the Force rebuild command).
+    /// </summary>
     public int EmbeddingDimensions { get; set; } = 1536;
 
     /// <summary>API version query string used by Azure providers.</summary>
