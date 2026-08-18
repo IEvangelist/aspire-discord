@@ -93,11 +93,12 @@ public sealed class DiscordBotService(
     private Task OnDisconnected(Exception? exception)
     {
         var closeCode = FindCloseCode(exception);
-        if (closeCode is GatewayAuthenticationFailed)
+        if (closeCode is GatewayAuthenticationFailed || IsUnauthorized(exception))
         {
             logger.LogError(
-                "Discord closed the connection: authentication failed (invalid bot token). " +
-                "Update Discord:Token and restart. The bot will stop reconnecting.");
+                "Discord rejected the bot token (401 / authentication failed). Update Discord:Token " +
+                "with a valid bot token (Developer Portal → your app → Bot → Reset Token) and restart. " +
+                "The bot will stop reconnecting.");
             _ = SafeStopAsync();
         }
         else if (closeCode is GatewayDisallowedIntents)
@@ -125,6 +126,24 @@ public sealed class DiscordBotService(
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// Detects an HTTP 401 from Discord during the gateway handshake, which indicates an invalid
+    /// bot token. Discord.Net swallows this inside <c>LoginAsync</c> and then retries the gateway
+    /// connection forever, so we surface it here and stop reconnecting.
+    /// </summary>
+    private static bool IsUnauthorized(Exception? exception)
+    {
+        for (var ex = exception; ex is not null; ex = ex.InnerException)
+        {
+            if (ex is Discord.Net.HttpException http && http.HttpCode == System.Net.HttpStatusCode.Unauthorized)
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private async Task OnReady()
