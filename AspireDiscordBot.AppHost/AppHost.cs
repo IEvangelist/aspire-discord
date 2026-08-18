@@ -18,16 +18,6 @@ var ollamaEmbeddingDimensions = builder.Configuration.GetValue("Ollama:Embedding
 // user-secrets, and offers to save it back to user-secrets so later runs don't prompt.
 var discordToken = builder.AddParameter("DiscordToken", secret: true);
 
-// AI settings resolved from configuration with defaults. The default Copilot provider needs no
-// endpoint/key, so it stays zero-config. Override any of these via user-secrets on the AppHost,
-// e.g. `dotnet user-secrets set "Parameters:AiProvider" "azureopenai"`. Ignored in Ollama mode.
-var aiProvider = builder.Configuration["Parameters:AiProvider"] ?? "copilot";
-var aiEndpoint = builder.Configuration["Parameters:AiEndpoint"] ?? "";
-var aiApiKey = builder.Configuration["Parameters:AiApiKey"] ?? "";
-var aiChatModel = builder.Configuration["Parameters:AiChatModel"] ?? "gpt-5.6-sol";
-var aiEmbeddingModel = builder.Configuration["Parameters:AiEmbeddingModel"] ?? "text-embedding-3-small";
-var aiEmbeddingDimensions = builder.Configuration["Parameters:AiEmbeddingDimensions"] ?? "1536";
-
 // --- Qdrant vector database (persisted across runs) ---
 var qdrant = builder.AddQdrant("qdrant")
     .WithDataVolume()
@@ -51,6 +41,27 @@ if (ollamaEnabled)
         return Task.CompletedTask;
     });
 }
+
+// Resolve the AI settings once. In Ollama mode the endpoint is the container; otherwise the
+// configured provider/endpoint/key is used (the default Copilot provider needs no endpoint/key).
+var ai = ollamaEnabled
+    ? new AiConfiguration
+    {
+        Provider = "ollama",
+        ChatModel = ollamaChatModel,
+        EmbeddingModel = ollamaEmbeddingModel,
+        EmbeddingDimensions = ollamaEmbeddingDimensions.ToString(),
+        OllamaEndpoint = ollama!.GetEndpoint("http"),
+    }
+    : new AiConfiguration
+    {
+        Provider = builder.Configuration["Parameters:AiProvider"] ?? "copilot",
+        Endpoint = builder.Configuration["Parameters:AiEndpoint"] ?? "",
+        ApiKey = builder.Configuration["Parameters:AiApiKey"] ?? "",
+        ChatModel = builder.Configuration["Parameters:AiChatModel"] ?? "gpt-5.6-sol",
+        EmbeddingModel = builder.Configuration["Parameters:AiEmbeddingModel"] ?? "text-embedding-3-small",
+        EmbeddingDimensions = builder.Configuration["Parameters:AiEmbeddingDimensions"] ?? "1536",
+    };
 
 // --- Ingestion worker: pulls Aspire docs (source of truth) -> embeds -> Qdrant ---
 // Exposes dashboard commands to refresh the index on demand (backed by its /admin endpoints).
@@ -79,15 +90,15 @@ var ingestion = builder.AddProject<Projects.AspireDiscordBot_Ingestion>("ingesti
             IconName = "DatabaseArrowUp",
             ConfirmationMessage = "This drops the current index and re-embeds every page. Continue?",
             IsHighlighted = false,
-        });
-WithAiEnvironment(ingestion);
+        })
+    .WithAiEnvironment(ai);
 
 // --- Discord bot: answers questions grounded in the ingested docs ---
 var bot = builder.AddProject<Projects.AspireDiscordBot_Bot>("bot")
     .WithReference(qdrant)
     .WaitFor(qdrant)
     .WithEnvironment("Discord__Token", discordToken)
-    .WithAiEnvironment(bot);
+    .WithAiEnvironment(ai);
 
 if (ollama is not null)
 {
