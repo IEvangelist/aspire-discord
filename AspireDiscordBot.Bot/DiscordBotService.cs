@@ -20,6 +20,10 @@ public sealed class DiscordBotService(
     private const string AskCommandName = "ask";
     private readonly DiscordOptions _options = options.Value;
 
+    // Discord gateway close codes that are fatal — reconnecting won't help until config changes.
+    private const int GatewayAuthenticationFailed = 4004; // invalid bot token
+    private const int GatewayDisallowedIntents = 4014;    // a privileged intent isn't enabled
+
     public async Task StartAsync(CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(_options.Token))
@@ -33,16 +37,29 @@ public sealed class DiscordBotService(
         client.Log += OnLog;
         client.Ready += OnReady;
         client.SlashCommandExecuted += OnSlashCommand;
+        client.Disconnected += OnDisconnected;
 
         if (_options.MentionEnabled)
         {
             client.MessageReceived += OnMessageReceived;
         }
 
-        await client.LoginAsync(TokenType.Bot, _options.Token);
-        await client.StartAsync();
-        logger.LogInformation("Discord bot starting (mentions {MentionState}).",
-            _options.MentionEnabled ? "enabled" : "disabled");
+        try
+        {
+            await client.LoginAsync(TokenType.Bot, _options.Token);
+            await client.StartAsync();
+            logger.LogInformation("Discord bot starting (mentions {MentionState}).",
+                _options.MentionEnabled ? "enabled" : "disabled");
+        }
+        catch (Exception ex)
+        {
+            // Never let a bad token crash the host (which would trigger an endless restart loop).
+            // Log an actionable error and leave the bot offline; the rest of the app keeps running.
+            logger.LogError(ex,
+                "Failed to sign in to Discord. Check that Discord:Token is a valid bot token " +
+                "(Developer Portal → your app → Bot → Reset Token). The bot will stay offline.");
+            await SafeStopAsync();
+        }
     }
 
     public async Task StopAsync(CancellationToken cancellationToken)
@@ -51,9 +68,63 @@ public sealed class DiscordBotService(
         client.Ready -= OnReady;
         client.SlashCommandExecuted -= OnSlashCommand;
         client.MessageReceived -= OnMessageReceived;
+        client.Disconnected -= OnDisconnected;
 
-        await client.StopAsync();
-        await client.LogoutAsync();
+        await SafeStopAsync();
+    }
+
+    private async Task SafeStopAsync()
+    {
+        try
+        {
+            await client.StopAsync();
+            await client.LogoutAsync();
+        }
+        catch (Exception ex)
+        {
+            logger.LogDebug(ex, "Error while stopping the Discord client.");
+        }
+    }
+
+    /// <summary>
+    /// Breaks Discord.Net's automatic reconnect loop when the gateway closed for a reason that
+    /// won't resolve by retrying (invalid token, or a privileged intent that isn't enabled).
+    /// </summary>
+    private Task OnDisconnected(Exception? exception)
+    {
+        var closeCode = FindCloseCode(exception);
+        if (closeCode is GatewayAuthenticationFailed)
+        {
+            logger.LogError(
+                "Discord closed the connection: authentication failed (invalid bot token). " +
+                "Update Discord:Token and restart. The bot will stop reconnecting.");
+            _ = SafeStopAsync();
+        }
+        else if (closeCode is GatewayDisallowedIntents)
+        {
+            logger.LogError(
+                "Discord closed the connection: a privileged intent isn't enabled. Enable " +
+                "\"Message Content Intent\" (Developer Portal → Bot → Privileged Gateway Intents), " +
+                "or set Discord:MentionEnabled=false. The bot will stop reconnecting.");
+            _ = SafeStopAsync();
+        }
+
+        return Task.CompletedTask;
+    }
+
+    private static int? FindCloseCode(Exception? exception)
+    {
+        for (var ex = exception; ex is not null; ex = ex.InnerException)
+        {
+            // Discord.Net's WebSocketClosedException carries the numeric close code.
+            var codeProp = ex.GetType().GetProperty("CloseCode");
+            if (codeProp?.GetValue(ex) is int code)
+            {
+                return code;
+            }
+        }
+
+        return null;
     }
 
     private async Task OnReady()

@@ -52,28 +52,6 @@ if (ollamaEnabled)
     });
 }
 
-// Applies the AI environment to a service (the same for ingestion + bot).
-IResourceBuilder<T> WithAiEnvironment<T>(IResourceBuilder<T> resource) where T : IResourceWithEnvironment
-{
-    if (ollamaEnabled)
-    {
-        return resource
-            .WithEnvironment("Ai__Provider", "ollama")
-            .WithEnvironment("Ai__Endpoint", ollama!.GetEndpoint("http"))
-            .WithEnvironment("Ai__ChatModel", ollamaChatModel)
-            .WithEnvironment("Ai__EmbeddingModel", ollamaEmbeddingModel)
-            .WithEnvironment("Ai__EmbeddingDimensions", ollamaEmbeddingDimensions.ToString());
-    }
-
-    return resource
-        .WithEnvironment("Ai__Provider", aiProvider)
-        .WithEnvironment("Ai__Endpoint", aiEndpoint)
-        .WithEnvironment("Ai__ApiKey", aiApiKey)
-        .WithEnvironment("Ai__ChatModel", aiChatModel)
-        .WithEnvironment("Ai__EmbeddingModel", aiEmbeddingModel)
-        .WithEnvironment("Ai__EmbeddingDimensions", aiEmbeddingDimensions);
-}
-
 // --- Ingestion worker: pulls Aspire docs (source of truth) -> embeds -> Qdrant ---
 // Exposes dashboard commands to refresh the index on demand (backed by its /admin endpoints).
 var ingestion = builder.AddProject<Projects.AspireDiscordBot_Ingestion>("ingestion")
@@ -108,8 +86,8 @@ WithAiEnvironment(ingestion);
 var bot = builder.AddProject<Projects.AspireDiscordBot_Bot>("bot")
     .WithReference(qdrant)
     .WaitFor(qdrant)
-    .WithEnvironment("Discord__Token", discordToken);
-WithAiEnvironment(bot);
+    .WithEnvironment("Discord__Token", discordToken)
+    .WithAiEnvironment(bot);
 
 if (ollama is not null)
 {
