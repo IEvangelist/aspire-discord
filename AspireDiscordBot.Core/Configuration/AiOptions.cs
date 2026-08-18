@@ -83,4 +83,18 @@ public sealed class CopilotOptions
     /// and the bot so the device-flow login only happens once.
     /// </summary>
     public string? OAuthTokenPath { get; set; }
+
+    /// <summary>
+    /// When true (default), a service performs the interactive GitHub device-flow sign-in itself
+    /// if no cached token exists. When false, the service does NOT prompt — it waits for the
+    /// shared cached token to appear (written by the AppHost, which surfaces the sign-in prompt
+    /// in the Aspire dashboard via the interaction service). See <see cref="SignInWaitSeconds"/>.
+    /// </summary>
+    public bool InteractiveSignIn { get; set; } = true;
+
+    /// <summary>
+    /// How long a service waits for the shared cached token when <see cref="InteractiveSignIn"/>
+    /// is false, before failing. Gives the operator time to complete the dashboard sign-in.
+    /// </summary>
+    public int SignInWaitSeconds { get; set; } = 600;
 }

@@ -69,6 +69,14 @@ public sealed class CopilotTokenProvider(
             return cached;
         }
 
+        // When interactive sign-in is disabled, this service must not prompt. The AppHost performs
+        // the device-flow sign-in (surfacing it in the dashboard) and writes the shared cache;
+        // here we just wait for that token to appear.
+        if (!_copilot.InteractiveSignIn)
+        {
+            return await WaitForCachedTokenAsync(cancellationToken);
+        }
+
         // Serialize device-flow login across processes (ingestion + bot) so it happens only once.
         using var loginMutex = new Mutex(initiallyOwned: false, "aspire-discord-copilot-login");
         var held = false;
@@ -95,6 +103,34 @@ public sealed class CopilotTokenProvider(
                 loginMutex.ReleaseMutex();
             }
         }
+    }
+
+    /// <summary>Polls for the shared cached OAuth token (written by the AppHost) until it appears.</summary>
+    private async Task<string> WaitForCachedTokenAsync(CancellationToken cancellationToken)
+    {
+        var deadline = DateTimeOffset.UtcNow.AddSeconds(Math.Max(30, _copilot.SignInWaitSeconds));
+        var logged = false;
+
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            var cached = ReadCachedOAuthToken();
+            if (cached is not null)
+            {
+                return cached;
+            }
+
+            if (!logged)
+            {
+                logger.LogInformation(
+                    "Waiting for GitHub Copilot sign-in. Complete the prompt shown in the Aspire dashboard.");
+                logged = true;
+            }
+
+            await Task.Delay(TimeSpan.FromSeconds(3), cancellationToken);
+        }
+
+        throw new TimeoutException(
+            "Timed out waiting for the GitHub Copilot sign-in to complete in the Aspire dashboard.");
     }
 
     private async Task<string> PerformDeviceFlowAsync(CancellationToken cancellationToken)
@@ -242,33 +278,13 @@ public sealed class CopilotTokenProvider(
         }
     }
 
-    private string? ReadCachedOAuthToken()
-    {
-        try
-        {
-            if (!File.Exists(CachePath))
-            {
-                return null;
-            }
-
-            var cached = JsonSerializer.Deserialize<CachedOAuth>(File.ReadAllText(CachePath), JsonOptions);
-            return string.IsNullOrWhiteSpace(cached?.AccessToken) ? null : cached!.AccessToken;
-        }
-        catch (Exception ex)
-        {
-            logger.LogWarning(ex, "Failed to read cached Copilot OAuth token at {Path}.", CachePath);
-            return null;
-        }
-    }
+    private string? ReadCachedOAuthToken() => CopilotOAuthCache.Read(CachePath);
 
     private void WriteCachedOAuthToken(string token)
     {
         try
         {
-            var dir = Path.GetDirectoryName(CachePath)!;
-            Directory.CreateDirectory(dir);
-            var json = JsonSerializer.Serialize(new CachedOAuth(token, DateTimeOffset.UtcNow), JsonOptions);
-            File.WriteAllText(CachePath, json);
+            CopilotOAuthCache.Write(CachePath, token);
         }
         catch (Exception ex)
         {
@@ -276,24 +292,7 @@ public sealed class CopilotTokenProvider(
         }
     }
 
-    private void DeleteCachedOAuthToken()
-    {
-        try
-        {
-            if (File.Exists(CachePath))
-            {
-                File.Delete(CachePath);
-            }
-        }
-        catch (Exception ex)
-        {
-            logger.LogWarning(ex, "Failed to delete cached Copilot OAuth token at {Path}.", CachePath);
-        }
-    }
-
-    private sealed record CachedOAuth(
-        [property: JsonPropertyName("access_token")] string AccessToken,
-        [property: JsonPropertyName("created")] DateTimeOffset Created);
+    private void DeleteCachedOAuthToken() => CopilotOAuthCache.Delete(CachePath);
 
     private sealed class DeviceCodeResponse
     {

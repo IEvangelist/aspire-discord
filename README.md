@@ -61,26 +61,37 @@ repos), or `local` (on-disk clones). See [Configuration reference](#configuratio
 ## AI access with GitHub Copilot (default)
 
 With the default `copilot` provider, the bot signs in to GitHub once using the OAuth
-**device flow** and inherits your GitHub Copilot access:
+**device flow** and inherits your GitHub Copilot access. The **AppHost drives this sign-in** so the
+code and link are surfaced prominently in the Aspire dashboard (via the interaction service) rather
+than buried in a service's logs:
 
-1. On first run, the ingestion worker (and bot) print a message to their logs — visible in the
-   Aspire dashboard — like:
+1. On first run — when no cached token exists — a **dashboard notification** appears with a link and
+   the device code:
 
    ```
-   Sign in to GitHub to grant Copilot access to the bot:
-     1. Open: https://github.com/login/device
-     2. Enter code: XXXX-XXXX
+   Sign in to GitHub for Copilot access
+     Open https://github.com/login/device and enter code: XXXX-XXXX
    ```
+
+   The notification includes an **Open** link straight to `https://github.com/login/device`. (If the
+   AppHost can't reach the interaction service for any reason, the same instructions still print to
+   the logs as a fallback.)
 
 2. Open the URL, enter the code, and approve. The OAuth token is cached at
-   `~/.aspire-discord/copilot-oauth.json` and reused by both services, so you only sign in once.
-   The short-lived Copilot token is exchanged and refreshed automatically thereafter.
+   `~/.aspire-discord/copilot-oauth.json`. The ingestion worker and bot **wait for that shared token**
+   instead of prompting themselves, so you sign in exactly once. The device code is re-issued
+   automatically if it expires before you approve; the short-lived Copilot token is exchanged and
+   refreshed automatically thereafter.
 
 No API keys or endpoints are required for the `copilot` provider.
+
+> **Already signed in?** If a valid `~/.aspire-discord/copilot-oauth.json` is present, no sign-in
+> prompt appears and the services start immediately. Delete that file to force a fresh sign-in.
 
 > **Embeddings:** chat always works with your Copilot entitlement. If your account can't reach
 > Copilot embeddings, set `Ai:EmbeddingProvider` to another provider (e.g. `azureopenai`) — chat
 > stays on Copilot while embeddings use the override.
+
 
 ## Create the Discord bot
 
@@ -134,8 +145,9 @@ aspire run           # or: dotnet run
 The Aspire dashboard opens. On first run:
 - If the Discord token isn't set, the dashboard prompts for it — enter it (and optionally save it
   to user-secrets), and the resources continue.
-- If using the default **Copilot** provider, complete the one-time device-flow sign-in shown in
-  the ingestion/bot logs (see [AI access with GitHub Copilot](#ai-access-with-github-copilot-default)).
+- If using the default **Copilot** provider, complete the one-time device-flow sign-in from the
+  **dashboard notification** that appears on first run (see
+  [AI access with GitHub Copilot](#ai-access-with-github-copilot-default)).
 - The **ingestion** worker reads the docs via `aspire docs`, embeds them, and upserts to Qdrant
   (a few minutes; watch its logs for `Ingestion finished: N files, M chunks`). Qdrant uses a
   persistent data volume, so subsequent runs reuse the existing index — set

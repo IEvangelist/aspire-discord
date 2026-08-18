@@ -2,7 +2,10 @@ using Aspire.Hosting.ApplicationModel;
 using AspireDiscordBot.AppHost;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+
+#pragma warning disable ASPIREINTERACTION001 // Interaction service APIs are experimental.
 
 var builder = DistributedApplication.CreateBuilder(args);
 
@@ -44,6 +47,12 @@ if (ollamaEnabled)
 
 // Resolve the AI settings once. In Ollama mode the endpoint is the container; otherwise the
 // configured provider/endpoint/key is used (the default Copilot provider needs no endpoint/key).
+// When using Copilot with no cached token, the AppHost drives the sign-in (surfaced in the
+// dashboard) so the services just wait for the shared token instead of prompting in their logs.
+var copilotMode = !ollamaEnabled &&
+    string.Equals(builder.Configuration["Parameters:AiProvider"] ?? "copilot", "copilot", StringComparison.OrdinalIgnoreCase);
+var appHostDrivenSignIn = builder.ExecutionContext.IsRunMode && copilotMode && !CopilotSignIn.HasCachedToken();
+
 var ai = ollamaEnabled
     ? new AiConfiguration
     {
@@ -61,6 +70,8 @@ var ai = ollamaEnabled
         ChatModel = builder.Configuration["Parameters:AiChatModel"] ?? "gpt-5.6-sol",
         EmbeddingModel = builder.Configuration["Parameters:AiEmbeddingModel"] ?? "text-embedding-3-small",
         EmbeddingDimensions = builder.Configuration["Parameters:AiEmbeddingDimensions"] ?? "1536",
+        // Services wait for the AppHost-driven sign-in rather than prompting themselves.
+        CopilotInteractiveSignIn = appHostDrivenSignIn ? false : null,
     };
 
 // --- Ingestion worker: pulls Aspire docs (source of truth) -> embeds -> Qdrant ---
@@ -106,4 +117,35 @@ if (ollama is not null)
     bot.WaitFor(ollama);
 }
 
-builder.Build().Run();
+var app = builder.Build();
+
+// Drive the GitHub Copilot device-flow sign-in from the AppHost so the code + link are surfaced
+// prominently in the dashboard (via the interaction service) rather than buried in service logs.
+// Runs in the background so it never blocks startup; the services wait for the shared cached token.
+if (appHostDrivenSignIn)
+{
+    var interaction = app.Services.GetService<IInteractionService>();
+    if (interaction is not null)
+    {
+        var logger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("CopilotSignIn");
+        var lifetime = app.Services.GetRequiredService<IHostApplicationLifetime>();
+
+        var http = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
+        http.DefaultRequestHeaders.Accept.ParseAdd("application/json");
+        http.DefaultRequestHeaders.UserAgent.ParseAdd("aspire-discord-bot/1.0");
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await CopilotSignIn.RunAsync(interaction, http, logger, lifetime.ApplicationStopping);
+            }
+            finally
+            {
+                http.Dispose();
+            }
+        });
+    }
+}
+
+app.Run();
