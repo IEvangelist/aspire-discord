@@ -34,6 +34,8 @@ public static class ProcessRunner
             process.StartInfo.ArgumentList.Add(arg);
         }
 
+        SanitizeEnvironment(process.StartInfo);
+
         var stdout = new StringBuilder();
         var stderr = new StringBuilder();
         process.OutputDataReceived += (_, e) => { if (e.Data is not null) stdout.AppendLine(e.Data); };
@@ -66,6 +68,32 @@ public static class ProcessRunner
         }
 
         return new ProcessResult(process.ExitCode, stdout.ToString(), stderr.ToString());
+    }
+
+    /// <summary>
+    /// Removes environment variables that would make a spawned <c>aspire</c> CLI child think it is
+    /// running inside the current <c>aspire run</c> session or the VS Code extension. Without this,
+    /// each <c>aspire docs</c> invocation connects to the running AppHost's auxiliary backchannel /
+    /// extension — routing its output to the editor as a notification and churning the backchannel
+    /// connection (seen as the dashboard "rejoining the server…" and instability). Stripping these
+    /// makes the CLI run as a clean, standalone command.
+    /// </summary>
+    private static void SanitizeEnvironment(ProcessStartInfo startInfo)
+    {
+        var toRemove = startInfo.Environment.Keys
+            .Where(key =>
+                key.StartsWith("ASPIRE_EXTENSION_", StringComparison.OrdinalIgnoreCase)
+                || key.StartsWith("ASPIRE_LAUNCHER_", StringComparison.OrdinalIgnoreCase)
+                || key.Equals("ASPIRE_CLI_PID", StringComparison.OrdinalIgnoreCase)
+                || key.Equals("ASPIRE_CLI_STARTED_BY_EXTENSION", StringComparison.OrdinalIgnoreCase)
+                || key.Equals("DEBUG_SESSION_PORT", StringComparison.OrdinalIgnoreCase)
+                || key.Equals("DOTNET_LAUNCH_PROFILE", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        foreach (var key in toRemove)
+        {
+            startInfo.Environment.Remove(key);
+        }
     }
 
     private static void TryKill(Process process)
