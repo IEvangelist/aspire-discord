@@ -16,7 +16,9 @@ public sealed class DiscordOptions
 
     /// <summary>
     /// When true the bot also answers when @mentioned. This requires the privileged
-    /// "Message Content Intent" to be enabled for the app in the Developer Portal.
+    /// "Message Content Intent" to be enabled for the app in the Discord Developer Portal
+    /// (Bot → Privileged Gateway Intents). Leave false to run with the <c>/ask</c> slash command
+    /// only, which needs no privileged intents.
     /// </summary>
-    public bool MentionEnabled { get; set; } = true;
+    public bool MentionEnabled { get; set; }
 }

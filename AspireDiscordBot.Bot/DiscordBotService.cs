@@ -189,6 +189,16 @@ public sealed class DiscordBotService(
         };
 
         logger.Log(level, message.Exception, "[Discord:{Source}] {Message}", message.Source, message.Message);
+
+        // Give an actionable hint for the most common misconfiguration.
+        if (message.Exception?.ToString().Contains("Disallowed intent", StringComparison.OrdinalIgnoreCase) == true)
+        {
+            logger.LogError(
+                "Discord rejected the connection because a privileged intent isn't enabled. Either set " +
+                "Discord:MentionEnabled=false (the /ask command works without it), or enable the " +
+                "\"Message Content Intent\" for the app at Discord Developer Portal → Bot → Privileged Gateway Intents.");
+        }
+
         return Task.CompletedTask;
     }
 }

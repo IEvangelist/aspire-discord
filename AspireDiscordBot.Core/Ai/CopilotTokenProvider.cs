@@ -99,6 +99,29 @@ public sealed class CopilotTokenProvider(
 
     private async Task<string> PerformDeviceFlowAsync(CancellationToken cancellationToken)
     {
+        // Device codes expire (~15 min). Re-request a fresh code if the user hasn't authorized in
+        // time, so a slow sign-in doesn't permanently fail ingestion/startup.
+        var overallDeadline = DateTimeOffset.UtcNow.AddMinutes(60);
+
+        while (DateTimeOffset.UtcNow < overallDeadline)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var token = await RunSingleDeviceCodeAsync(cancellationToken);
+            if (token is not null)
+            {
+                return token;
+            }
+
+            logger.LogWarning("The GitHub sign-in code expired before it was entered. Requesting a new code...");
+        }
+
+        throw new TimeoutException("GitHub Copilot sign-in timed out. Restart the app to try again.");
+    }
+
+    /// <summary>Requests one device code and polls it. Returns the token, or null if the code expired.</summary>
+    private async Task<string?> RunSingleDeviceCodeAsync(CancellationToken cancellationToken)
+    {
         var http = httpFactory.CreateClient("github-auth");
 
         using var codeResponse = await http.PostAsync(
@@ -163,12 +186,16 @@ public sealed class CopilotTokenProvider(
                 case "slow_down":
                     interval += TimeSpan.FromSeconds(5);
                     break;
+                case "expired_token":
+                    return null; // request a fresh code
+                case "access_denied":
+                    throw new InvalidOperationException("GitHub Copilot sign-in was denied.");
                 default:
                     throw new InvalidOperationException($"Device-flow login failed: {poll.Error}.");
             }
         }
 
-        throw new TimeoutException("GitHub Copilot sign-in timed out. Please restart and try again.");
+        return null; // expired locally; request a fresh code
     }
 
     private async Task<(string Token, DateTimeOffset Expiry)> ExchangeForCopilotTokenAsync(
