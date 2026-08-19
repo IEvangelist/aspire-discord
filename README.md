@@ -102,8 +102,10 @@ No API keys or endpoints are required for the `copilot` provider.
 3. Under **Privileged Gateway Intents**, enable **Message Content Intent** (required only if you
    want the bot to answer `@mentions`; the `/ask` slash command works without it).
 4. Under **OAuth2 → URL Generator**, select scopes **`bot`** and **`applications.commands`**,
-   grant the **Send Messages** and **Use Slash Commands** permissions, then open the generated
-   URL to invite the bot to your server.
+   grant the **Send Messages**, **Embed Links**, and **Use Slash Commands** permissions (add
+   **Read Message History** too if you'll use `@mention` replies), then open the generated URL to
+   invite the bot to your server. **Embed Links is required** — the bot always answers with a rich
+   embed, so without it replies silently fail.
 5. (Optional but recommended for development) Copy your server's **Guild ID** (enable Developer
    Mode in Discord, right-click the server → *Copy Server ID*) and set it as `Discord:GuildId`
    so the `/ask` command registers instantly instead of waiting up to an hour for global
