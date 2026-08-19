@@ -42,14 +42,27 @@ public sealed class AiOptions
     /// </summary>
     public int EmbeddingDimensions { get; set; } = 1536;
 
-    /// <summary>API version query string used by Azure providers.</summary>
+    /// <summary>API version query string used by Azure providers for the embeddings endpoint.</summary>
     public string ApiVersion { get; set; } = "2024-10-21";
 
-    /// <summary>Low temperature keeps answers grounded and deterministic.</summary>
+    /// <summary>
+    /// Sampling temperature for the <c>ollama</c> chat/completions path only. Ignored on the
+    /// Responses API path (GPT-5-class reasoning models accept only the default temperature).
+    /// </summary>
     public double Temperature { get; set; } = 0.1;
 
-    /// <summary>Maximum tokens for the generated answer.</summary>
-    public int MaxOutputTokens { get; set; } = 800;
+    /// <summary>
+    /// Reasoning effort for GPT-5-class models on the Responses API: <c>low</c>, <c>medium</c>, or
+    /// <c>high</c>. <c>low</c> keeps a docs Q&amp;A bot fast and cheap. Leave empty for non-reasoning
+    /// models (e.g. <c>gpt-4o</c>), which reject the reasoning parameter.
+    /// </summary>
+    public string ReasoningEffort { get; set; } = "low";
+
+    /// <summary>
+    /// Maximum tokens for the generated answer. On the Responses API this budget also covers the
+    /// model's internal reasoning tokens, so keep it generous to avoid truncated answers.
+    /// </summary>
+    public int MaxOutputTokens { get; set; } = 2000;
 
     /// <summary>Settings for the <c>copilot</c> provider (inherits your GitHub Copilot access).</summary>
     public CopilotOptions Copilot { get; set; } = new();

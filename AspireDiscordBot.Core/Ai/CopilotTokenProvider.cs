@@ -243,12 +243,24 @@ public sealed class CopilotTokenProvider(
         request.Headers.TryAddWithoutValidation("Authorization", $"token {oauthToken}");
 
         using var response = await http.SendAsync(request, cancellationToken);
-        if (response.StatusCode is System.Net.HttpStatusCode.Unauthorized or System.Net.HttpStatusCode.Forbidden)
+
+        // Only a 401 unambiguously means the cached OAuth token is bad — clear it so the next run
+        // re-signs-in. A 403 is often transient (rate limiting, abuse detection, a missing header)
+        // and must NOT destroy a working sign-in; surface it and let the caller retry.
+        if (response.StatusCode is System.Net.HttpStatusCode.Unauthorized)
         {
-            // The cached OAuth token is stale or lacks Copilot access — force a fresh login next time.
             DeleteCachedOAuthToken();
             throw new InvalidOperationException(
-                "The cached GitHub token was rejected by Copilot. It has been cleared; rerun to sign in again.");
+                "The cached GitHub token was rejected by Copilot (401). It has been cleared; rerun to sign in again.");
+        }
+
+        if (response.StatusCode is System.Net.HttpStatusCode.Forbidden)
+        {
+            var detail = await SafeReadBodyAsync(response, cancellationToken);
+            throw new InvalidOperationException(
+                "GitHub Copilot token exchange was forbidden (403). This is usually transient " +
+                "(rate limiting or a missing request header) and your sign-in has been kept. " +
+                $"Retry shortly. Server said: {detail}");
         }
 
         response.EnsureSuccessStatusCode();
@@ -262,6 +274,19 @@ public sealed class CopilotTokenProvider(
 
         var expiry = DateTimeOffset.FromUnixTimeSeconds(payload.ExpiresAt);
         return (payload.Token, expiry);
+    }
+
+    private static async Task<string> SafeReadBodyAsync(HttpResponseMessage response, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var body = await response.Content.ReadAsStringAsync(cancellationToken);
+            return string.IsNullOrWhiteSpace(body) ? "(empty)" : body.Trim();
+        }
+        catch
+        {
+            return "(unavailable)";
+        }
     }
 
     private string CachePath

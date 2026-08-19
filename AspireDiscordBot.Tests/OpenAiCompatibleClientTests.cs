@@ -9,8 +9,8 @@ namespace AspireDiscordBot.Tests;
 
 /// <summary>
 /// Exercises <see cref="OpenAiCompatibleClient"/> over a real HTTP round-trip using a local
-/// stub that speaks the OpenAI chat/embeddings wire format. Verifies URL construction, the
-/// auth header, and request/response (de)serialization without needing a real provider.
+/// stub. Verifies URL construction (Responses API for chat, chat/completions for Ollama),
+/// the auth header, and request/response (de)serialization without needing a real provider.
 /// </summary>
 public sealed class OpenAiCompatibleClientTests : IDisposable
 {
@@ -42,32 +42,34 @@ public sealed class OpenAiCompatibleClientTests : IDisposable
     }
 
     [Fact]
-    public async Task Complete_ParsesAssistantMessage()
+    public async Task Complete_UsesResponsesApi_AndAggregatesOutputText()
     {
         var client = CreateClient("openai");
 
         var reply = await client.CompleteAsync([AiChatMessage.System("s"), AiChatMessage.User("hi")]);
 
         Assert.Equal("stub answer", reply);
-        var chatRequest = _requests.Single(r => r.Path.Contains("chat/completions"));
-        Assert.Contains("\"messages\"", chatRequest.Body);
+        var chatRequest = _requests.Single(r => r.Path.Contains("/responses"));
+        Assert.Contains("/v1/responses", chatRequest.Path);
+        Assert.Contains("\"input\"", chatRequest.Body);
     }
 
     [Fact]
-    public async Task AzureOpenAi_BuildsDeploymentUrl_AndApiKeyHeader()
+    public async Task AzureOpenAi_UsesV1ResponsesUrl_AndApiKeyHeader()
     {
         var client = CreateClient("azureopenai");
 
         await client.CompleteAsync([AiChatMessage.User("hi")]);
 
-        var request = _requests.Single(r => r.Path.Contains("chat/completions"));
-        Assert.Contains("/openai/deployments/gpt-4o-mini/chat/completions", request.Path);
-        Assert.Contains("api-version=", request.Path);
+        var request = _requests.Single(r => r.Path.Contains("/responses"));
+        Assert.Contains("/openai/v1/responses", request.Path);
+        Assert.DoesNotContain("/deployments/", request.Path); // v1 surface: model in body, not URL
+        Assert.Contains("\"model\":\"gpt-4o-mini\"", request.Body);
         Assert.Equal("test-key", request.Auth); // api-key header, not Bearer
     }
 
     [Fact]
-    public async Task Ollama_UsesV1Path_AndSendsNoAuthWhenKeyEmpty()
+    public async Task Ollama_UsesChatCompletions_AndSendsNoAuthWhenKeyEmpty()
     {
         var client = CreateClient("ollama", apiKey: "");
 
@@ -115,9 +117,21 @@ public sealed class OpenAiCompatibleClientTests : IDisposable
             var body = await reader.ReadToEndAsync();
             _requests.Add((path, auth, body));
 
-            var json = path.Contains("embeddings")
-                ? """{"data":[{"index":0,"embedding":[0.1,0.2,0.3,0.4]},{"index":1,"embedding":[0.5,0.6,0.7,0.8]}]}"""
-                : """{"choices":[{"message":{"content":"stub answer"}}]}""";
+            string json;
+            if (path.Contains("embeddings"))
+            {
+                json = """{"data":[{"index":0,"embedding":[0.1,0.2,0.3,0.4]},{"index":1,"embedding":[0.5,0.6,0.7,0.8]}]}""";
+            }
+            else if (path.Contains("/responses"))
+            {
+                // Mirrors the real Responses shape: output_text is null and the text must be
+                // aggregated from the message item, skipping the leading reasoning item.
+                json = """{"output_text":null,"output":[{"type":"reasoning","content":[]},{"type":"message","content":[{"type":"output_text","text":"stub answer"}]}]}""";
+            }
+            else
+            {
+                json = """{"choices":[{"message":{"content":"stub answer"}}]}""";
+            }
 
             var bytes = Encoding.UTF8.GetBytes(json);
             context.Response.ContentType = "application/json";

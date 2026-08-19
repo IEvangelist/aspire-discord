@@ -240,6 +240,14 @@ Set `Ai:Provider` to one of:
 `Ai:EmbeddingProvider` optionally overrides the provider for embeddings only (chat keeps
 `Ai:Provider`). Useful if your Copilot account lacks embeddings — point embeddings at Azure OpenAI.
 
+> **Modern APIs only.** Chat uses the **Responses API** (`/responses`) — the current surface that
+> serves GPT-5-class models like `gpt-5.6-sol` — for Copilot, Azure OpenAI, Azure AI Foundry, and
+> OpenAI. (Ollama has no Responses API, so it uses its native chat/completions.) For reasoning
+> models, `Ai:ReasoningEffort` (`low`/`medium`/`high`, default `low`) controls answer depth vs.
+> speed/cost, `Ai:Temperature` is ignored (reasoning models allow only the default), and
+> `Ai:MaxOutputTokens` must be generous because it also covers the model's internal reasoning
+> tokens. Set `Ai:ReasoningEffort` to empty for non-reasoning models (e.g. `gpt-4o`).
+
 > **Embedding dimensions must match the model.** `text-embedding-3-small` = 1536, Ollama's
 > `nomic-embed-text` = 768, `mxbai-embed-large` = 1024. Set `Ai:EmbeddingDimensions` accordingly.
 > Changing it requires a **Force rebuild** of the Qdrant index (the vector size is fixed at
