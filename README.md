@@ -308,6 +308,6 @@ dotnet test
 ## Package feeds
 
 `nuget.config` pins the two internal feeds that are reachable in this environment and mirror
-everything the solution needs (Aspire `13.4.6`, Discord.Net `3.20.1`, the .NET runtime and
+everything the solution needs (Aspire `13.5.0`, Discord.Net `3.20.1`, the .NET runtime and
 `Microsoft.Extensions.*` packages). If you build elsewhere, adjust the feeds to include
 `nuget.org`.

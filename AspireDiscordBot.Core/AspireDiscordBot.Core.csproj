@@ -8,7 +8,7 @@
 
   <ItemGroup>
     <!-- Qdrant vector DB client (gRPC) + Aspire client integration (AddQdrantClient) -->
-    <PackageReference Include="Aspire.Qdrant.Client" Version="13.4.6" />
+    <PackageReference Include="Aspire.Qdrant.Client" Version="13.5.0" />
     <!-- Typed HttpClient for the OpenAI-compatible chat/embeddings provider -->
     <PackageReference Include="Microsoft.Extensions.Http" Version="10.0.11" />
     <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" Version="10.0.11" />
