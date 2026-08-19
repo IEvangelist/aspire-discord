@@ -5,7 +5,6 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
-#pragma warning disable ASPIREINTERACTION001 // Interaction service APIs are experimental.
 
 var builder = DistributedApplication.CreateBuilder(args);
 
@@ -102,13 +101,24 @@ var ingestion = builder.AddProject<Projects.AspireDiscordBot_Ingestion>("ingesti
             ConfirmationMessage = "This drops the current index and re-embeds every page. Continue?",
             IsHighlighted = false,
         })
+    .WithUrlForEndpoint("http", _ => new ResourceUrlAnnotation
+    {
+        Url = "/scalar",
+        DisplayText = "API Reference (Scalar)",
+    })
     .WithAiEnvironment(ai);
 
 // --- Discord bot: answers questions grounded in the ingested docs ---
 var bot = builder.AddProject<Projects.AspireDiscordBot_Bot>("bot")
+    .WithHttpEndpoint()
     .WithReference(qdrant)
     .WaitFor(qdrant)
     .WithEnvironment("Discord__Token", discordToken)
+    .WithUrlForEndpoint("http", _ => new ResourceUrlAnnotation
+    {
+        Url = "/scalar",
+        DisplayText = "API Reference (Scalar)",
+    })
     .WithAiEnvironment(ai);
 
 if (ollama is not null)

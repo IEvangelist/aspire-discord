@@ -180,6 +180,20 @@ Ingestion doesn't watch aspire.dev for changes — it refreshes in three ways:
 > Incremental refreshes update and add pages but don't remove ones deleted from the site (their
 > chunks linger). Use **Force rebuild** for a clean prune.
 
+## API reference (OpenAPI / Scalar)
+
+Both HTTP resources publish an OpenAPI document and a [Scalar](https://scalar.com) API reference UI,
+linked from the Aspire dashboard as **API Reference (Scalar)** on each resource:
+
+- **`ingestion`** — documents the admin endpoints (`/admin/reingest`, `/admin/rebuild`,
+  `/admin/status`) that back the dashboard command buttons.
+- **`bot`** — documents `GET /status`, a live snapshot of the Discord gateway (connection state,
+  latency, guild count, whether @mention answering is on, and the signed-in bot user).
+
+For each resource the OpenAPI JSON is served at `/openapi/v1.json` and the Scalar UI at `/scalar`
+(open it from the resource's URLs in the dashboard). Health checks (`/health`, `/alive`) are also
+exposed in Development.
+
 ## Grounding & safety
 
 This bot is designed to only answer Aspire questions, from the docs, and to resist manipulation.
