@@ -1,7 +1,9 @@
+using System.Diagnostics;
 using System.Text.Json;
 using AspireDiscordBot.Core.Ai;
 using AspireDiscordBot.Core.Configuration;
 using AspireDiscordBot.Core.Safety;
+using AspireDiscordBot.Core.Telemetry;
 using AspireDiscordBot.Core.Vectors;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -44,11 +46,17 @@ public sealed class AgenticAnswerService(
     {
         question = (question ?? string.Empty).Trim();
 
+        using var activity = GenAiTelemetry.ActivitySource.StartActivity(
+            $"{GenAiTelemetry.OpInvokeAgent} aspire-docs-agent", ActivityKind.Internal);
+        activity?.SetTag(GenAiTelemetry.OperationName, GenAiTelemetry.OpInvokeAgent);
+        activity?.SetTag("gen_ai.agent.name", "aspire-docs-agent");
+
         // Layer 1: input guard.
         var verdict = safetyGuard.Evaluate(question);
         if (!verdict.IsAllowed)
         {
             logger.LogWarning("Blocked question ({Category}): {Reason}", verdict.Category, verdict.Reason);
+            activity?.SetTag("gen_ai.agent.outcome", $"blocked:{verdict.Category}");
             var message = verdict.Category is SafetyCategory.Empty or SafetyCategory.TooLong
                 ? "Please ask a clear Aspire question (up to a few sentences)."
                 : _safety.BlockedMessage;
@@ -64,6 +72,7 @@ public sealed class AgenticAnswerService(
         if (!seed.Any(r => r.Score >= minScore))
         {
             logger.LogInformation("Off-topic or uncovered question (top score {TopScore:F3}).", topScore);
+            activity?.SetTag("gen_ai.agent.outcome", "off_topic");
             return GroundedAnswer.NotFound(_safety.OffTopicMessage) with { TopScore = topScore };
         }
 
@@ -84,6 +93,7 @@ public sealed class AgenticAnswerService(
         // The model signals insufficient/unrelated context with the NOT_COVERED sentinel.
         if (string.IsNullOrWhiteSpace(answer) || answer.Contains("NOT_COVERED", StringComparison.OrdinalIgnoreCase))
         {
+            activity?.SetTag("gen_ai.agent.outcome", "not_covered");
             return GroundedAnswer.NotFound(PromptBuilder.NotCoveredMessage) with { TopScore = topScore };
         }
 
@@ -91,14 +101,18 @@ public sealed class AgenticAnswerService(
         if (!AnswerValidator.IsSafe(answer))
         {
             logger.LogWarning("Suppressed a model answer that failed output validation.");
+            activity?.SetTag("gen_ai.agent.outcome", "output_blocked");
             return GroundedAnswer.NotFound(_safety.BlockedMessage) with { TopScore = topScore };
         }
 
+        var citations = registry.CitedBy(answer);
+        activity?.SetTag("gen_ai.agent.outcome", "answered");
+        activity?.SetTag("gen_ai.agent.citation_count", citations.Count);
         return new GroundedAnswer
         {
             IsGrounded = true,
             Answer = answer,
-            Citations = registry.CitedBy(answer),
+            Citations = citations,
             TopScore = topScore,
         };
     }
@@ -160,15 +174,19 @@ public sealed class AgenticAnswerService(
             return "The 'query' argument was missing or empty.";
         }
 
+        using var activity = GenAiTelemetry.StartToolExecution(SearchToolName, call.CallId);
+        activity?.SetTag("gen_ai.tool.query", query);
         try
         {
             var vector = await embeddingModel.EmbedAsync(query, cancellationToken);
             var results = await vectorStore.SearchAsync(vector, _agent.SearchResultsPerCall, cancellationToken);
+            activity?.SetTag("gen_ai.tool.result_count", results.Count);
             logger.LogInformation("Agent search_docs(\"{Query}\") -> {Count} results.", query, results.Count);
             return registry.FormatResults(results);
         }
         catch (Exception ex)
         {
+            GenAiTelemetry.RecordError(activity, ex);
             logger.LogWarning(ex, "search_docs tool failed for query '{Query}'.", query);
             return "The search failed; try a different query or answer with what you have.";
         }

@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text;
@@ -5,6 +6,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using AspireDiscordBot.Core.Configuration;
+using AspireDiscordBot.Core.Telemetry;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -110,27 +112,46 @@ public sealed class OpenAiCompatibleClient(
         }
 
         var http = httpFactory.CreateClient("ai");
-        using var request = await CreateRequestAsync(provider, HttpMethod.Post, BuildResponsesUrl(provider), body, cancellationToken);
-        using var response = await http.SendAsync(request, cancellationToken);
-        await EnsureSuccessAsync(response, cancellationToken);
-
-        var payload = await response.Content.ReadFromJsonAsync<ResponsesResponse>(SerializerOptions, cancellationToken)
-                      ?? throw new InvalidOperationException("Responses body was empty.");
-
-        var calls = new List<ToolCall>();
-        foreach (var item in payload.Output ?? [])
+        using var activity = GenAiTelemetry.StartOperation(GenAiTelemetry.OpChat, provider, _options.ChatModel);
+        SetRequestTags(activity);
+        var start = Stopwatch.GetTimestamp();
+        string? errorType = null;
+        try
         {
-            if (string.Equals(item.Type, "function_call", StringComparison.Ordinal)
-                && item.CallId is { Length: > 0 } callId
-                && item.Name is { Length: > 0 } name)
+            using var request = await CreateRequestAsync(provider, HttpMethod.Post, BuildResponsesUrl(provider), body, cancellationToken);
+            using var response = await http.SendAsync(request, cancellationToken);
+            await EnsureSuccessAsync(response, cancellationToken);
+
+            var payload = await response.Content.ReadFromJsonAsync<ResponsesResponse>(SerializerOptions, cancellationToken)
+                          ?? throw new InvalidOperationException("Responses body was empty.");
+            RecordResponsesUsage(activity, GenAiTelemetry.OpChat, provider, payload);
+
+            var calls = new List<ToolCall>();
+            foreach (var item in payload.Output ?? [])
             {
-                calls.Add(new ToolCall(callId, name, item.Arguments ?? "{}"));
+                if (string.Equals(item.Type, "function_call", StringComparison.Ordinal)
+                    && item.CallId is { Length: > 0 } callId
+                    && item.Name is { Length: > 0 } name)
+                {
+                    calls.Add(new ToolCall(callId, name, item.Arguments ?? "{}"));
+                }
             }
+
+            activity?.SetTag("gen_ai.response.tool_calls", calls.Count);
+            return new AgentTurn(ExtractOutputText(payload).Trim(), calls);
         }
-
-        return new AgentTurn(ExtractOutputText(payload).Trim(), calls);
+        catch (Exception ex)
+        {
+            errorType = ex.GetType().FullName;
+            GenAiTelemetry.RecordError(activity, ex);
+            throw;
+        }
+        finally
+        {
+            GenAiTelemetry.RecordDuration(GenAiTelemetry.OpChat, provider, _options.ChatModel,
+                Stopwatch.GetElapsedTime(start).TotalSeconds, errorType);
+        }
     }
-
 
     private async Task<string> CompleteViaResponsesAsync(
         string provider, IReadOnlyList<AiChatMessage> messages, CancellationToken cancellationToken)
@@ -148,14 +169,33 @@ public sealed class OpenAiCompatibleClient(
                 : new ResponsesReasoning { Effort = _options.ReasoningEffort },
         };
 
-        var http = httpFactory.CreateClient("ai");
-        using var request = await CreateRequestAsync(provider, HttpMethod.Post, url, body, cancellationToken);
-        using var response = await http.SendAsync(request, cancellationToken);
-        await EnsureSuccessAsync(response, cancellationToken);
+        using var activity = GenAiTelemetry.StartOperation(GenAiTelemetry.OpChat, provider, _options.ChatModel);
+        SetRequestTags(activity);
+        var start = Stopwatch.GetTimestamp();
+        string? errorType = null;
+        try
+        {
+            var http = httpFactory.CreateClient("ai");
+            using var request = await CreateRequestAsync(provider, HttpMethod.Post, url, body, cancellationToken);
+            using var response = await http.SendAsync(request, cancellationToken);
+            await EnsureSuccessAsync(response, cancellationToken);
 
-        var payload = await response.Content.ReadFromJsonAsync<ResponsesResponse>(SerializerOptions, cancellationToken)
-                      ?? throw new InvalidOperationException("Responses body was empty.");
-        return ExtractOutputText(payload).Trim();
+            var payload = await response.Content.ReadFromJsonAsync<ResponsesResponse>(SerializerOptions, cancellationToken)
+                          ?? throw new InvalidOperationException("Responses body was empty.");
+            RecordResponsesUsage(activity, GenAiTelemetry.OpChat, provider, payload);
+            return ExtractOutputText(payload).Trim();
+        }
+        catch (Exception ex)
+        {
+            errorType = ex.GetType().FullName;
+            GenAiTelemetry.RecordError(activity, ex);
+            throw;
+        }
+        finally
+        {
+            GenAiTelemetry.RecordDuration(GenAiTelemetry.OpChat, provider, _options.ChatModel,
+                Stopwatch.GetElapsedTime(start).TotalSeconds, errorType);
+        }
     }
 
     private async Task<string> CompleteViaChatCompletionsAsync(
@@ -234,18 +274,67 @@ public sealed class OpenAiCompatibleClient(
         };
 
         var http = httpFactory.CreateClient("ai");
-        using var request = await CreateRequestAsync(provider, HttpMethod.Post, url, body, cancellationToken);
-        using var response = await http.SendAsync(request, cancellationToken);
-        await EnsureSuccessAsync(response, cancellationToken);
+        using var activity = GenAiTelemetry.StartOperation(GenAiTelemetry.OpEmbeddings, provider, _options.EmbeddingModel);
+        activity?.SetTag("gen_ai.request.input_count", inputs.Count);
+        var start = Stopwatch.GetTimestamp();
+        string? errorType = null;
+        try
+        {
+            using var request = await CreateRequestAsync(provider, HttpMethod.Post, url, body, cancellationToken);
+            using var response = await http.SendAsync(request, cancellationToken);
+            await EnsureSuccessAsync(response, cancellationToken);
 
-        var payload = await response.Content.ReadFromJsonAsync<EmbeddingResponse>(SerializerOptions, cancellationToken)
-                      ?? throw new InvalidOperationException("Embedding response body was empty.");
+            var payload = await response.Content.ReadFromJsonAsync<EmbeddingResponse>(SerializerOptions, cancellationToken)
+                          ?? throw new InvalidOperationException("Embedding response body was empty.");
 
-        // Preserve request order using the returned index.
-        return payload.Data
-            .OrderBy(d => d.Index)
-            .Select(d => d.Embedding)
-            .ToList();
+            if (payload.Usage?.PromptTokens is { } promptTokens)
+            {
+                GenAiTelemetry.RecordUsage(activity, GenAiTelemetry.OpEmbeddings, provider,
+                    _options.EmbeddingModel, promptTokens, null);
+            }
+
+            // Preserve request order using the returned index.
+            return payload.Data
+                .OrderBy(d => d.Index)
+                .Select(d => d.Embedding)
+                .ToList();
+        }
+        catch (Exception ex)
+        {
+            errorType = ex.GetType().FullName;
+            GenAiTelemetry.RecordError(activity, ex);
+            throw;
+        }
+        finally
+        {
+            GenAiTelemetry.RecordDuration(GenAiTelemetry.OpEmbeddings, provider, _options.EmbeddingModel,
+                Stopwatch.GetElapsedTime(start).TotalSeconds, errorType);
+        }
+    }
+
+    /// <summary>Sets request-parameter tags on a chat span (max tokens, reasoning level).</summary>
+    private void SetRequestTags(Activity? activity)
+    {
+        if (activity is null)
+        {
+            return;
+        }
+
+        activity.SetTag(GenAiTelemetry.RequestMaxTokens, _options.MaxOutputTokens);
+        if (!string.IsNullOrWhiteSpace(_options.ReasoningEffort))
+        {
+            activity.SetTag(GenAiTelemetry.RequestReasoningLevel, _options.ReasoningEffort);
+        }
+    }
+
+    /// <summary>Records token usage + response metadata from a Responses payload on the span/metrics.</summary>
+    private void RecordResponsesUsage(Activity? activity, string operation, string provider, ResponsesResponse payload)
+    {
+        var finish = payload.Status;
+        GenAiTelemetry.RecordUsage(
+            activity, operation, provider, _options.ChatModel,
+            payload.Usage?.InputTokens, payload.Usage?.OutputTokens,
+            payload.Model, payload.Id, finish);
     }
 
     // Azure OpenAI puts the model in the URL (deployment) for embeddings; others put it in the body.
@@ -383,8 +472,19 @@ public sealed class OpenAiCompatibleClient(
 
     private sealed class ResponsesResponse
     {
+        [JsonPropertyName("id")] public string? Id { get; set; }
+        [JsonPropertyName("model")] public string? Model { get; set; }
+        [JsonPropertyName("status")] public string? Status { get; set; }
         [JsonPropertyName("output_text")] public string? OutputText { get; set; }
         [JsonPropertyName("output")] public List<ResponsesOutputItem>? Output { get; set; }
+        [JsonPropertyName("usage")] public ResponsesUsage? Usage { get; set; }
+    }
+
+    private sealed class ResponsesUsage
+    {
+        [JsonPropertyName("input_tokens")] public int? InputTokens { get; set; }
+        [JsonPropertyName("output_tokens")] public int? OutputTokens { get; set; }
+        [JsonPropertyName("total_tokens")] public int? TotalTokens { get; set; }
     }
 
     private sealed class ResponsesOutputItem
@@ -411,6 +511,13 @@ public sealed class OpenAiCompatibleClient(
     private sealed class EmbeddingResponse
     {
         [JsonPropertyName("data")] public List<EmbeddingData> Data { get; set; } = [];
+        [JsonPropertyName("usage")] public EmbeddingUsage? Usage { get; set; }
+    }
+
+    private sealed class EmbeddingUsage
+    {
+        [JsonPropertyName("prompt_tokens")] public int? PromptTokens { get; set; }
+        [JsonPropertyName("total_tokens")] public int? TotalTokens { get; set; }
     }
 
     private sealed class EmbeddingData

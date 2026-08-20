@@ -186,6 +186,27 @@ dotnet user-secrets set "Discord:AllowedUserIds:0" "YOUR_DISCORD_USER_ID"
 
 Leave `AllowedUserIds` empty to reopen the bot to everyone.
 
+## How answers work (agentic RAG)
+
+The bot doesn't do a single retrieve-then-answer pass. With `Agent:Mode = agentic` (default), it runs
+a **tool-calling research loop**: the model plans, calls a `search_docs` tool with focused queries
+(several times for multi-part questions), reads the results, searches again where the material is
+thin, then synthesizes a grounded, cited answer. This produces markedly deeper answers than
+one-shot RAG. Set `Agent:Mode = single` for the classic one-shot pipeline; agentic automatically
+falls back to single when the provider can't do tool calling (e.g. Ollama). Tunables live under the
+`Agent` section (`MaxIterations`, `MaxToolCalls`, `SearchResultsPerCall`).
+
+### GenAI telemetry in the dashboard
+
+All AI and retrieval operations are instrumented with OpenTelemetry following the
+[GenAI semantic conventions](https://opentelemetry.io/docs/specs/semconv/gen-ai/), so they light up
+the Aspire dashboard's [GenAI telemetry visualization](https://aspire.dev/dashboard/explore/#genai-telemetry-visualization).
+Each chat, embeddings, tool-execution, and end-to-end agent operation emits a `gen_ai.*` span
+(named e.g. `chat gpt-5.6-sol`, `embeddings text-embedding-3-small`, `execute_tool search_docs`,
+`invoke_agent aspire-docs-agent`) with model, provider, and token-usage attributes, plus the
+`gen_ai.client.token.usage` and `gen_ai.client.operation.duration` metrics. Open a resource's
+**Traces** to see the full agent research tree, or **Metrics** for token/latency charts.
+
 ## Keeping the index fresh
 
 Ingestion doesn't watch aspire.dev for changes — it refreshes in three ways:

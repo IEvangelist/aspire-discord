@@ -56,11 +56,15 @@ public static class Extensions
             {
                 metrics.AddAspNetCoreInstrumentation()
                     .AddHttpClientInstrumentation()
-                    .AddRuntimeInstrumentation();
+                    .AddRuntimeInstrumentation()
+                    // GenAI metrics (token usage, operation duration) for the dashboard.
+                    .AddMeter("AspireDiscordBot.GenAI");
             })
             .WithTracing(tracing =>
             {
                 tracing.AddSource(builder.Environment.ApplicationName)
+                    // GenAI spans (chat, embeddings, tool calls, agent) for the dashboard visualization.
+                    .AddSource("AspireDiscordBot.GenAI")
                     .AddAspNetCoreInstrumentation(tracing =>
                         // Exclude health check requests from tracing
                         tracing.Filter = context =>
