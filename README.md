@@ -168,6 +168,24 @@ same applies when you `@mention` the bot in a thread with no question. This need
 [Create the Discord bot](#create-the-discord-bot)); without them the bot can't read the OP's post
 and will ask you to include a question.
 
+### Restricting the bot to specific users
+
+By default the bot answers everyone. To lock it to yourself (or a small group) while testing, set
+`Discord:AllowedUserIds` to one or more Discord user IDs. When the list is non-empty, only those
+users get answers — `/ask` from anyone else is **privately declined** (an ephemeral reply only they
+see) and mentions from others are ignored.
+
+Get your user ID in Discord: **Settings → Advanced → Developer Mode**, then right-click your name →
+**Copy User ID**. Then set it (not a secret, but user-secrets keeps it out of source control):
+
+```bash
+cd AspireDiscordBot.Bot
+dotnet user-secrets set "Discord:AllowedUserIds:0" "YOUR_DISCORD_USER_ID"
+# add more with :1, :2, … or edit appsettings.json's "AllowedUserIds": ["id1", "id2"]
+```
+
+Leave `AllowedUserIds` empty to reopen the bot to everyone.
+
 ## Keeping the index fresh
 
 Ingestion doesn't watch aspire.dev for changes — it refreshes in three ways:

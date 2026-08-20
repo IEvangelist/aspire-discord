@@ -54,6 +54,13 @@ public sealed class DiscordBotService(
             await client.StartAsync();
             logger.LogInformation("Discord bot starting (mentions {MentionState}).",
                 _options.MentionEnabled ? "enabled" : "disabled");
+
+            if (_options.AllowedUserIds.Length > 0)
+            {
+                logger.LogInformation(
+                    "Access is restricted to {Count} allow-listed user id(s); everyone else is declined.",
+                    _options.AllowedUserIds.Length);
+            }
         }
         catch (Exception ex)
         {
@@ -188,6 +195,14 @@ public sealed class DiscordBotService(
             return Task.CompletedTask;
         }
 
+        if (!UserAuthorizer.IsAllowed(command.User.Id, _options.AllowedUserIds))
+        {
+            logger.LogInformation(
+                "Declined /ask from unauthorized user {User} ({UserId}).", command.User.Username, command.User.Id);
+            return command.RespondAsync(
+                "Sorry — this bot is currently restricted to specific users.", ephemeral: true);
+        }
+
         // Offload work so the gateway task is never blocked.
         _ = Task.Run(async () =>
         {
@@ -278,6 +293,12 @@ public sealed class DiscordBotService(
         var self = client.CurrentUser;
         if (self is null || !message.MentionedUsers.Any(u => u.Id == self.Id))
         {
+            return Task.CompletedTask;
+        }
+
+        if (!UserAuthorizer.IsAllowed(message.Author.Id, _options.AllowedUserIds))
+        {
+            logger.LogDebug("Ignoring mention from unauthorized user {UserId}.", message.Author.Id);
             return Task.CompletedTask;
         }
 

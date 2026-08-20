@@ -21,4 +21,13 @@ public sealed class DiscordOptions
     /// only, which needs no privileged intents.
     /// </summary>
     public bool MentionEnabled { get; set; }
+
+    /// <summary>
+    /// Optional allow-list of Discord user IDs. When empty (default) the bot answers everyone; when
+    /// it contains any ids, ONLY those users get answers — slash commands from others are politely
+    /// declined (privately), and mentions from others are ignored. Use this to lock the bot to
+    /// yourself while testing. Get your id in Discord: enable Settings → Advanced → Developer Mode,
+    /// then right-click your name → Copy User ID.
+    /// </summary>
+    public ulong[] AllowedUserIds { get; set; } = [];
 }
