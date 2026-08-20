@@ -62,4 +62,18 @@ public class CitationRegistryTests
         var cited = reg.CitedBy("An answer with no bracketed citations.");
         Assert.Equal(2, cited.Count);
     }
+
+    [Fact]
+    public void FormatEntry_RegistersExternalSource_AndNumbersConsistently()
+    {
+        var reg = new CitationRegistry();
+        reg.FormatResults([Result("Doc A", "https://a")]); // [1]
+        var entry = reg.FormatEntry("#123: exec feature (issue)", "https://gh/123", "microsoft/aspire", "maintainer says X");
+
+        Assert.StartsWith("[2] #123: exec feature (issue) (https://gh/123)", entry);
+        Assert.Contains("maintainer says X", entry);
+        // Re-registering the same URL keeps its number.
+        Assert.StartsWith("[2]", reg.FormatEntry("#123: exec feature (issue)", "https://gh/123", "microsoft/aspire", "again"));
+        Assert.Equal(2, reg.All.Count);
+    }
 }

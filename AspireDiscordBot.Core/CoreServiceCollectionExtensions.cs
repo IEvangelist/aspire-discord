@@ -32,6 +32,7 @@ public static class CoreServiceCollectionExtensions
         services.Configure<SafetyOptions>(configuration.GetSection(SafetyOptions.SectionName));
         services.Configure<AgentOptions>(configuration.GetSection(AgentOptions.SectionName));
         services.Configure<ApiSurfaceOptions>(configuration.GetSection(ApiSurfaceOptions.SectionName));
+        services.Configure<LiveSearchOptions>(configuration.GetSection(LiveSearchOptions.SectionName));
 
         // Default the ingestion sources to the catalog when none are configured.
         services.PostConfigure<IngestionOptions>(options =>
@@ -76,6 +77,14 @@ public static class CoreServiceCollectionExtensions
         services.AddSingleton<LocalDocSourceReader>();
         services.AddSingleton<AspireDocUrlIndex>();
         services.AddSingleton<AspireCliDocSourceReader>();
+
+        // Live GitHub search (code + issues) over microsoft/aspire.
+        services.AddHttpClient("github-search", http =>
+        {
+            http.Timeout = TimeSpan.FromSeconds(30);
+            http.DefaultRequestHeaders.UserAgent.ParseAdd("aspire-discord-bot/1.0");
+        });
+        services.AddSingleton<GitHubLiveSearch>();
 
         // Select the reader implementation based on the configured source mode.
         services.AddSingleton<IDocSourceReader>(sp =>

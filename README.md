@@ -198,7 +198,7 @@ falls back to single when the provider can't do tool calling (e.g. Ollama). Tuna
 
 ### Multiple sources of truth: docs + API surface
 
-The agent grounds answers in more than prose docs. Two retrieval tools back the research loop:
+The agent grounds answers in more than prose docs. Several retrieval tools back the research loop:
 
 - **`search_docs`** — the official documentation (aspire.dev + microsoft/aspire docs), always on.
 - **`search_api`** — the **microsoft/aspire public API surface**: real C# types, method signatures,
@@ -208,16 +208,27 @@ The agent grounds answers in more than prose docs. Two retrieval tools back the 
   It's enabled by pointing `ApiSurface:LocalSrcPath` at a clone of `microsoft/aspire`'s `src`
   directory; when set, the surface is ingested into a separate `aspire_api` Qdrant collection and
   the `search_api` tool is offered to the agent. Leave it unset to disable.
+- **`search_code`** and **`search_issues`** — live GitHub search over `microsoft/aspire`. Code search
+  finds implementations on the latest branch; issue/PR search (with maintainer comments) surfaces
+  design intent, workarounds, known limitations, and roadmap discussion that never reaches the docs
+  (e.g. an open issue proposing a container-exec API). Issue content is treated as **community /
+  maintainer guidance**, not authoritative docs. Enabled via `LiveSearch` when a GitHub token is
+  available (from `LiveSearch:GitHubToken` or the `GITHUB_TOKEN` env var); the Search API requires a
+  token.
 
 ```bash
 # Enable API-surface search (set on both the bot and ingestion services)
 cd AspireDiscordBot.Bot        # and repeat in AspireDiscordBot.Ingestion
 dotnet user-secrets set "ApiSurface:LocalSrcPath" "D:\path\to\microsoft-aspire\src"
+
+# Enable live GitHub code + issue search (bot only needs it; token gates it)
+dotnet user-secrets set "LiveSearch:GitHubToken" "ghp_yourtoken"   # or set GITHUB_TOKEN
 ```
 
 `ApiSurface` tunables: `CollectionName` (default `aspire_api`), `IncludeProjectPrefixes` (default
 `["Aspire.Hosting"]` — covers hosting + integrations; empty means everything under `src`),
-`CitationRepo`/`CitationBranch` for the GitHub source links.
+`CitationRepo`/`CitationBranch` for the GitHub source links. `LiveSearch` tunables: `Repo`
+(default `microsoft/aspire`), `MaxResults`, `MaintainerCommentsPerIssue`.
 
 ### GenAI telemetry in the dashboard
 All AI and retrieval operations are instrumented with OpenTelemetry following the

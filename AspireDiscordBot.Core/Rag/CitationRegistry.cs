@@ -54,6 +54,17 @@ public sealed partial class CitationRegistry
     public IReadOnlyList<Citation> All => _ordered;
 
     /// <summary>
+    /// Registers a single external source (e.g. a GitHub code/issue result) and returns a numbered,
+    /// grounded block for the model, matching the shape of <see cref="FormatResults"/>.
+    /// </summary>
+    public string FormatEntry(string title, string url, string repo, string content, int maxChars = 1200)
+    {
+        var number = Register(title, url, repo);
+        var body = content.Length > maxChars ? content[..maxChars] + "…" : content;
+        return $"[{number}] {title} ({url})\n{body}";
+    }
+
+    /// <summary>
     /// The subset of sources actually referenced by <paramref name="answer"/> via [n] markers,
     /// renumbered 1..k in first-appearance order. Falls back to all sources when none are cited.
     /// </summary>
