@@ -400,14 +400,32 @@ dotnet test
 ```
 
 Pure unit tests (Markdown cleaning, chunking, source filtering/URL mapping, the safety guard,
-prompt hardening, output validation) always run. The Qdrant and end-to-end pipeline
-integration tests run only when a Qdrant endpoint is provided:
+prompt hardening, output validation, the Roslyn API-surface extractor, citation numbering, and the
+eval-scoring logic) always run. The Qdrant and end-to-end pipeline integration tests run only when a
+Qdrant endpoint is provided:
 
 ```bash
 docker run -d --name qdrant -p 6334:6334 -p 6333:6333 qdrant/qdrant
 $env:QDRANT_TEST_ENDPOINT = "http://localhost:6334"   # PowerShell
 dotnet test
 ```
+
+### Answer-quality evals
+
+A curated fixture of real questions (`EvalFixture`) pins the behaviors that matter — deep grounded
+answers for covered topics, honest refusals for off-topic questions, and resistance to prompt
+injection — so prompt/retrieval/tool changes can't silently regress quality. The scoring logic is
+unit-tested; the **live** eval runs the fixture against the real agentic pipeline and asserts a high
+pass rate. It's opt-in (skipped in normal CI). With the app's Qdrant running:
+
+```powershell
+$env:LIVE_EVAL_QDRANT  = "Endpoint=http://localhost:16665;Key=YOUR_QDRANT_KEY"
+$env:LIVE_EVAL_API_SRC = "D:\GitHub\aspire\src"          # optional: enables search_api
+$env:LIVE_EVAL_GH_TOKEN = (gh auth token)                 # optional: enables live GitHub search
+dotnet test --filter FullyQualifiedName~AnswerQualityEvalTests
+```
+
+The test prints a per-case PASS/FAIL report so any regression is easy to pinpoint.
 
 ## Package feeds
 
