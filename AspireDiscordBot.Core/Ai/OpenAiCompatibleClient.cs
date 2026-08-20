@@ -2,6 +2,7 @@ using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using AspireDiscordBot.Core.Configuration;
 using Microsoft.Extensions.Logging;
@@ -40,6 +41,96 @@ public sealed class OpenAiCompatibleClient(
             ? await CompleteViaResponsesAsync(provider, messages, cancellationToken)
             : await CompleteViaChatCompletionsAsync(provider, messages, cancellationToken);
     }
+
+    /// <summary>Whether this provider supports the tool-calling agent loop (Responses API only).</summary>
+    public bool SupportsTools => UsesResponsesApi(_options.Provider);
+
+    /// <summary>
+    /// Runs a single agent turn on the Responses API: sends the running conversation plus the tool
+    /// specs, and returns either the model's final text or the tool calls it wants executed.
+    /// </summary>
+    public async Task<AgentTurn> RunAgentTurnAsync(
+        IReadOnlyList<AgentItem> items,
+        IReadOnlyList<ToolSpec> tools,
+        CancellationToken cancellationToken = default)
+    {
+        var provider = _options.Provider;
+        if (!UsesResponsesApi(provider))
+        {
+            throw new InvalidOperationException($"Provider '{provider}' does not support tool calling.");
+        }
+
+        var input = new JsonArray();
+        foreach (var item in items)
+        {
+            input.Add(item switch
+            {
+                AgentMessage m => new JsonObject { ["role"] = m.Role, ["content"] = m.Content },
+                AgentToolCall c => new JsonObject
+                {
+                    ["type"] = "function_call",
+                    ["call_id"] = c.CallId,
+                    ["name"] = c.Name,
+                    ["arguments"] = c.ArgumentsJson,
+                },
+                AgentToolOutput o => new JsonObject
+                {
+                    ["type"] = "function_call_output",
+                    ["call_id"] = o.CallId,
+                    ["output"] = o.Output,
+                },
+                _ => throw new InvalidOperationException($"Unknown agent item {item.GetType().Name}."),
+            });
+        }
+
+        var toolArray = new JsonArray();
+        foreach (var t in tools)
+        {
+            toolArray.Add(new JsonObject
+            {
+                ["type"] = "function",
+                ["name"] = t.Name,
+                ["description"] = t.Description,
+                ["parameters"] = JsonNode.Parse(t.ParametersJsonSchema),
+            });
+        }
+
+        var body = new JsonObject
+        {
+            ["model"] = _options.ChatModel,
+            ["input"] = input,
+            ["tools"] = toolArray,
+            ["tool_choice"] = "auto",
+            ["parallel_tool_calls"] = true,
+            ["max_output_tokens"] = _options.MaxOutputTokens,
+        };
+        if (!string.IsNullOrWhiteSpace(_options.ReasoningEffort))
+        {
+            body["reasoning"] = new JsonObject { ["effort"] = _options.ReasoningEffort };
+        }
+
+        var http = httpFactory.CreateClient("ai");
+        using var request = await CreateRequestAsync(provider, HttpMethod.Post, BuildResponsesUrl(provider), body, cancellationToken);
+        using var response = await http.SendAsync(request, cancellationToken);
+        await EnsureSuccessAsync(response, cancellationToken);
+
+        var payload = await response.Content.ReadFromJsonAsync<ResponsesResponse>(SerializerOptions, cancellationToken)
+                      ?? throw new InvalidOperationException("Responses body was empty.");
+
+        var calls = new List<ToolCall>();
+        foreach (var item in payload.Output ?? [])
+        {
+            if (string.Equals(item.Type, "function_call", StringComparison.Ordinal)
+                && item.CallId is { Length: > 0 } callId
+                && item.Name is { Length: > 0 } name)
+            {
+                calls.Add(new ToolCall(callId, name, item.Arguments ?? "{}"));
+            }
+        }
+
+        return new AgentTurn(ExtractOutputText(payload).Trim(), calls);
+    }
+
 
     private async Task<string> CompleteViaResponsesAsync(
         string provider, IReadOnlyList<AiChatMessage> messages, CancellationToken cancellationToken)
@@ -300,6 +391,9 @@ public sealed class OpenAiCompatibleClient(
     {
         [JsonPropertyName("type")] public string? Type { get; set; }
         [JsonPropertyName("content")] public List<ResponsesContentPart>? Content { get; set; }
+        [JsonPropertyName("call_id")] public string? CallId { get; set; }
+        [JsonPropertyName("name")] public string? Name { get; set; }
+        [JsonPropertyName("arguments")] public string? Arguments { get; set; }
     }
 
     private sealed class ResponsesContentPart

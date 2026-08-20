@@ -13,7 +13,7 @@ namespace AspireDiscordBot.Bot;
 /// </summary>
 public sealed class DiscordBotService(
     DiscordSocketClient client,
-    GroundedAnswerService answers,
+    IAnswerService answers,
     DiscordResponseFormatter formatter,
     ConversationContextReader contextReader,
     IOptions<DiscordOptions> options,

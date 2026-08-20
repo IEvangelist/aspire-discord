@@ -23,7 +23,7 @@ public sealed class GroundedAnswerService(
     QuestionSafetyGuard safetyGuard,
     IOptions<RetrievalOptions> retrievalOptions,
     IOptions<SafetyOptions> safetyOptions,
-    ILogger<GroundedAnswerService> logger)
+    ILogger<GroundedAnswerService> logger) : IAnswerService
 {
     private readonly RetrievalOptions _retrieval = retrievalOptions.Value;
     private readonly SafetyOptions _safety = safetyOptions.Value;

@@ -6,6 +6,7 @@ using AspireDiscordBot.Core.Safety;
 using AspireDiscordBot.Core.Vectors;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 namespace AspireDiscordBot.Core;
@@ -29,6 +30,7 @@ public static class CoreServiceCollectionExtensions
         services.Configure<RetrievalOptions>(configuration.GetSection(RetrievalOptions.SectionName));
         services.Configure<IngestionOptions>(configuration.GetSection(IngestionOptions.SectionName));
         services.Configure<SafetyOptions>(configuration.GetSection(SafetyOptions.SectionName));
+        services.Configure<AgentOptions>(configuration.GetSection(AgentOptions.SectionName));
 
         // Default the ingestion sources to the catalog when none are configured.
         services.PostConfigure<IngestionOptions>(options =>
@@ -92,6 +94,29 @@ public static class CoreServiceCollectionExtensions
         services.AddSingleton<IngestionRunner>();
         services.AddSingleton<QuestionSafetyGuard>();
         services.AddSingleton<GroundedAnswerService>();
+        services.AddSingleton<AgenticAnswerService>();
+
+        // Select the answer pipeline: agentic (tool-calling research loop, default) or single-shot.
+        // Agentic requires a tool-capable provider (Responses API); fall back to single otherwise.
+        services.AddSingleton<IAnswerService>(sp =>
+        {
+            var mode = sp.GetRequiredService<IOptions<AgentOptions>>().Value.Mode;
+            var client = sp.GetRequiredService<OpenAiCompatibleClient>();
+            var wantsAgentic = !string.Equals(mode, "single", StringComparison.OrdinalIgnoreCase);
+
+            if (wantsAgentic && client.SupportsTools)
+            {
+                return sp.GetRequiredService<AgenticAnswerService>();
+            }
+
+            if (wantsAgentic && !client.SupportsTools)
+            {
+                sp.GetRequiredService<ILogger<AgenticAnswerService>>().LogInformation(
+                    "Agentic mode requested but the AI provider doesn't support tool calling; using single-shot answering.");
+            }
+
+            return sp.GetRequiredService<GroundedAnswerService>();
+        });
 
         return builder;
     }
