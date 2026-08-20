@@ -198,18 +198,16 @@ public sealed class DiscordBotService(
 
                 // Resolve the question: inside a forum post/thread, answer the original poster's
                 // question when the invoker didn't type a concrete one (empty or "answer the OP above").
-                var question = await ResolveQuestionAsync(command.Channel, typed);
-                if (string.IsNullOrWhiteSpace(question))
+                var resolved = await ResolveAskAsync(command.Channel, typed);
+                if (resolved.Question is null)
                 {
-                    await command.FollowupAsync(
-                        "Please include a question — or run `/ask` inside a forum post or thread and " +
-                        "I'll answer the original question there.");
+                    await command.FollowupAsync(resolved.Problem);
                     return;
                 }
 
-                logger.LogInformation("/ask from {User}: {Question}", command.User.Username, ForLog(question));
-                var answer = await answers.AnswerAsync(question);
-                await command.FollowupAsync(embed: formatter.Build(question, answer));
+                logger.LogInformation("/ask from {User}: {Question}", command.User.Username, ForLog(resolved.Question));
+                var answer = await answers.AnswerAsync(resolved.Question);
+                await command.FollowupAsync(embed: formatter.Build(resolved.Question, answer));
             }
             catch (Exception ex)
             {
@@ -222,22 +220,53 @@ public sealed class DiscordBotService(
     }
 
     /// <summary>
-    /// Resolves the effective question to answer, reading the thread's original-poster question when
-    /// the invoker didn't provide a concrete one. Falls back to the typed text outside threads.
+    /// Resolves what to answer plus, when nothing can be answered, an actionable user-facing reason
+    /// (e.g. a missing permission) so the bot never falls back to a confusing off-topic refusal.
     /// </summary>
-    private async Task<string?> ResolveQuestionAsync(ISocketMessageChannel? channel, string typed)
+    private async Task<ResolvedAsk> ResolveAskAsync(IMessageChannel? channel, string typed)
     {
-        string? opQuestion = null;
-        if (channel is not null)
+        var op = await contextReader.ReadOpQuestionAsync(channel, _maxQuestionLength);
+        var question = AskResolver.Resolve(typed, op.Question);
+        if (!string.IsNullOrWhiteSpace(question))
         {
-            opQuestion = await contextReader.ReadOpQuestionAsync(channel, _maxQuestionLength);
+            return ResolvedAsk.Answered(question);
         }
 
-        return AskResolver.Resolve(typed, opQuestion);
+        // Nothing to answer. If the user wanted the OP's question (empty or "answer the OP above"),
+        // explain precisely why it couldn't be read; otherwise ask for a question.
+        var wantedOp = string.IsNullOrWhiteSpace(typed) || AskResolver.ReferencesThread(typed);
+        if (!wantedOp)
+        {
+            return ResolvedAsk.Unresolved(
+                "Please include a question about Aspire and I'll answer it from the official docs.");
+        }
+
+        var reason = op.Status switch
+        {
+            OpReadStatus.Forbidden =>
+                "I couldn't read the original post — I'm missing the **Read Message History** permission. " +
+                "Re-invite me with **Read Message History** (and **Embed Links**), or paste the question here " +
+                "and I'll answer it.",
+            OpReadStatus.Empty =>
+                "The original post doesn't have any text I can read. Paste the question and I'll answer it.",
+            OpReadStatus.NotAThread =>
+                "Run `/ask` inside a forum post or thread and I'll answer the original question — or just " +
+                "include a question directly.",
+            _ =>
+                "I couldn't read the original post. Paste the question and I'll answer it.",
+        };
+        return ResolvedAsk.Unresolved(reason);
     }
 
     private static string ForLog(string question) =>
         question.Length <= 120 ? question : question[..120] + "…";
+
+    /// <summary>Either a resolved question to answer, or an actionable message to show the user.</summary>
+    private readonly record struct ResolvedAsk(string? Question, string? Problem)
+    {
+        public static ResolvedAsk Answered(string question) => new(question, null);
+        public static ResolvedAsk Unresolved(string message) => new(null, message);
+    }
 
     private Task OnMessageReceived(SocketMessage message)
     {
@@ -257,23 +286,21 @@ public sealed class DiscordBotService(
             try
             {
                 var typed = StripMentions(userMessage.Content, self.Id);
-                var question = await ResolveQuestionAsync(userMessage.Channel, typed);
-                if (string.IsNullOrWhiteSpace(question))
+                var resolved = await ResolveAskAsync(userMessage.Channel, typed);
+                if (resolved.Question is null)
                 {
                     await userMessage.Channel.SendMessageAsync(
-                        "Hi! Ask me a question about Aspire and I'll answer from the official docs. " +
-                        "For example: `@me how do I add a Redis resource?` — or @mention me inside a " +
-                        "forum post and I'll answer the original question.",
+                        resolved.Problem,
                         messageReference: new MessageReference(userMessage.Id));
                     return;
                 }
 
-                logger.LogInformation("mention from {User}: {Question}", userMessage.Author.Username, ForLog(question));
+                logger.LogInformation("mention from {User}: {Question}", userMessage.Author.Username, ForLog(resolved.Question));
                 using (userMessage.Channel.EnterTypingState())
                 {
-                    var answer = await answers.AnswerAsync(question);
+                    var answer = await answers.AnswerAsync(resolved.Question);
                     await userMessage.Channel.SendMessageAsync(
-                        embed: formatter.Build(question, answer),
+                        embed: formatter.Build(resolved.Question, answer),
                         messageReference: new MessageReference(userMessage.Id));
                 }
             }

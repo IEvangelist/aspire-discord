@@ -11,26 +11,23 @@ namespace AspireDiscordBot.Bot;
 public static partial class AskResolver
 {
     /// <summary>
-    /// Resolves the effective question. Returns the original poster's question when the user didn't
-    /// ask something concrete (empty or a reference to the thread) and an OP question is available;
-    /// otherwise the typed question; or null when there's nothing to answer.
+    /// Resolves the effective question. A substantive typed question is always answered as-is.
+    /// When the user didn't ask something concrete (empty, or a reference to the thread like
+    /// "answer the OP above"), the original poster's question is used — or null when it isn't
+    /// available, since the thread-reference text is not itself a real question to answer.
     /// </summary>
     public static string? Resolve(string? typed, string? opQuestion)
     {
         var trimmed = (typed ?? string.Empty).Trim();
         var hasOp = !string.IsNullOrWhiteSpace(opQuestion);
+        var isMeta = trimmed.Length == 0 || ReferencesThread(trimmed);
 
-        if (hasOp && (trimmed.Length == 0 || ReferencesThread(trimmed)))
+        if (isMeta)
         {
-            return opQuestion!.Trim();
+            return hasOp ? opQuestion!.Trim() : null;
         }
 
-        if (trimmed.Length > 0)
-        {
-            return trimmed;
-        }
-
-        return hasOp ? opQuestion!.Trim() : null;
+        return trimmed;
     }
 
     /// <summary>

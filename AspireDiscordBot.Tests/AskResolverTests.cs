@@ -40,6 +40,15 @@ public class AskResolverTests
     }
 
     [Fact]
+    public void ReturnsNull_ForThreadReference_WhenNoOpAvailable()
+    {
+        // A meta-reference is not itself a real question, so with no OP there's nothing to answer.
+        Assert.Null(AskResolver.Resolve("Please help answer the OPs question above.", null));
+        Assert.Null(AskResolver.Resolve("answer the op", null));
+        Assert.Null(AskResolver.Resolve("answer the op", "   "));
+    }
+
+    [Fact]
     public void ReturnsNull_WhenNothingToAnswer()
     {
         Assert.Null(AskResolver.Resolve("", null));
