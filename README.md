@@ -240,6 +240,14 @@ Each chat, embeddings, tool-execution, and end-to-end agent operation emits a `g
 `gen_ai.client.token.usage` and `gen_ai.client.operation.duration` metrics. Open a resource's
 **Traces** to see the full agent research tree, or **Metrics** for token/latency charts.
 
+**Message content (Input/Output panels).** By default the spans carry metadata + token counts only,
+so the dashboard's per-span **Input & output** panels show *"No message content was recorded."* To
+capture the actual prompts, retrieved context, tool calls, and model output — rendered in those
+panels via the opt-in `gen_ai.input.messages` / `gen_ai.output.messages` / `gen_ai.system_instructions`
+attributes — set `Ai:CaptureMessageContent = true` (enabled by default in this repo's bot
+`appsettings.json`). It's opt-in because that content is large and includes the user's question and
+retrieved documentation; disable it if you'd rather keep telemetry content-free.
+
 ## Keeping the index fresh
 
 Ingestion doesn't watch aspire.dev for changes — it refreshes in three ways:

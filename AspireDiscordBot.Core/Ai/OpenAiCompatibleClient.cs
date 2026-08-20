@@ -114,6 +114,7 @@ public sealed class OpenAiCompatibleClient(
         var http = httpFactory.CreateClient("ai");
         using var activity = GenAiTelemetry.StartOperation(GenAiTelemetry.OpChat, provider, _options.ChatModel);
         SetRequestTags(activity);
+        CaptureAgentInput(activity, items);
         var start = Stopwatch.GetTimestamp();
         string? errorType = null;
         try
@@ -138,7 +139,9 @@ public sealed class OpenAiCompatibleClient(
             }
 
             activity?.SetTag("gen_ai.response.tool_calls", calls.Count);
-            return new AgentTurn(ExtractOutputText(payload).Trim(), calls);
+            var text = ExtractOutputText(payload).Trim();
+            CaptureAgentOutput(activity, text, calls, payload.Status);
+            return new AgentTurn(text, calls);
         }
         catch (Exception ex)
         {
@@ -171,6 +174,7 @@ public sealed class OpenAiCompatibleClient(
 
         using var activity = GenAiTelemetry.StartOperation(GenAiTelemetry.OpChat, provider, _options.ChatModel);
         SetRequestTags(activity);
+        CaptureChatInput(activity, messages);
         var start = Stopwatch.GetTimestamp();
         string? errorType = null;
         try
@@ -183,7 +187,9 @@ public sealed class OpenAiCompatibleClient(
             var payload = await response.Content.ReadFromJsonAsync<ResponsesResponse>(SerializerOptions, cancellationToken)
                           ?? throw new InvalidOperationException("Responses body was empty.");
             RecordResponsesUsage(activity, GenAiTelemetry.OpChat, provider, payload);
-            return ExtractOutputText(payload).Trim();
+            var text = ExtractOutputText(payload).Trim();
+            CaptureAgentOutput(activity, text, [], payload.Status);
+            return text;
         }
         catch (Exception ex)
         {
@@ -335,6 +341,103 @@ public sealed class OpenAiCompatibleClient(
             activity, operation, provider, _options.ChatModel,
             payload.Usage?.InputTokens, payload.Usage?.OutputTokens,
             payload.Model, payload.Id, finish);
+    }
+
+    /// <summary>
+    /// When content capture is enabled, records the system instructions + input messages on the span
+    /// in the OTel GenAI shape so the Aspire dashboard renders them. Splits system messages out into
+    /// gen_ai.system_instructions per the conventions.
+    /// </summary>
+    private void CaptureChatInput(Activity? activity, IReadOnlyList<AiChatMessage> messages)
+    {
+        if (activity is null || !_options.CaptureMessageContent)
+        {
+            return;
+        }
+
+        var systemTexts = messages.Where(m => m.Role == "system").Select(m => m.Content).ToList();
+        var inputMsgs = messages
+            .Where(m => m.Role != "system")
+            .Select(m => new GenAiMsg(m.Role, [GenAiPart.Text(m.Content)]))
+            .ToList();
+
+        if (systemTexts.Count > 0)
+        {
+            activity.SetTag(GenAiContent.SystemInstructionsKey, GenAiContent.SystemInstructions(systemTexts));
+        }
+
+        if (inputMsgs.Count > 0)
+        {
+            activity.SetTag(GenAiContent.InputMessagesKey, GenAiContent.Messages(inputMsgs));
+        }
+    }
+
+    /// <summary>Records the running agent conversation as input messages (system split out).</summary>
+    private void CaptureAgentInput(Activity? activity, IReadOnlyList<AgentItem> items)
+    {
+        if (activity is null || !_options.CaptureMessageContent)
+        {
+            return;
+        }
+
+        var systemTexts = new List<string>();
+        var inputMsgs = new List<GenAiMsg>();
+        foreach (var item in items)
+        {
+            switch (item)
+            {
+                case AgentMessage { Role: "system" } sys:
+                    systemTexts.Add(sys.Content);
+                    break;
+                case AgentMessage m:
+                    inputMsgs.Add(new GenAiMsg(m.Role, [GenAiPart.Text(m.Content)]));
+                    break;
+                case AgentToolCall c:
+                    inputMsgs.Add(new GenAiMsg("assistant", [GenAiPart.ToolCall(c.CallId, c.Name, c.ArgumentsJson)]));
+                    break;
+                case AgentToolOutput o:
+                    inputMsgs.Add(new GenAiMsg("tool", [GenAiPart.ToolResult(o.CallId, o.Output)]));
+                    break;
+            }
+        }
+
+        if (systemTexts.Count > 0)
+        {
+            activity.SetTag(GenAiContent.SystemInstructionsKey, GenAiContent.SystemInstructions(systemTexts));
+        }
+
+        if (inputMsgs.Count > 0)
+        {
+            activity.SetTag(GenAiContent.InputMessagesKey, GenAiContent.Messages(inputMsgs));
+        }
+    }
+
+    /// <summary>Records the model's output (text and/or tool calls) as an output message on the span.</summary>
+    private void CaptureAgentOutput(Activity? activity, string text, IReadOnlyList<ToolCall> calls, string? finishReason)
+    {
+        if (activity is null || !_options.CaptureMessageContent)
+        {
+            return;
+        }
+
+        var parts = new List<GenAiPart>();
+        if (!string.IsNullOrEmpty(text))
+        {
+            parts.Add(GenAiPart.Text(text));
+        }
+
+        foreach (var call in calls)
+        {
+            parts.Add(GenAiPart.ToolCall(call.CallId, call.Name, call.ArgumentsJson));
+        }
+
+        if (parts.Count == 0)
+        {
+            return;
+        }
+
+        activity.SetTag(GenAiContent.OutputMessagesKey,
+            GenAiContent.Messages([new GenAiMsg("assistant", parts, finishReason)]));
     }
 
     // Azure OpenAI puts the model in the URL (deployment) for embeddings; others put it in the body.

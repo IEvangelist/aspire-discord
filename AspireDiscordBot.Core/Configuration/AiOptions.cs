@@ -64,6 +64,14 @@ public sealed class AiOptions
     /// </summary>
     public int MaxOutputTokens { get; set; } = 2000;
 
+    /// <summary>
+    /// Opt-in: capture prompt/completion message content on GenAI telemetry spans
+    /// (<c>gen_ai.input.messages</c>/<c>output.messages</c>/<c>system_instructions</c>) so the Aspire
+    /// dashboard's Input/Output panels render the conversation. Off by default because these contain
+    /// the full question, retrieved context, and model output (large and potentially sensitive).
+    /// </summary>
+    public bool CaptureMessageContent { get; set; }
+
     /// <summary>Settings for the <c>copilot</c> provider (inherits your GitHub Copilot access).</summary>
     public CopilotOptions Copilot { get; set; } = new();
 }
