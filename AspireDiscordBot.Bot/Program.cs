@@ -36,6 +36,7 @@ builder.Services.AddSingleton(sp =>
 });
 
 builder.Services.AddSingleton<DiscordResponseFormatter>();
+builder.Services.AddSingleton<ConversationContextReader>();
 builder.Services.AddHostedService<DiscordBotService>();
 
 var app = builder.Build();

@@ -160,6 +160,14 @@ Once ingestion completes, ask the bot in Discord:
 - Slash command: `/ask question: How do I add a Postgres resource to my app host?`
 - Mention: `@YourBot how do resource lifetimes work?`
 
+**Answering on behalf of someone (forum posts & threads).** Inside a forum post or thread, the
+`question` is optional — run `/ask` with no question (or a phrase like "please answer the OP's
+question above") and the bot reads the **original poster's starter message** and answers that. The
+same applies when you `@mention` the bot in a thread with no question. This needs the bot's
+**Read Message History** permission and the **Message Content Intent** (see
+[Create the Discord bot](#create-the-discord-bot)); without them the bot can't read the OP's post
+and will ask you to include a question.
+
 ## Keeping the index fresh
 
 Ingestion doesn't watch aspire.dev for changes — it refreshes in three ways:

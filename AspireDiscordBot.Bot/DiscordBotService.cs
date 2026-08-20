@@ -1,5 +1,6 @@
 using System.Text.RegularExpressions;
 using AspireDiscordBot.Core.Rag;
+using AspireDiscordBot.Core.Safety;
 using Discord;
 using Discord.WebSocket;
 using Microsoft.Extensions.Options;
@@ -14,11 +15,14 @@ public sealed class DiscordBotService(
     DiscordSocketClient client,
     GroundedAnswerService answers,
     DiscordResponseFormatter formatter,
+    ConversationContextReader contextReader,
     IOptions<DiscordOptions> options,
+    IOptions<SafetyOptions> safetyOptions,
     ILogger<DiscordBotService> logger) : IHostedService
 {
     private const string AskCommandName = "ask";
     private readonly DiscordOptions _options = options.Value;
+    private readonly int _maxQuestionLength = safetyOptions.Value.MaxQuestionLength;
 
     // Discord gateway close codes that are fatal — reconnecting won't help until config changes.
     private const int GatewayAuthenticationFailed = 4004; // invalid bot token
@@ -153,7 +157,11 @@ public sealed class DiscordBotService(
             var command = new SlashCommandBuilder()
                 .WithName(AskCommandName)
                 .WithDescription("Ask a question about Aspire, answered from the official docs.")
-                .AddOption("question", ApplicationCommandOptionType.String, "Your Aspire question", isRequired: true)
+                .AddOption(
+                    "question",
+                    ApplicationCommandOptionType.String,
+                    "Your Aspire question. Optional in a forum post/thread — I'll answer the original question.",
+                    isRequired: false)
                 .Build();
 
             if (_options.GuildId is { } guildId)
@@ -186,9 +194,20 @@ public sealed class DiscordBotService(
             try
             {
                 await command.DeferAsync();
-                var question = command.Data.Options.FirstOrDefault()?.Value as string ?? string.Empty;
+                var typed = command.Data.Options.FirstOrDefault(o => o.Name == "question")?.Value as string ?? string.Empty;
 
-                logger.LogInformation("/ask from {User}: {Question}", command.User.Username, question);
+                // Resolve the question: inside a forum post/thread, answer the original poster's
+                // question when the invoker didn't type a concrete one (empty or "answer the OP above").
+                var question = await ResolveQuestionAsync(command.Channel, typed);
+                if (string.IsNullOrWhiteSpace(question))
+                {
+                    await command.FollowupAsync(
+                        "Please include a question — or run `/ask` inside a forum post or thread and " +
+                        "I'll answer the original question there.");
+                    return;
+                }
+
+                logger.LogInformation("/ask from {User}: {Question}", command.User.Username, ForLog(question));
                 var answer = await answers.AnswerAsync(question);
                 await command.FollowupAsync(embed: formatter.Build(question, answer));
             }
@@ -201,6 +220,24 @@ public sealed class DiscordBotService(
 
         return Task.CompletedTask;
     }
+
+    /// <summary>
+    /// Resolves the effective question to answer, reading the thread's original-poster question when
+    /// the invoker didn't provide a concrete one. Falls back to the typed text outside threads.
+    /// </summary>
+    private async Task<string?> ResolveQuestionAsync(ISocketMessageChannel? channel, string typed)
+    {
+        string? opQuestion = null;
+        if (channel is not null)
+        {
+            opQuestion = await contextReader.ReadOpQuestionAsync(channel, _maxQuestionLength);
+        }
+
+        return AskResolver.Resolve(typed, opQuestion);
+    }
+
+    private static string ForLog(string question) =>
+        question.Length <= 120 ? question : question[..120] + "…";
 
     private Task OnMessageReceived(SocketMessage message)
     {
@@ -219,17 +256,19 @@ public sealed class DiscordBotService(
         {
             try
             {
-                var question = StripMentions(userMessage.Content, self.Id);
+                var typed = StripMentions(userMessage.Content, self.Id);
+                var question = await ResolveQuestionAsync(userMessage.Channel, typed);
                 if (string.IsNullOrWhiteSpace(question))
                 {
                     await userMessage.Channel.SendMessageAsync(
                         "Hi! Ask me a question about Aspire and I'll answer from the official docs. " +
-                        "For example: `@me how do I add a Redis resource?`",
+                        "For example: `@me how do I add a Redis resource?` — or @mention me inside a " +
+                        "forum post and I'll answer the original question.",
                         messageReference: new MessageReference(userMessage.Id));
                     return;
                 }
 
-                logger.LogInformation("mention from {User}: {Question}", userMessage.Author.Username, question);
+                logger.LogInformation("mention from {User}: {Question}", userMessage.Author.Username, ForLog(question));
                 using (userMessage.Channel.EnterTypingState())
                 {
                     var answer = await answers.AnswerAsync(question);
