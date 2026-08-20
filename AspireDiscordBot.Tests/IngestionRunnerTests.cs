@@ -99,7 +99,9 @@ public sealed class IngestionRunnerTests
             var chunker = new DocumentChunker(ingestionOptions);
             var embedding = new FakeEmbedding(Dims, embedDelay);
             var ingestor = new DocumentIngestor(reader, chunker, embedding, store, ingestionOptions, NullLogger<DocumentIngestor>.Instance);
-            var runner = new IngestionRunner(ingestor, store, ingestionOptions, NullLogger<IngestionRunner>.Instance);
+            var apiOptions = Options.Create(new ApiSurfaceOptions { LocalSrcPath = null });
+            var apiIngestor = new ApiSurfaceIngestor(chunker, embedding, store, apiOptions, NullLogger<ApiSurfaceIngestor>.Instance);
+            var runner = new IngestionRunner(ingestor, apiIngestor, store, ingestionOptions, NullLogger<IngestionRunner>.Instance);
 
             return new Harness(client, collection, store, reader, runner);
         }

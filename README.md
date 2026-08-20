@@ -196,8 +196,30 @@ one-shot RAG. Set `Agent:Mode = single` for the classic one-shot pipeline; agent
 falls back to single when the provider can't do tool calling (e.g. Ollama). Tunables live under the
 `Agent` section (`MaxIterations`, `MaxToolCalls`, `SearchResultsPerCall`).
 
-### GenAI telemetry in the dashboard
+### Multiple sources of truth: docs + API surface
 
+The agent grounds answers in more than prose docs. Two retrieval tools back the research loop:
+
+- **`search_docs`** — the official documentation (aspire.dev + microsoft/aspire docs), always on.
+- **`search_api`** — the **microsoft/aspire public API surface**: real C# types, method signatures,
+  and XML doc comments parsed with Roslyn from a local source clone. This answers questions about
+  whether an API exists, its exact type/method names, and capabilities the prose docs don't spell
+  out (e.g. that `PostgresDatabaseResource`'s `Parent` is the actual container `PostgresServerResource`).
+  It's enabled by pointing `ApiSurface:LocalSrcPath` at a clone of `microsoft/aspire`'s `src`
+  directory; when set, the surface is ingested into a separate `aspire_api` Qdrant collection and
+  the `search_api` tool is offered to the agent. Leave it unset to disable.
+
+```bash
+# Enable API-surface search (set on both the bot and ingestion services)
+cd AspireDiscordBot.Bot        # and repeat in AspireDiscordBot.Ingestion
+dotnet user-secrets set "ApiSurface:LocalSrcPath" "D:\path\to\microsoft-aspire\src"
+```
+
+`ApiSurface` tunables: `CollectionName` (default `aspire_api`), `IncludeProjectPrefixes` (default
+`["Aspire.Hosting"]` — covers hosting + integrations; empty means everything under `src`),
+`CitationRepo`/`CitationBranch` for the GitHub source links.
+
+### GenAI telemetry in the dashboard
 All AI and retrieval operations are instrumented with OpenTelemetry following the
 [GenAI semantic conventions](https://opentelemetry.io/docs/specs/semconv/gen-ai/), so they light up
 the Aspire dashboard's [GenAI telemetry visualization](https://aspire.dev/dashboard/explore/#genai-telemetry-visualization).

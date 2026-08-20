@@ -38,6 +38,7 @@ public sealed record RunOutcome(
 /// </summary>
 public sealed class IngestionRunner(
     DocumentIngestor ingestor,
+    ApiSurfaceIngestor apiIngestor,
     QdrantVectorStore vectorStore,
     IOptions<IngestionOptions> options,
     ILogger<IngestionRunner> logger)
@@ -56,32 +57,46 @@ public sealed class IngestionRunner(
 
     /// <summary>
     /// Runs the startup ingest, honoring <see cref="IngestionOptions.SkipStartupIngestWhenPopulated"/>
-    /// so restarts don't needlessly re-embed an index that the persistent volume already holds.
+    /// so restarts don't needlessly re-embed an index that the persistent volume already holds. The
+    /// docs and API-surface collections are considered independently: if the docs are already
+    /// populated but the API collection isn't, only the API surface is ingested.
     /// </summary>
     public async Task<RunOutcome> RunStartupAsync(CancellationToken cancellationToken = default)
     {
-        if (!_options.ForceReindex && _options.SkipStartupIngestWhenPopulated)
+        var force = _options.ForceReindex;
+        var includeDocs = true;
+
+        if (!force && _options.SkipStartupIngestWhenPopulated)
         {
             await vectorStore.EnsureCollectionAsync(recreate: false, cancellationToken);
-            var count = await vectorStore.CountAsync(cancellationToken);
-            if (count > 0)
-            {
-                var message = $"Startup ingest skipped: index already populated ({count} chunks). " +
-                              "Use the dashboard command or the scheduled refresh to update it.";
-                logger.LogInformation("{Message}", message);
-                var outcome = new RunOutcome(RunStatus.SkippedAlreadyPopulated, message, 0, 0, false, null, null);
-                _lastOutcome = outcome;
-                return outcome;
-            }
+            includeDocs = await vectorStore.CountAsync(cancellationToken) == 0;
         }
 
-        return await RunAsync(_options.ForceReindex, "startup", cancellationToken);
+        var includeApi = apiIngestor.IsEnabled &&
+            (force || !await vectorStore.IsPopulatedAsync(apiIngestor.CollectionName, cancellationToken));
+
+        if (!includeDocs && !includeApi)
+        {
+            var count = await vectorStore.CountAsync(cancellationToken);
+            var message = $"Startup ingest skipped: index already populated ({count} chunks). " +
+                          "Use the dashboard command or the scheduled refresh to update it.";
+            logger.LogInformation("{Message}", message);
+            var outcome = new RunOutcome(RunStatus.SkippedAlreadyPopulated, message, 0, 0, false, null, null);
+            _lastOutcome = outcome;
+            return outcome;
+        }
+
+        return await RunInternalAsync(force, "startup", includeDocs, includeApi, cancellationToken);
     }
 
     /// <summary>Runs an ingestion pass unless one is already in progress.</summary>
     /// <param name="force">When true, the collection is rebuilt from scratch (prunes stale/deleted pages).</param>
     /// <param name="trigger">Human-readable trigger label for logs (startup/scheduled/http).</param>
-    public async Task<RunOutcome> RunAsync(bool force, string trigger, CancellationToken cancellationToken = default)
+    public Task<RunOutcome> RunAsync(bool force, string trigger, CancellationToken cancellationToken = default) =>
+        RunInternalAsync(force, trigger, includeDocs: true, includeApi: apiIngestor.IsEnabled, cancellationToken);
+
+    private async Task<RunOutcome> RunInternalAsync(
+        bool force, string trigger, bool includeDocs, bool includeApi, CancellationToken cancellationToken)
     {
         // Non-blocking: if a run is active, reject rather than queue.
         if (!await _gate.WaitAsync(0, cancellationToken))
@@ -98,15 +113,35 @@ public sealed class IngestionRunner(
         {
             _isRunning = true;
             _lastStartedUtc = DateTimeOffset.UtcNow;
-            logger.LogInformation("Ingestion started (trigger: {Trigger}, force: {Force}).", trigger, force);
+            logger.LogInformation(
+                "Ingestion started (trigger: {Trigger}, force: {Force}, docs: {Docs}, api: {Api}).",
+                trigger, force, includeDocs, includeApi);
 
-            var result = await ingestor.IngestAsync(force, cancellationToken);
+            var files = 0;
+            var chunks = 0;
+            var parts = new List<string>();
+
+            if (includeDocs)
+            {
+                var docs = await ingestor.IngestAsync(force, cancellationToken);
+                files += docs.Files;
+                chunks += docs.Chunks;
+                parts.Add($"{docs.Files} pages ({docs.Chunks} chunks) via '{docs.Mode}'");
+            }
+
+            if (includeApi)
+            {
+                var api = await apiIngestor.IngestAsync(force, cancellationToken);
+                files += api.Files;
+                chunks += api.Chunks;
+                parts.Add($"{api.Files} API types ({api.Chunks} chunks)");
+            }
 
             _lastFinishedUtc = DateTimeOffset.UtcNow;
             var outcome = new RunOutcome(
                 RunStatus.Completed,
-                $"Ingested {result.Files} pages ({result.Chunks} chunks) via '{result.Mode}'.",
-                result.Files, result.Chunks, force, _lastStartedUtc, _lastFinishedUtc);
+                $"Ingested {string.Join("; ", parts)}.",
+                files, chunks, force, _lastStartedUtc, _lastFinishedUtc);
             _lastOutcome = outcome;
             logger.LogInformation("Ingestion complete (trigger: {Trigger}): {Message}", trigger, outcome.Message);
             return outcome;

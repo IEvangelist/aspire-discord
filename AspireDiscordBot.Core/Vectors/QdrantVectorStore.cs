@@ -20,45 +20,52 @@ public sealed class QdrantVectorStore(
     private string Collection => _ingestion.CollectionName;
 
     /// <summary>Ensures the collection exists. When <paramref name="recreate"/> is true it is dropped first.</summary>
-    public async Task EnsureCollectionAsync(bool recreate, CancellationToken cancellationToken = default)
+    public async Task EnsureCollectionAsync(bool recreate, CancellationToken cancellationToken = default, string? collectionName = null)
     {
-        var exists = await client.CollectionExistsAsync(Collection, cancellationToken);
+        var collection = collectionName ?? Collection;
+        var exists = await client.CollectionExistsAsync(collection, cancellationToken);
 
         if (exists && recreate)
         {
-            logger.LogInformation("Recreating Qdrant collection '{Collection}'.", Collection);
-            await client.DeleteCollectionAsync(Collection, cancellationToken: cancellationToken);
+            logger.LogInformation("Recreating Qdrant collection '{Collection}'.", collection);
+            await client.DeleteCollectionAsync(collection, cancellationToken: cancellationToken);
             exists = false;
         }
 
         if (!exists)
         {
             await client.CreateCollectionAsync(
-                Collection,
+                collection,
                 new VectorParams { Size = (ulong)_ai.EmbeddingDimensions, Distance = Distance.Cosine },
                 cancellationToken: cancellationToken);
             logger.LogInformation(
                 "Created Qdrant collection '{Collection}' ({Dimensions} dims, cosine).",
-                Collection, _ai.EmbeddingDimensions);
+                collection, _ai.EmbeddingDimensions);
         }
     }
 
     /// <summary>Number of points currently stored.</summary>
-    public async Task<ulong> CountAsync(CancellationToken cancellationToken = default)
+    public async Task<ulong> CountAsync(CancellationToken cancellationToken = default, string? collectionName = null)
     {
-        if (!await client.CollectionExistsAsync(Collection, cancellationToken))
+        var collection = collectionName ?? Collection;
+        if (!await client.CollectionExistsAsync(collection, cancellationToken))
         {
             return 0;
         }
 
-        return await client.CountAsync(Collection, cancellationToken: cancellationToken);
+        return await client.CountAsync(collection, cancellationToken: cancellationToken);
     }
+
+    /// <summary>Whether the given collection exists and has at least one point.</summary>
+    public async Task<bool> IsPopulatedAsync(string collectionName, CancellationToken cancellationToken = default) =>
+        await CountAsync(cancellationToken, collectionName) > 0;
 
     /// <summary>Upserts a batch of chunks with their aligned embedding vectors.</summary>
     public async Task UpsertAsync(
         IReadOnlyList<DocChunk> chunks,
         IReadOnlyList<float[]> embeddings,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        string? collectionName = null)
     {
         if (chunks.Count != embeddings.Count)
         {
@@ -90,18 +97,19 @@ public sealed class QdrantVectorStore(
             points.Add(point);
         }
 
-        await client.UpsertAsync(Collection, points, cancellationToken: cancellationToken);
+        await client.UpsertAsync(collectionName ?? Collection, points, cancellationToken: cancellationToken);
     }
 
     /// <summary>Returns the most similar chunks to the query vector, ordered by score descending.</summary>
     public async Task<IReadOnlyList<VectorSearchResult>> SearchAsync(
         float[] queryVector,
         int topK,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        string? collectionName = null)
     {
 #pragma warning disable CS0618 // SearchAsync is stable across Qdrant.Client versions.
         var points = await client.SearchAsync(
-            Collection,
+            collectionName ?? Collection,
             queryVector,
             limit: (ulong)Math.Max(1, topK),
             payloadSelector: true,

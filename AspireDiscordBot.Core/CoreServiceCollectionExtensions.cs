@@ -31,6 +31,7 @@ public static class CoreServiceCollectionExtensions
         services.Configure<IngestionOptions>(configuration.GetSection(IngestionOptions.SectionName));
         services.Configure<SafetyOptions>(configuration.GetSection(SafetyOptions.SectionName));
         services.Configure<AgentOptions>(configuration.GetSection(AgentOptions.SectionName));
+        services.Configure<ApiSurfaceOptions>(configuration.GetSection(ApiSurfaceOptions.SectionName));
 
         // Default the ingestion sources to the catalog when none are configured.
         services.PostConfigure<IngestionOptions>(options =>
@@ -91,6 +92,7 @@ public static class CoreServiceCollectionExtensions
         services.AddSingleton<DocumentChunker>();
         services.AddSingleton<QdrantVectorStore>();
         services.AddSingleton<DocumentIngestor>();
+        services.AddSingleton<ApiSurfaceIngestor>();
         services.AddSingleton<IngestionRunner>();
         services.AddSingleton<QuestionSafetyGuard>();
         services.AddSingleton<GroundedAnswerService>();
