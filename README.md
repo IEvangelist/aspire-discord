@@ -14,22 +14,24 @@ on-topic.
 ## How it works
 
 ```
-                 ┌────────────────────────── AppHost (orchestration) ──────────────────────────┐
-                 │                                                                              │
-  aspire docs ───┼──▶│  Ingestion    │─────▶│    Qdrant    │◀─────────│   Discord Bot     │◀───┼──▶ Discord
-  CLI (source    │   │  worker       │ embed│ vector store │  search  │  (/ask + @mention)│    │
-   of truth)     │   └───────────────┘      └──────────────┘          └─────────┬─────────┘    │
-                 │                                                              │              │
-                 │                                   GitHub Copilot (chat + embeddings)        │
-                 └──────────────────────────────────────────────────────────────┴─────────────┘
+  aspire docs CLI ──▶ Ingestion ──▶ Qdrant generation collections ◀── Discord bot ◀──▶ Discord
+                             │                   ▲                         │
+  pinned Git snapshot ───────┘          Ollama embeddings          Copilot SDK agent
+                                                                          │
+                                                     official GitHub MCP (read-only)
 ```
 
 1. **Ingestion** reads the published Aspire documentation via the `aspire docs` CLI (the
    authoritative source of truth), cleans the Markdown, splits it into heading-aware overlapping
-   chunks, embeds them, and upserts them into Qdrant. Citation URLs are resolved to exact
-   aspire.dev deep links by matching page titles to the aspire.dev repo.
-2. **The bot** embeds each incoming question, retrieves the most similar chunks, and asks the
-   chat model to answer **using only those chunks**, returning the answer with source citations.
+   chunks, embeds them with a separately configured embedding provider, and builds an isolated
+   Qdrant generation. A logical alias moves to the completed generation only after every source
+   succeeds, so failed refreshes leave the serving index untouched.
+2. **API ingestion** maintains a managed bare mirror of `microsoft/aspire`, resolves `main` to an
+   immutable commit, exports only `src`, and uses Roslyn to index the public API surface. Source
+   citations point at that exact commit.
+3. **The bot** uses the official GitHub Copilot SDK for the default agent runtime. Its custom
+   Qdrant tools and the official GitHub MCP server provide grounded documentation, API, source,
+   issue, and pull-request evidence.
 
 The ingestion source is configurable — `cli` (default), `github` (reads `.md`/`.mdx` from both
 repos), or `local` (on-disk clones). See [Configuration reference](#configuration-reference).
@@ -41,6 +43,7 @@ repos), or `local` (on-disk clones). See [Configuration reference](#configuratio
 | `AspireDiscordBot.AppHost` | Aspire app host — orchestrates Qdrant + the two services, wires secrets. |
 | `AspireDiscordBot.ServiceDefaults` | Shared OpenTelemetry, health checks, and resilience. |
 | `AspireDiscordBot.Core` | The RAG pipeline: doc fetch/clean/chunk, embeddings, Qdrant, prompt building, safety. |
+| `AspireDiscordBot.Copilot` | Server-safe GitHub Copilot SDK runtime and grounded answer service. |
 | `AspireDiscordBot.Ingestion` | Worker that ingests the docs into Qdrant on startup. |
 | `AspireDiscordBot.Bot` | The Discord bot (Discord.Net) exposing `/ask` and `@mention` answering. |
 | `AspireDiscordBot.Tests` | Unit + integration tests (including a live-Qdrant round trip). |
@@ -49,10 +52,11 @@ repos), or `local` (on-disk clones). See [Configuration reference](#configuratio
 
 - [.NET 10 SDK](https://dotnet.microsoft.com/) and the Aspire CLI (`aspire`). The CLI is also
   the default documentation source (`aspire docs`).
+- [Git](https://git-scm.com/) for managed, commit-pinned API source snapshots.
 - A container runtime (Docker Desktop or Podman) for the Qdrant database.
-- **AI access** — by default the bot uses **GitHub Copilot** and inherits the operator's Copilot
-  entitlement via a one-time sign-in (no keys to manage). Azure OpenAI, Azure AI Foundry, and
-  OpenAI are also supported — see [Choosing an AI provider](#choosing-an-ai-provider).
+- **AI access** — by default chat uses the official **GitHub Copilot SDK** and embeddings use the
+  AppHost-managed `nomic-embed-text` Ollama model. Azure OpenAI, Azure AI Foundry, OpenAI, and
+  fully local Ollama are also supported.
 - A **Discord application + bot** (see [Create the Discord bot](#create-the-discord-bot)).
 
 > **Note on GitHub Models:** GitHub Models was retired on **July 30, 2026**. This bot uses
@@ -60,37 +64,23 @@ repos), or `local` (on-disk clones). See [Configuration reference](#configuratio
 
 ## AI access with GitHub Copilot (default)
 
-With the default `copilot` provider, the bot signs in to GitHub once using the OAuth
-**device flow** and inherits your GitHub Copilot access. The **AppHost drives this sign-in** so the
-code and link are surfaced prominently in the Aspire dashboard (via the interaction service) rather
-than buried in a service's logs:
+The default reasoning path uses [`GitHub.Copilot.SDK`](https://github.com/github/copilot-sdk) in
+server-safe `Empty` mode. The SDK bundles and manages the Copilot runtime; the bot exposes only its
+read-only grounding tools—no ambient shell, filesystem, Git, memory, skill, or plugin tools.
 
-1. On first run — when no cached token exists — a **dashboard notification** appears with a link and
-   the device code:
+Authentication follows the SDK's supported credential chain:
 
-   ```
-   Sign in to GitHub for Copilot access
-     Open https://github.com/login/device and enter code: XXXX-XXXX
-   ```
+1. An explicit `COPILOT_GITHUB_TOKEN` (or AppHost `Parameters:CopilotGitHubToken`).
+2. An existing GitHub Copilot CLI or `gh` login when `Ai:Copilot:UseLoggedInUser=true` (default).
 
-   The notification includes an **Open** link straight to `https://github.com/login/device`. (If the
-   AppHost can't reach the interaction service for any reason, the same instructions still print to
-   the logs as a fallback.)
+For local development, sign in with the official CLI tooling or set a short-lived/fine-grained user
+token. For unattended services, use the
+[documented GitHub App server-to-server flow](https://docs.github.com/en/copilot/how-tos/copilot-sdk/auth/server-to-server-tokens)
+and refresh its installation token before expiry.
 
-2. Open the URL, enter the code, and approve. The OAuth token is cached at
-   `~/.aspire-discord/copilot-oauth.json`. The ingestion worker and bot **wait for that shared token**
-   instead of prompting themselves, so you sign in exactly once. The device code is re-issued
-   automatically if it expires before you approve; the short-lived Copilot token is exchanged and
-   refreshed automatically thereafter.
-
-No API keys or endpoints are required for the `copilot` provider.
-
-> **Already signed in?** If a valid `~/.aspire-discord/copilot-oauth.json` is present, no sign-in
-> prompt appears and the services start immediately. Delete that file to force a fresh sign-in.
-
-> **Embeddings:** chat always works with your Copilot entitlement. If your account can't reach
-> Copilot embeddings, set `Ai:EmbeddingProvider` to another provider (e.g. `azureopenai`) — chat
-> stays on Copilot while embeddings use the override.
+Copilot and embeddings are deliberately separate. The Copilot SDK has no supported embedding API,
+so the default AppHost starts Ollama and pulls `nomic-embed-text`. Production deployments can point
+`Ai:EmbeddingProvider` at Azure OpenAI, Azure AI Foundry, or OpenAI instead.
 
 
 ## Create the Discord bot
@@ -115,8 +105,8 @@ No API keys or endpoints are required for the `copilot` provider.
 
 On first run, if the Discord bot token isn't already set, Aspire prompts for it in the dashboard
 (a single input dialog) and offers to **save it to user-secrets** so later runs don't ask again.
-That's the only value you must provide interactively — the default GitHub Copilot provider needs
-no keys.
+That's the only value Aspire prompts for. Copilot can use an existing supported login; an explicit
+token is optional.
 
 You can also set the token (and switch AI provider) ahead of time via user-secrets on the AppHost:
 
@@ -126,12 +116,22 @@ cd AspireDiscordBot.AppHost
 # Discord bot token (the one always-required value; omit to be prompted in the dashboard)
 dotnet user-secrets set "Parameters:DiscordToken"     "YOUR-DISCORD-BOT-TOKEN"
 
-# AI provider — default is GitHub Copilot, which needs NO keys. Only set these to switch provider:
+# Optional explicit tokens. Keep Copilot billing/auth separate from GitHub MCP repository access.
+# dotnet user-secrets set "Parameters:CopilotGitHubToken" "YOUR-COPILOT-CAPABLE-TOKEN"
+# dotnet user-secrets set "Parameters:GitHubMcpToken"     "YOUR-READ-ONLY-GITHUB-TOKEN"
+
+# AI provider — default chat is GitHub Copilot SDK. Set these to switch chat/provider:
 # dotnet user-secrets set "Parameters:AiProvider"       "azureopenai"   # or azureaifoundry / openai / ollama
 # dotnet user-secrets set "Parameters:AiEndpoint"       "https://YOUR-RESOURCE.openai.azure.com"
 # dotnet user-secrets set "Parameters:AiApiKey"         "YOUR-AZURE-OPENAI-KEY"
 # dotnet user-secrets set "Parameters:AiChatModel"      "gpt-5.6-sol"            # chat model / Azure deployment
-# dotnet user-secrets set "Parameters:AiEmbeddingModel" "text-embedding-3-small" # embedding model / Azure deployment
+
+# Optional production embedding override (default with Copilot chat is AppHost-managed Ollama):
+# dotnet user-secrets set "Parameters:AiEmbeddingProvider"   "azureopenai"
+# dotnet user-secrets set "Parameters:AiEmbeddingEndpoint"   "https://YOUR-RESOURCE.openai.azure.com"
+# dotnet user-secrets set "Parameters:AiEmbeddingApiKey"     "YOUR-AZURE-OPENAI-KEY"
+# dotnet user-secrets set "Parameters:AiEmbeddingModel"      "text-embedding-3-small"
+# dotnet user-secrets set "Parameters:AiEmbeddingDimensions" "1536"
 ```
 
 > For Azure OpenAI, `AiChatModel` / `AiEmbeddingModel` are your **deployment names**, not model
@@ -147,13 +147,10 @@ aspire run           # or: dotnet run
 The Aspire dashboard opens. On first run:
 - If the Discord token isn't set, the dashboard prompts for it — enter it (and optionally save it
   to user-secrets), and the resources continue.
-- If using the default **Copilot** provider, complete the one-time device-flow sign-in from the
-  **dashboard notification** that appears on first run (see
-  [AI access with GitHub Copilot](#ai-access-with-github-copilot-default)).
-- The **ingestion** worker reads the docs via `aspire docs`, embeds them, and upserts to Qdrant
-  (a few minutes; watch its logs for `Ingestion finished: N files, M chunks`). Qdrant uses a
-  persistent data volume, so subsequent runs reuse the existing index — set
-  `Ingestion:ForceReindex=true` to rebuild.
+- The AppHost starts Ollama for embeddings and pulls `nomic-embed-text` on first use.
+- The **ingestion** worker reads the docs and a pinned source snapshot, builds new Qdrant
+  generations, then publishes them through aliases. Existing compatible generations make later
+  startups fast; incompatible embedding models or extractor versions rebuild automatically.
 
 Once ingestion completes, ask the bot in Discord:
 
@@ -202,40 +199,38 @@ The agent grounds answers in more than prose docs. Several retrieval tools back 
 
 - **`search_docs`** — the official documentation (aspire.dev + microsoft/aspire docs), always on.
 - **`search_api`** — the **microsoft/aspire public API surface**: real C# types, method signatures,
-  and XML doc comments parsed with Roslyn from a local source clone. This answers questions about
+  and XML doc comments parsed with Roslyn from an immutable Git snapshot. This answers questions about
   whether an API exists, its exact type/method names, and capabilities the prose docs don't spell
   out (e.g. that `PostgresDatabaseResource`'s `Parent` is the actual container `PostgresServerResource`).
-  It's enabled by pointing `ApiSurface:LocalSrcPath` at a clone of `microsoft/aspire`'s `src`
-  directory; when set, the surface is ingested into a separate `aspire_api` Qdrant collection and
-  the `search_api` tool is offered to the agent. Leave it unset to disable.
-- **`search_code`** and **`search_issues`** — live GitHub search over `microsoft/aspire`. Code search
-  finds implementations on the latest branch; issue/PR search (with maintainer comments) surfaces
-  design intent, workarounds, known limitations, and roadmap discussion that never reaches the docs
-  (e.g. an open issue proposing a container-exec API). Issue content is treated as **community /
-  maintainer guidance**, not authoritative docs. Enabled via `LiveSearch` when a GitHub token is
-  available (from `LiveSearch:GitHubToken` or the `GITHUB_TOKEN` env var); the Search API requires a
-  token.
+  With `ApiSurface:Enabled=true`, ingestion maintains a bare mirror, resolves `SourceRef`, exports
+  only `src`, and stores the result in the separate `aspire_api` Qdrant index. Set
+  `LocalSrcPath` only when intentionally overriding the managed snapshot.
+- **Official GitHub MCP tools** — `search_code`, `get_file_contents`, `get_repository_tree`,
+  `get_commit`, issue/PR search and reads, and release lookup. The remote
+  [GitHub MCP server](https://github.com/github/github-mcp-server) runs with read-only mode,
+  lockdown mode, an explicit tool allowlist, and application-enforced repository scoping. MCP
+  content is always treated as untrusted and potentially outdated. If MCP initialization fails,
+  the existing REST code/issue search adapter remains available as a compatibility fallback.
 
 ```bash
-# Enable API-surface search (set on both the bot and ingestion services)
-cd AspireDiscordBot.Bot        # and repeat in AspireDiscordBot.Ingestion
+# Optional local-source override (managed Git snapshots are the default)
+cd AspireDiscordBot.Ingestion
 dotnet user-secrets set "ApiSurface:LocalSrcPath" "D:\path\to\microsoft-aspire\src"
 
-# Enable live GitHub code + issue search (bot only needs it; token gates it)
-dotnet user-secrets set "LiveSearch:GitHubToken" "ghp_yourtoken"   # or set GITHUB_TOKEN
+# Enable official GitHub MCP live research
+$env:GITHUB_MCP_TOKEN = "YOUR-READ-ONLY-GITHUB-TOKEN"
 ```
 
-`ApiSurface` tunables: `CollectionName` (default `aspire_api`), `IncludeProjectPrefixes` (default
-`["Aspire.Hosting"]` — covers hosting + integrations; empty means everything under `src`),
-`CitationRepo`/`CitationBranch` for the GitHub source links. `LiveSearch` tunables: `Repo`
-(default `microsoft/aspire`), `MaxResults`, `MaintainerCommentsPerIssue`.
+`ApiSurface` tunables include `RepositoryUrl`, `SourceRef`, `CachePath`, `SnapshotRetention`,
+`CollectionName`, and `IncludeProjectPrefixes`. `GitHubMcp` controls the endpoint, tool allowlist,
+read-only/lockdown switches, retry cooldown, output bound, and allowed repositories.
 
 ### GenAI telemetry in the dashboard
-All AI and retrieval operations are instrumented with OpenTelemetry following the
+AI and retrieval operations are instrumented with OpenTelemetry following the
 [GenAI semantic conventions](https://opentelemetry.io/docs/specs/semconv/gen-ai/), so they light up
 the Aspire dashboard's [GenAI telemetry visualization](https://aspire.dev/dashboard/explore/#genai-telemetry-visualization).
-Each chat, embeddings, tool-execution, and end-to-end agent operation emits a `gen_ai.*` span
-(named e.g. `chat gpt-5.6-sol`, `embeddings text-embedding-3-small`, `execute_tool search_docs`,
+The SDK runtime plus the application emit model, embeddings, tool-execution, and end-to-end
+`gen_ai.*` spans (named e.g. `embeddings nomic-embed-text`, `execute_tool search_docs`,
 `invoke_agent aspire-docs-agent`) with model, provider, and token-usage attributes, plus the
 `gen_ai.client.token.usage` and `gen_ai.client.operation.duration` metrics. Open a resource's
 **Traces** to see the full agent research tree, or **Metrics** for token/latency charts.
@@ -252,23 +247,22 @@ retrieved documentation; disable it if you'd rather keep telemetry content-free.
 
 Ingestion doesn't watch aspire.dev for changes — it refreshes in three ways:
 
-1. **On startup** — the first run populates Qdrant. On later restarts the startup ingest is
-   **skipped if the index is already populated** (`SkipStartupIngestWhenPopulated`, default true),
-   so restarts are fast and don't re-embed everything.
+1. **On startup** — the first run populates Qdrant. Later starts skip compatible indexes by checking
+   embedding provider/model/dimensions and extractor version, not merely whether points exist.
 2. **On a schedule** — a background refresh runs every `Ingestion:RefreshIntervalHours` hours
-   (default **24**; set to `0` to disable). This is an incremental update (adds/updates pages).
+   (default **24**; set to `0` to disable).
 3. **On demand from the Aspire dashboard** — the `ingestion` resource exposes two command
    buttons:
-   - **Re-ingest docs** — incremental refresh (adds + updates pages).
-   - **Force rebuild index** — drops and rebuilds the whole index (prunes pages deleted from the
-     site); asks for confirmation first.
+   - **Refresh index** — builds and publishes fresh documentation and API generations.
+   - **Force rebuild index** — explicitly resolves fresh source snapshots and re-embeds everything.
 
    These are backed by `POST /admin/reingest` and `POST /admin/rebuild` on the ingestion service.
    Only one run executes at a time — a request made while a run is in progress is rejected
    (HTTP 409) rather than queued.
 
-> Incremental refreshes update and add pages but don't remove ones deleted from the site (their
-> chunks linger). Use **Force rebuild** for a clean prune.
+Every refresh writes to new physical collections. When all reads and embeddings succeed, Qdrant
+atomically moves each logical alias and deletes the previous generation. Deleted pages therefore
+disappear automatically; a source/API/embedding failure deletes only staging data.
 
 ## API reference (OpenAPI / Scalar)
 
@@ -289,7 +283,8 @@ exposed in Development.
 This bot is designed to only answer Aspire questions, from the docs, and to resist manipulation.
 
 **Grounding**
-- Answers are generated **only** from retrieved documentation chunks.
+- Answers are generated **only** from retrieved Aspire documentation, API, source, and explicitly
+  labeled issue/pull-request evidence.
 - If the best retrieval score is below a threshold, or the model can't answer from the context,
   the bot returns a *"not covered in the Aspire docs"* refusal instead of guessing.
 - Every grounded answer includes **source citations** (linking to aspire.dev / GitHub) so users
@@ -319,18 +314,18 @@ Set `Ai:Provider` to one of:
 
 | Provider | `Ai:Provider` | Endpoint / auth | Model fields |
 | --- | --- | --- | --- |
-| GitHub Copilot (default) | `copilot` | device-flow sign-in; no keys | model ids (`gpt-5.6-sol`, …) |
+| GitHub Copilot SDK (default) | `copilot` | supported CLI login or `COPILOT_GITHUB_TOKEN` | model ids (`gpt-5.6-sol`, …) |
 | Azure OpenAI | `azureopenai` | `Ai:Endpoint` + `Ai:ApiKey` (`api-key` header) | deployment names |
 | Azure AI Foundry | `azureaifoundry` | `Ai:Endpoint` + `Ai:ApiKey` (`api-key` header) | model ids |
 | OpenAI | `openai` | `Ai:Endpoint` + `Ai:ApiKey` (`Bearer`) | model ids |
 | Ollama (local) | `ollama` | `Ai:Endpoint` (e.g. `http://localhost:11434`); no key | model ids (`llama3.1`, …) |
 
-`Ai:EmbeddingProvider` optionally overrides the provider for embeddings only (chat keeps
-`Ai:Provider`). Useful if your Copilot account lacks embeddings — point embeddings at Azure OpenAI.
+`Ai:EmbeddingProvider` selects a documented embedding endpoint independently from chat. It is
+required with `copilot`; the AppHost defaults it to orchestrated Ollama. `Ai:EmbeddingEndpoint`,
+`Ai:EmbeddingApiKey`, and `Ai:EmbeddingApiVersion` can differ from the chat endpoint/key.
 
-> **Modern APIs only.** Chat uses the **Responses API** (`/responses`) — the current surface that
-> serves GPT-5-class models like `gpt-5.6-sol` — for Copilot, Azure OpenAI, Azure AI Foundry, and
-> OpenAI. (Ollama has no Responses API, so it uses its native chat/completions.) For reasoning
+> **Supported APIs only.** Copilot chat uses the official Copilot SDK. Azure OpenAI, Azure AI
+> Foundry, and OpenAI chat use the **Responses API**; Ollama uses chat/completions. For reasoning
 > models, `Ai:ReasoningEffort` (`low`/`medium`/`high`, default `low`) controls answer depth vs.
 > speed/cost, `Ai:Temperature` is ignored (reasoning models allow only the default), and
 > `Ai:MaxOutputTokens` must be generous because it also covers the model's internal reasoning
@@ -338,12 +333,12 @@ Set `Ai:Provider` to one of:
 
 > **Embedding dimensions must match the model.** `text-embedding-3-small` = 1536, Ollama's
 > `nomic-embed-text` = 768, `mxbai-embed-large` = 1024. Set `Ai:EmbeddingDimensions` accordingly.
-> Changing it requires a **Force rebuild** of the Qdrant index (the vector size is fixed at
-> collection creation).
+> A changed embedding contract is detected automatically and produces a new Qdrant generation.
 
 ## Local runs with Ollama
 
-Two ways to use [Ollama](https://ollama.com) for a fully-local, no-cloud setup:
+The default Copilot configuration already lets the AppHost orchestrate Ollama for embeddings only.
+Two additional configurations are available:
 
 **A. Point at your own Ollama.** Run Ollama yourself and pull the models, then pick `ollama` in
 the setup dialog (or set `Parameters:AiProvider=ollama`, `Parameters:AiEndpoint=http://localhost:11434`):
@@ -354,9 +349,8 @@ ollama pull llama3.1          # chat
 ollama pull nomic-embed-text  # embeddings (768 dims)
 ```
 
-**B. Let the AppHost orchestrate Ollama.** Set `Ollama:Enabled=true` on the AppHost and it adds an
-`ollama/ollama` container (persistent model volume), wires the services to it, and pulls the
-configured models automatically. You're then only prompted for the Discord token.
+**B. Make chat fully local too.** Set `Ollama:Enabled=true`; the AppHost uses Ollama for both chat
+and embeddings and pulls both configured models into its persistent model volume.
 
 ```bash
 cd AspireDiscordBot.AppHost
@@ -367,8 +361,7 @@ dotnet user-secrets set "Ollama:Enabled" "true"
 # dotnet user-secrets set "Ollama:EmbeddingDimensions" "768"
 ```
 
-> Ollama embeddings use different dimensions than the cloud default, so switching to/from Ollama
-> requires a **Force rebuild** of the index.
+Switching embedding models or dimensions automatically invalidates and replaces the old generation.
 
 ## Configuration reference
 
@@ -376,20 +369,27 @@ The ingestion source is set by `Ingestion:SourceMode`:
 
 ```jsonc
 // Ingestion project appsettings.json
-"Ingestion": {
-  "SourceMode": "cli",          // "cli" (default), "github", or "local"
-  "CollectionName": "aspire_docs",
-  "MaxChunkChars": 1200,
-  "ChunkOverlapChars": 150,
-  "ForceReindex": false,                    // drop + rebuild on startup
-  "SkipStartupIngestWhenPopulated": true,   // fast restarts when the index already exists
-  "RefreshIntervalHours": 24,               // scheduled refresh; 0 disables it
-  "Cli": {
-    "ResolveDeepLinks": true,   // resolve exact aspire.dev URLs for citations
-    "MaxConcurrency": 6,        // parallel `aspire docs get` calls
-    // Optional: read the deep-link title index from a local aspire.dev clone (instant) instead
-    // of GitHub. When unset, titles are fetched from GitHub.
-    "AspireDevLocalPath": "D:/GitHub/aspire.dev"
+{
+  "Ingestion": {
+    "SourceMode": "cli",          // "cli" (default), "github", or "local"
+    "CollectionName": "aspire_docs",
+    "MaxChunkChars": 1200,
+    "ChunkOverlapChars": 150,
+    "ForceReindex": false,                    // rebuild on startup
+    "SkipStartupIngestWhenPopulated": true,   // skip only a compatible published generation
+    "RefreshIntervalHours": 24,               // scheduled refresh; 0 disables it
+    "Cli": {
+      "ResolveDeepLinks": true,
+      "MaxConcurrency": 6,
+      "AspireDevLocalPath": "D:/GitHub/aspire.dev" // optional
+    }
+  },
+  "ApiSurface": {
+    "Enabled": true,
+    "RepositoryUrl": "https://github.com/microsoft/aspire.git",
+    "SourceRef": "main",
+    "CollectionName": "aspire_api",
+    "SnapshotRetention": 3
   }
 }
 ```
@@ -401,22 +401,41 @@ The ingestion source is set by `Ingestion:SourceMode`:
 - **`github`** — reads `.md`/`.mdx` directly from `microsoft/aspire` and `microsoft/aspire.dev`.
 - **`local`** — reads from on-disk clones; set `LocalPath` for each configured source.
 
+`ApiSurface:LocalSrcPath` remains an optional development override. Without it, the worker maintains
+an immutable SHA-keyed export under `%LOCALAPPDATA%\AspireDiscordBot\git` (or `ApiSurface:CachePath`).
+
+The bot's live GitHub configuration is intentionally narrow:
+
+```jsonc
+"GitHubMcp": {
+  "Enabled": true,
+  "Endpoint": "https://api.githubcopilot.com/mcp/",
+  "ReadOnly": true,
+  "Lockdown": true,
+  "Tools": ["search_code", "get_file_contents", "get_repository_tree", "get_commit",
+            "search_issues", "issue_read", "search_pull_requests", "pull_request_read"],
+  "AllowedRepositories": ["microsoft/aspire", "microsoft/aspire.dev"]
+}
+```
+
 ## Tests
 
 ```bash
 dotnet test
 ```
 
-Pure unit tests (Markdown cleaning, chunking, source filtering/URL mapping, the safety guard,
-prompt hardening, output validation, the Roslyn API-surface extractor, citation numbering, and the
-eval-scoring logic) always run. The Qdrant and end-to-end pipeline integration tests run only when a
-Qdrant endpoint is provided:
+Pure tests cover Markdown/chunking, safety, prompts, Roslyn extraction, concurrent citations,
+agent-tool budgets, GitHub MCP repository policy/result normalization, the bundled Copilot runtime
+transport, managed Git snapshots, and eval scoring. Qdrant integration tests run only when an
+endpoint is provided:
 
 ```bash
 docker run -d --name qdrant -p 6334:6334 -p 6333:6333 qdrant/qdrant
 $env:QDRANT_TEST_ENDPOINT = "http://localhost:6334"   # PowerShell
 dotnet test
 ```
+
+Set `GITHUB_MCP_TEST_TOKEN` to include the official remote MCP authentication/tool-list test.
 
 ### Answer-quality evals
 
@@ -427,9 +446,13 @@ unit-tested; the **live** eval runs the fixture against the real agentic pipelin
 pass rate. It's opt-in (skipped in normal CI). With the app's Qdrant running:
 
 ```powershell
-$env:LIVE_EVAL_QDRANT  = "Endpoint=http://localhost:16665;Key=YOUR_QDRANT_KEY"
-$env:LIVE_EVAL_API_SRC = "D:\GitHub\aspire\src"          # optional: enables search_api
-$env:LIVE_EVAL_GH_TOKEN = (gh auth token)                 # optional: enables live GitHub search
+$env:LIVE_EVAL_QDRANT = "Endpoint=http://localhost:16665;Key=YOUR_QDRANT_KEY"
+$env:LIVE_EVAL_EMBEDDING_PROVIDER = "ollama"
+$env:LIVE_EVAL_EMBEDDING_ENDPOINT = "http://localhost:11434"
+$env:LIVE_EVAL_EMBEDDING_MODEL = "nomic-embed-text"
+$env:LIVE_EVAL_EMBEDDING_DIMENSIONS = "768"
+$env:LIVE_EVAL_API_SRC = "D:\GitHub\aspire\src"           # optional local override
+$env:LIVE_EVAL_GH_TOKEN = (gh auth token)                  # optional GitHub MCP
 dotnet test --filter FullyQualifiedName~AnswerQualityEvalTests
 ```
 
@@ -440,4 +463,6 @@ The test prints a per-case PASS/FAIL report so any regression is easy to pinpoin
 `nuget.config` pins the two internal feeds that are reachable in this environment and mirror
 everything the solution needs (Aspire `13.5.0`, Discord.Net `3.20.1`, the .NET runtime and
 `Microsoft.Extensions.*` packages). If you build elsewhere, adjust the feeds to include
-`nuget.org`.
+`nuget.org`. The new official packages are `GitHub.Copilot.SDK` `1.0.11` and
+`ModelContextProtocol` `2.2.0`; the Copilot SDK also acquires its pinned platform runtime during
+build unless `CopilotCliBinaryPath` is supplied.

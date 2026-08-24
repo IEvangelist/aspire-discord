@@ -1,8 +1,9 @@
 namespace AspireDiscordBot.Core.Configuration;
 
 /// <summary>
-/// Configuration for the OpenAI-compatible chat + embedding provider.
-/// Works with Azure OpenAI (default), Azure AI Foundry, and OpenAI by switching <see cref="Provider"/>.
+/// Configuration for chat and embeddings. The <c>copilot</c> chat provider is implemented by the
+/// official GitHub Copilot SDK; documented OpenAI-compatible endpoints provide embeddings and the
+/// other chat providers.
 /// </summary>
 public sealed class AiOptions
 {
@@ -12,17 +13,26 @@ public sealed class AiOptions
     public string Provider { get; set; } = "copilot";
 
     /// <summary>
-    /// Optional separate provider for embeddings. When null, <see cref="Provider"/> is used for
-    /// both chat and embeddings. Lets you e.g. use GitHub Copilot for chat and Azure OpenAI for
-    /// embeddings if a Copilot embeddings endpoint isn't available to your account.
+    /// Optional separate provider for embeddings. This is required when chat uses <c>copilot</c>
+    /// because the Copilot SDK does not expose embeddings. Supported values are
+    /// <c>azureopenai</c>, <c>azureaifoundry</c>, <c>openai</c>, and <c>ollama</c>.
     /// </summary>
     public string? EmbeddingProvider { get; set; }
+
+    /// <summary>Optional endpoint used only for embeddings; falls back to <see cref="Endpoint"/>.</summary>
+    public string? EmbeddingEndpoint { get; set; }
+
+    /// <summary>Optional key used only for embeddings; falls back to <see cref="ApiKey"/>.</summary>
+    public string? EmbeddingApiKey { get; set; }
+
+    /// <summary>Optional Azure API version used only for embeddings.</summary>
+    public string? EmbeddingApiVersion { get; set; }
 
     /// <summary>
     /// Base endpoint. For Azure OpenAI: <c>https://{resource}.openai.azure.com</c>.
     /// For Azure AI Foundry: the models inference endpoint. For OpenAI: <c>https://api.openai.com</c>.
     /// For Ollama: the server base URL (e.g. <c>http://localhost:11434</c>).
-    /// Ignored for the <c>copilot</c> provider (it targets the GitHub Copilot API).
+    /// Ignored for the <c>copilot</c> chat provider.
     /// </summary>
     public string Endpoint { get; set; } = "";
 
@@ -77,45 +87,23 @@ public sealed class AiOptions
 }
 
 /// <summary>
-/// Settings for using GitHub Copilot as the AI provider. On first use the bot performs a GitHub
-/// device-flow login (one time) and caches the OAuth token; it then exchanges that for a
-/// short-lived Copilot bearer token and calls the OpenAI-compatible Copilot API.
+/// Settings for the official GitHub Copilot SDK runtime.
 /// </summary>
 public sealed class CopilotOptions
 {
-    /// <summary>Base URL of the GitHub Copilot OpenAI-compatible API.</summary>
-    public string ApiBase { get; set; } = "https://api.githubcopilot.com";
-
-    /// <summary>GitHub OAuth app client id used for the device-flow login (the editor Copilot app).</summary>
-    public string ClientId { get; set; } = "Iv1.b507a08c87ecfe98";
-
-    /// <summary>Integration id sent with Copilot requests.</summary>
-    public string IntegrationId { get; set; } = "vscode-chat";
-
-    /// <summary>Editor-Version header value sent with Copilot requests.</summary>
-    public string EditorVersion { get; set; } = "AspireDiscordBot/1.0";
-
-    /// <summary>Editor-Plugin-Version header value sent with Copilot requests.</summary>
-    public string EditorPluginVersion { get; set; } = "AspireDiscordBot/1.0";
-
     /// <summary>
-    /// Path to the cached OAuth token. Defaults to
-    /// <c>%USERPROFILE%/.aspire-discord/copilot-oauth.json</c>. Shared by the ingestion worker
-    /// and the bot so the device-flow login only happens once.
+    /// Optional user token passed to the official Copilot SDK. Prefer the
+    /// <c>COPILOT_GITHUB_TOKEN</c> environment variable or the SDK's logged-in user.
     /// </summary>
-    public string? OAuthTokenPath { get; set; }
+    public string? GitHubToken { get; set; }
 
-    /// <summary>
-    /// When true (default), a service performs the interactive GitHub device-flow sign-in itself
-    /// if no cached token exists. When false, the service does NOT prompt — it waits for the
-    /// shared cached token to appear (written by the AppHost, which surfaces the sign-in prompt
-    /// in the Aspire dashboard via the interaction service). See <see cref="SignInWaitSeconds"/>.
-    /// </summary>
-    public bool InteractiveSignIn { get; set; } = true;
+    /// <summary>Whether the SDK may use credentials from an existing Copilot or GitHub CLI login.</summary>
+    public bool UseLoggedInUser { get; set; } = true;
 
-    /// <summary>
-    /// How long a service waits for the shared cached token when <see cref="InteractiveSignIn"/>
-    /// is false, before failing. Gives the operator time to complete the dashboard sign-in.
-    /// </summary>
-    public int SignInWaitSeconds { get; set; } = 600;
+    /// <summary>Directory for isolated Copilot SDK runtime and session state.</summary>
+    public string? RuntimeBasePath { get; set; }
+
+    /// <summary>Server-wide idle cleanup timeout for SDK sessions.</summary>
+    public int SessionIdleTimeoutSeconds { get; set; } = 300;
+
 }

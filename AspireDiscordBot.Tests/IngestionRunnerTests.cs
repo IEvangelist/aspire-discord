@@ -63,6 +63,64 @@ public sealed class IngestionRunnerTests
         Assert.Equal(RunStatus.Completed, startup.Status);
     }
 
+    [SkippableFact]
+    public async Task Refresh_ReplacesPublishedGeneration_AndPrunesRemovedPages()
+    {
+        Skip.If(string.IsNullOrWhiteSpace(Endpoint), "QDRANT_TEST_ENDPOINT not set.");
+        await using var ctx = await Harness.CreateAsync(pageCount: 3);
+        await ctx.Runner.RunAsync(force: false, "seed");
+
+        ctx.Reader.PageCount = 1;
+        var refresh = await ctx.Runner.RunAsync(force: false, "refresh");
+
+        Assert.Equal(RunStatus.Completed, refresh.Status);
+        Assert.Equal<ulong>(1, await ctx.Store.CountAsync());
+    }
+
+    [SkippableFact]
+    public async Task FailedRefresh_PreservesPublishedGeneration()
+    {
+        Skip.If(string.IsNullOrWhiteSpace(Endpoint), "QDRANT_TEST_ENDPOINT not set.");
+        await using var ctx = await Harness.CreateAsync(pageCount: 2);
+        await ctx.Runner.RunAsync(force: false, "seed");
+        var before = await ctx.Store.CountAsync();
+
+        ctx.Reader.ThrowOnRead = true;
+        var refresh = await ctx.Runner.RunAsync(force: false, "failure");
+
+        Assert.Equal(RunStatus.Failed, refresh.Status);
+        Assert.True(ctx.Runner.HasPublishedIndex);
+        Assert.Equal(before, await ctx.Store.CountAsync());
+    }
+
+    [SkippableFact]
+    public async Task Refresh_MigratesLegacyPhysicalCollection_ToGenerationAlias()
+    {
+        Skip.If(string.IsNullOrWhiteSpace(Endpoint), "QDRANT_TEST_ENDPOINT not set.");
+        await using var ctx = await Harness.CreateAsync(pageCount: 1);
+        await ctx.Store.EnsureCollectionAsync(recreate: false);
+        var legacy = new DocChunk
+        {
+            Id = Guid.NewGuid().ToString(),
+            Source = new DocSource
+            {
+                Repo = "microsoft/aspire.dev",
+                Path = "legacy.md",
+                Title = "Legacy",
+                Url = "https://aspire.dev/legacy/",
+            },
+            Content = "Legacy content that should be replaced.",
+            Index = 0,
+        };
+        await ctx.Store.UpsertAsync([legacy], [OneHot(0)]);
+
+        var refresh = await ctx.Runner.RunAsync(force: true, "migration");
+
+        Assert.Equal(RunStatus.Completed, refresh.Status);
+        Assert.True(ctx.Runner.HasPublishedIndex);
+        Assert.Equal<ulong>(1, await ctx.Store.CountAsync());
+    }
+
     private sealed class Harness : IAsyncDisposable
     {
         private readonly QdrantClient _client;
@@ -100,7 +158,16 @@ public sealed class IngestionRunnerTests
             var embedding = new FakeEmbedding(Dims, embedDelay);
             var ingestor = new DocumentIngestor(reader, chunker, embedding, store, ingestionOptions, NullLogger<DocumentIngestor>.Instance);
             var apiOptions = Options.Create(new ApiSurfaceOptions { LocalSrcPath = null });
-            var apiIngestor = new ApiSurfaceIngestor(chunker, embedding, store, apiOptions, NullLogger<ApiSurfaceIngestor>.Instance);
+            var snapshots = new GitSourceSnapshotProvider(
+                apiOptions,
+                NullLogger<GitSourceSnapshotProvider>.Instance);
+            var apiIngestor = new ApiSurfaceIngestor(
+                chunker,
+                embedding,
+                store,
+                snapshots,
+                apiOptions,
+                NullLogger<ApiSurfaceIngestor>.Instance);
             var runner = new IngestionRunner(ingestor, apiIngestor, store, ingestionOptions, NullLogger<IngestionRunner>.Instance);
 
             return new Harness(client, collection, store, reader, runner);
@@ -108,13 +175,15 @@ public sealed class IngestionRunnerTests
 
         public async ValueTask DisposeAsync()
         {
-            try { await _client.DeleteCollectionAsync(_collection); } catch { /* ignore */ }
+            try { await Store.DeleteLogicalIndexAsync(_collection); } catch { /* ignore */ }
             _client.Dispose();
         }
     }
 
     private sealed class FakeReader(int pageCount) : IDocSourceReader
     {
+        public int PageCount { get; set; } = pageCount;
+        public bool ThrowOnRead { get; set; }
         public int CallCount { get; private set; }
         public string ModeName => "fake";
 
@@ -123,9 +192,14 @@ public sealed class IngestionRunnerTests
             [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
             CallCount++;
-            for (var i = 0; i < pageCount; i++)
+            await Task.Yield();
+            if (ThrowOnRead)
             {
-                await Task.Yield();
+                throw new InvalidOperationException("Synthetic reader failure.");
+            }
+
+            for (var i = 0; i < PageCount; i++)
+            {
                 yield return new RawDocument("microsoft/aspire.dev", $"docs/page-{i}.mdx",
                     $"# Page {i}\n\nContent about Aspire feature number {i} with enough text to chunk.", "resolved", "main")
                 {
@@ -156,5 +230,13 @@ public sealed class IngestionRunnerTests
                 return v;
             }).ToList();
         }
+
+    }
+
+    private static float[] OneHot(int hot)
+    {
+        var vector = new float[Dims];
+        vector[hot] = 1f;
+        return vector;
     }
 }

@@ -13,16 +13,13 @@ using Microsoft.Extensions.Options;
 namespace AspireDiscordBot.Core.Ai;
 
 /// <summary>
-/// A single <see cref="HttpClient"/>-based client for chat + embeddings. Chat uses the modern
+/// HTTP client for documented OpenAI-compatible chat and embedding providers. Chat uses the modern
 /// <b>Responses API</b> (<c>/responses</c>) — the successor to chat/completions and the only surface
-/// that serves GPT-5-class models — for GitHub Copilot, Azure OpenAI, Azure AI Foundry and OpenAI.
-/// Ollama, which has no Responses API, keeps its native chat/completions surface. Embeddings use the
-/// current <c>/embeddings</c> endpoint. Provider differences (URL shape + auth header) are resolved
-/// from <see cref="AiOptions.Provider"/>.
+/// that serves GPT-5-class models — for Azure OpenAI, Azure AI Foundry and OpenAI. Ollama keeps its
+/// native chat/completions surface. GitHub Copilot chat is handled only by the official SDK.
 /// </summary>
 public sealed class OpenAiCompatibleClient(
     IHttpClientFactory httpFactory,
-    CopilotTokenProvider copilotTokenProvider,
     IOptions<AiOptions> options,
     ILogger<OpenAiCompatibleClient> logger) : IChatModel, IEmbeddingModel
 {
@@ -35,6 +32,11 @@ public sealed class OpenAiCompatibleClient(
     public async Task<string> CompleteAsync(IReadOnlyList<AiChatMessage> messages, CancellationToken cancellationToken = default)
     {
         var provider = _options.Provider;
+        if (string.Equals(provider, "copilot", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException(
+                "The copilot chat provider is served by GitHub.Copilot.SDK, not the OpenAI-compatible client.");
+        }
 
         // Every modern provider (Copilot, OpenAI, Azure OpenAI, Azure AI Foundry) uses the Responses
         // API — the successor to chat/completions and the only surface that serves GPT-5-class
@@ -119,7 +121,7 @@ public sealed class OpenAiCompatibleClient(
         string? errorType = null;
         try
         {
-            using var request = await CreateRequestAsync(provider, HttpMethod.Post, BuildResponsesUrl(provider), body, cancellationToken);
+            using var request = CreateRequest(provider, HttpMethod.Post, BuildResponsesUrl(provider), body);
             using var response = await http.SendAsync(request, cancellationToken);
             await EnsureSuccessAsync(response, cancellationToken);
 
@@ -180,7 +182,7 @@ public sealed class OpenAiCompatibleClient(
         try
         {
             var http = httpFactory.CreateClient("ai");
-            using var request = await CreateRequestAsync(provider, HttpMethod.Post, url, body, cancellationToken);
+            using var request = CreateRequest(provider, HttpMethod.Post, url, body, _options.ApiKey);
             using var response = await http.SendAsync(request, cancellationToken);
             await EnsureSuccessAsync(response, cancellationToken);
 
@@ -217,7 +219,7 @@ public sealed class OpenAiCompatibleClient(
         };
 
         var http = httpFactory.CreateClient("ai");
-        using var request = await CreateRequestAsync(provider, HttpMethod.Post, url, body, cancellationToken);
+        using var request = CreateRequest(provider, HttpMethod.Post, url, body, _options.ApiKey);
         using var response = await http.SendAsync(request, cancellationToken);
         await EnsureSuccessAsync(response, cancellationToken);
 
@@ -273,6 +275,21 @@ public sealed class OpenAiCompatibleClient(
         // Embeddings may use a different provider than chat (see AiOptions.EmbeddingProvider).
         var provider = string.IsNullOrWhiteSpace(_options.EmbeddingProvider) ? _options.Provider : _options.EmbeddingProvider!;
         var url = BuildEmbeddingsUrl(provider, _options.EmbeddingModel);
+        var sameProvider = string.Equals(provider, _options.Provider, StringComparison.OrdinalIgnoreCase);
+        var embeddingApiKey = !string.IsNullOrWhiteSpace(_options.EmbeddingApiKey)
+            ? _options.EmbeddingApiKey
+            : sameProvider
+                ? _options.ApiKey
+                : null;
+        if (provider is not "ollama"
+            && !provider.Equals("ollama", StringComparison.OrdinalIgnoreCase)
+            && string.IsNullOrWhiteSpace(embeddingApiKey))
+        {
+            throw new InvalidOperationException(
+                $"Embedding provider '{provider}' differs from chat provider '{_options.Provider}' "
+                + "and requires Ai:EmbeddingApiKey.");
+        }
+
         var body = new EmbeddingRequest
         {
             Model = ModelInBody(provider) ? _options.EmbeddingModel : null,
@@ -286,7 +303,12 @@ public sealed class OpenAiCompatibleClient(
         string? errorType = null;
         try
         {
-            using var request = await CreateRequestAsync(provider, HttpMethod.Post, url, body, cancellationToken);
+            using var request = CreateRequest(
+                provider,
+                HttpMethod.Post,
+                url,
+                body,
+                embeddingApiKey);
             using var response = await http.SendAsync(request, cancellationToken);
             await EnsureSuccessAsync(response, cancellationToken);
 
@@ -443,18 +465,19 @@ public sealed class OpenAiCompatibleClient(
     // Azure OpenAI puts the model in the URL (deployment) for embeddings; others put it in the body.
     private static bool ModelInBody(string provider) => !string.Equals(provider, "azureopenai", StringComparison.OrdinalIgnoreCase);
 
-    // Ollama has no Responses API, so it stays on its native chat/completions surface.
     private static bool UsesResponsesApi(string provider) =>
-        !string.Equals(provider, "ollama", StringComparison.OrdinalIgnoreCase);
+        provider is "azureopenai" or "azureaifoundry" or "openai"
+        || provider.Equals("azureopenai", StringComparison.OrdinalIgnoreCase)
+        || provider.Equals("azureaifoundry", StringComparison.OrdinalIgnoreCase)
+        || provider.Equals("openai", StringComparison.OrdinalIgnoreCase);
 
     private string BuildResponsesUrl(string provider) => provider.ToLowerInvariant() switch
     {
-        "copilot" => $"{_options.Copilot.ApiBase.TrimEnd('/')}/responses",
         // The Azure OpenAI v1 GA surface takes the model in the body (no deployment path / api-version).
         "azureopenai" or "azureaifoundry" => $"{_options.Endpoint.TrimEnd('/')}/openai/v1/responses",
         "openai" => $"{_options.Endpoint.TrimEnd('/')}/v1/responses",
         _ => throw new InvalidOperationException(
-            $"Provider '{provider}' does not support the Responses API. Use copilot, azureopenai, azureaifoundry, or openai."),
+            $"Provider '{provider}' does not support this Responses API client. Use azureopenai, azureaifoundry, or openai."),
     };
 
     private string BuildChatCompletionsUrl(string provider) => provider.ToLowerInvariant() switch
@@ -464,18 +487,42 @@ public sealed class OpenAiCompatibleClient(
             $"Provider '{provider}' should use the Responses API, not chat/completions."),
     };
 
-    private string BuildEmbeddingsUrl(string provider, string model) => provider.ToLowerInvariant() switch
+    private string BuildEmbeddingsUrl(string provider, string model)
     {
-        "copilot" => $"{_options.Copilot.ApiBase.TrimEnd('/')}/embeddings",
-        "azureopenai" => $"{_options.Endpoint.TrimEnd('/')}/openai/deployments/{model}/embeddings?api-version={_options.ApiVersion}",
-        "azureaifoundry" => $"{_options.Endpoint.TrimEnd('/')}/embeddings?api-version={_options.ApiVersion}",
-        "openai" or "ollama" => $"{_options.Endpoint.TrimEnd('/')}/v1/embeddings",
-        _ => throw new InvalidOperationException(
-            $"Unknown AI provider '{provider}'. Use copilot, azureopenai, azureaifoundry, openai, or ollama."),
-    };
+        var sameProvider = string.Equals(provider, _options.Provider, StringComparison.OrdinalIgnoreCase);
+        var endpoint = !string.IsNullOrWhiteSpace(_options.EmbeddingEndpoint)
+            ? _options.EmbeddingEndpoint
+            : sameProvider
+                ? _options.Endpoint
+                : null;
+        if (string.IsNullOrWhiteSpace(endpoint))
+        {
+            throw new InvalidOperationException(
+                $"Embedding provider '{provider}' differs from chat provider '{_options.Provider}' "
+                + "and requires Ai:EmbeddingEndpoint.");
+        }
 
-    private async Task<HttpRequestMessage> CreateRequestAsync<T>(
-        string provider, HttpMethod method, string url, T body, CancellationToken cancellationToken)
+        var apiVersion = string.IsNullOrWhiteSpace(_options.EmbeddingApiVersion)
+            ? _options.ApiVersion
+            : _options.EmbeddingApiVersion;
+        return provider.ToLowerInvariant() switch
+        {
+            "azureopenai" => $"{endpoint.TrimEnd('/')}/openai/deployments/{model}/embeddings?api-version={apiVersion}",
+            "azureaifoundry" => $"{endpoint.TrimEnd('/')}/embeddings?api-version={apiVersion}",
+            "openai" or "ollama" => $"{endpoint.TrimEnd('/')}/v1/embeddings",
+            "copilot" => throw new InvalidOperationException(
+                "GitHub Copilot does not expose a supported embeddings API. Configure Ai:EmbeddingProvider."),
+            _ => throw new InvalidOperationException(
+                $"Unknown embedding provider '{provider}'. Use azureopenai, azureaifoundry, openai, or ollama."),
+        };
+    }
+
+    private HttpRequestMessage CreateRequest<T>(
+        string provider,
+        HttpMethod method,
+        string url,
+        T body,
+        string? apiKey = null)
     {
         var request = new HttpRequestMessage(method, url)
         {
@@ -484,28 +531,20 @@ public sealed class OpenAiCompatibleClient(
 
         switch (provider.ToLowerInvariant())
         {
-            case "copilot":
-                var token = await copilotTokenProvider.GetTokenAsync(cancellationToken);
-                request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
-                request.Headers.TryAddWithoutValidation("Copilot-Integration-Id", _options.Copilot.IntegrationId);
-                request.Headers.TryAddWithoutValidation("Editor-Version", _options.Copilot.EditorVersion);
-                request.Headers.TryAddWithoutValidation("Editor-Plugin-Version", _options.Copilot.EditorPluginVersion);
-                break;
-
             case "ollama":
                 // Local Ollama needs no authentication; send only the API key if one was configured.
-                if (!string.IsNullOrEmpty(_options.ApiKey))
+                if (!string.IsNullOrEmpty(apiKey))
                 {
-                    request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _options.ApiKey);
+                    request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
                 }
                 break;
 
             case "openai":
-                request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _options.ApiKey);
+                request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey ?? _options.ApiKey);
                 break;
 
             default: // azureopenai, azureaifoundry
-                request.Headers.TryAddWithoutValidation("api-key", _options.ApiKey);
+                request.Headers.TryAddWithoutValidation("api-key", apiKey ?? _options.ApiKey);
                 break;
         }
 

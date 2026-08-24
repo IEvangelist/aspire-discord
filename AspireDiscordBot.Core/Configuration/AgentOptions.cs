@@ -20,4 +20,7 @@ public sealed class AgentOptions
 
     /// <summary>Results returned per <c>search_docs</c> tool call.</summary>
     public int SearchResultsPerCall { get; set; } = 6;
+
+    /// <summary>Maximum wall-clock time for one SDK-driven answer.</summary>
+    public int TimeoutSeconds { get; set; } = 90;
 }

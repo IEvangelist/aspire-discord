@@ -5,8 +5,7 @@ namespace AspireDiscordBot.AppHost;
 
 /// <summary>
 /// Pulls Ollama models via the server's <c>/api/pull</c> endpoint so an orchestrated Ollama
-/// container has the configured chat + embedding models available. Best-effort: failures are
-/// logged, not fatal (the user can also pull models manually with <c>ollama pull</c>).
+/// container has the configured chat + embedding models available.
 /// </summary>
 internal static class OllamaModelPuller
 {
@@ -17,28 +16,49 @@ internal static class OllamaModelPuller
 
         foreach (var model in models.Distinct(StringComparer.OrdinalIgnoreCase))
         {
-            try
+            Exception? lastError = null;
+            for (var attempt = 1; attempt <= 3; attempt++)
             {
-                logger.LogInformation("Pulling Ollama model '{Model}' (this can take a while on first run)...", model);
-                using var response = await http.PostAsJsonAsync(
-                    $"{baseUrl.TrimEnd('/')}/api/pull",
-                    new { model, stream = false },
-                    cancellationToken);
+                try
+                {
+                    logger.LogInformation(
+                        "Pulling Ollama model '{Model}' (attempt {Attempt}/3; first use can take a while)...",
+                        model,
+                        attempt);
+                    using var response = await http.PostAsJsonAsync(
+                        $"{baseUrl.TrimEnd('/')}/api/pull",
+                        new { model, stream = false },
+                        cancellationToken);
+                    if (!response.IsSuccessStatusCode)
+                    {
+                        var body = await response.Content.ReadAsStringAsync(cancellationToken);
+                        throw new HttpRequestException(
+                            $"Ollama returned {(int)response.StatusCode}: {body}");
+                    }
 
-                if (response.IsSuccessStatusCode)
-                {
                     logger.LogInformation("Ollama model '{Model}' is ready.", model);
+                    lastError = null;
+                    break;
                 }
-                else
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                 {
-                    logger.LogWarning(
-                        "Failed to pull Ollama model '{Model}' ({Status}). Pull it manually with `ollama pull`.",
-                        model, (int)response.StatusCode);
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    lastError = ex;
+                    if (attempt < 3)
+                    {
+                        await Task.Delay(TimeSpan.FromSeconds(attempt * 2), cancellationToken);
+                    }
                 }
             }
-            catch (Exception ex) when (ex is not OperationCanceledException)
+
+            if (lastError is not null)
             {
-                logger.LogWarning(ex, "Error pulling Ollama model '{Model}'. Pull it manually with `ollama pull`.", model);
+                throw new InvalidOperationException(
+                    $"Unable to pull required Ollama model '{model}'.",
+                    lastError);
             }
         }
     }

@@ -23,16 +23,15 @@ app.MapOpenApi();
 app.MapScalarApiReference();
 
 // Admin endpoints backing the Aspire dashboard commands (see the AppHost's WithHttpCommand calls).
-// POST /admin/reingest  -> incremental refresh (updates + adds pages)
-// POST /admin/rebuild   -> full rebuild (drops the collection first; prunes deleted pages)
+// Both commands build isolated generations and publish them only after complete success.
 app.MapPost("/admin/reingest", async (IngestionRunner runner, CancellationToken cancellationToken) =>
 {
     var outcome = await runner.RunAsync(force: false, "http", cancellationToken);
     return ToResult(outcome);
 })
     .WithName("ReingestDocs")
-    .WithSummary("Re-ingest docs (incremental)")
-    .WithDescription("Re-reads the Aspire docs and updates the vector index incrementally, adding and updating changed pages. Returns 409 if an ingestion run is already in progress.")
+    .WithSummary("Refresh index")
+    .WithDescription("Builds and atomically publishes fresh documentation and API index generations. Returns 409 if an ingestion run is already in progress.")
     .WithTags("Admin")
     .Produces<RunOutcome>(StatusCodes.Status200OK)
     .Produces<RunOutcome>(StatusCodes.Status409Conflict)
@@ -45,7 +44,7 @@ app.MapPost("/admin/rebuild", async (IngestionRunner runner, CancellationToken c
 })
     .WithName("RebuildIndex")
     .WithSummary("Force rebuild index")
-    .WithDescription("Drops the collection and rebuilds the whole index from scratch, pruning pages that no longer exist. Returns 409 if an ingestion run is already in progress.")
+    .WithDescription("Resolves fresh source snapshots, rebuilds all generations, and atomically publishes them. Returns 409 if an ingestion run is already in progress.")
     .WithTags("Admin")
     .Produces<RunOutcome>(StatusCodes.Status200OK)
     .Produces<RunOutcome>(StatusCodes.Status409Conflict)
@@ -57,6 +56,19 @@ app.MapGet("/admin/status", (IngestionRunner runner) =>
     .WithSummary("Ingestion status")
     .WithDescription("Reports whether an ingestion run is currently in progress and the outcome of the last completed run.")
     .WithTags("Admin");
+
+app.MapGet("/ready", (IngestionRunner runner) =>
+{
+    var ready = runner.HasPublishedIndex;
+    return ready
+        ? Results.Ok(new { ready = true, last = runner.LastOutcome })
+        : Results.Json(
+            new { ready = false, running = runner.IsRunning, last = runner.LastOutcome },
+            statusCode: StatusCodes.Status503ServiceUnavailable);
+})
+    .WithName("IngestionReadiness")
+    .WithSummary("Published-index readiness")
+    .ExcludeFromDescription();
 
 app.Run();
 return;

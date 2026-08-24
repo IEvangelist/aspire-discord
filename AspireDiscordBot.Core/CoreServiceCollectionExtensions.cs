@@ -33,6 +33,7 @@ public static class CoreServiceCollectionExtensions
         services.Configure<AgentOptions>(configuration.GetSection(AgentOptions.SectionName));
         services.Configure<ApiSurfaceOptions>(configuration.GetSection(ApiSurfaceOptions.SectionName));
         services.Configure<LiveSearchOptions>(configuration.GetSection(LiveSearchOptions.SectionName));
+        services.Configure<GitHubMcpOptions>(configuration.GetSection(GitHubMcpOptions.SectionName));
 
         // Default the ingestion sources to the catalog when none are configured.
         services.PostConfigure<IngestionOptions>(options =>
@@ -46,14 +47,11 @@ public static class CoreServiceCollectionExtensions
         // OpenAI-compatible AI client shared as both chat + embedding model (named-client factory
         // avoids captive HttpClient handlers when consumed by singleton services).
         services.AddHttpClient("ai");
-        // Dedicated client for GitHub Copilot device-flow login + token exchange.
-        services.AddHttpClient("github-auth", http =>
+        services.AddHttpClient("ollama-bootstrap", http =>
         {
-            http.Timeout = TimeSpan.FromSeconds(30);
-            http.DefaultRequestHeaders.UserAgent.ParseAdd("aspire-discord-bot/1.0");
-            http.DefaultRequestHeaders.Accept.ParseAdd("application/json");
+            http.Timeout = TimeSpan.FromMinutes(30);
         });
-        services.AddSingleton<CopilotTokenProvider>();
+        services.AddSingleton<EmbeddingModelReadiness>();
         services.AddSingleton<OpenAiCompatibleClient>();
         services.AddSingleton<IChatModel>(sp => sp.GetRequiredService<OpenAiCompatibleClient>());
         services.AddSingleton<IEmbeddingModel>(sp => sp.GetRequiredService<OpenAiCompatibleClient>());
@@ -86,6 +84,18 @@ public static class CoreServiceCollectionExtensions
         });
         services.AddSingleton<GitHubLiveSearch>();
 
+        // Official GitHub MCP client. Its transport owns each factory-created HttpClient because the
+        // MCP session is long-lived and disposed with the singleton provider.
+        services.AddHttpClient("github-mcp", http =>
+        {
+            http.Timeout = Timeout.InfiniteTimeSpan;
+            http.DefaultRequestHeaders.UserAgent.ParseAdd("aspire-discord-bot/1.0");
+        });
+        services.AddSingleton<GitHubMcpToolPolicy>();
+        services.AddSingleton<GitHubMcpResultFormatter>();
+        services.AddSingleton<GitHubMcpToolProvider>();
+        services.AddSingleton<GitHubLiveSearchToolProvider>();
+
         // Select the reader implementation based on the configured source mode.
         services.AddSingleton<IDocSourceReader>(sp =>
         {
@@ -101,11 +111,17 @@ public static class CoreServiceCollectionExtensions
         services.AddSingleton<DocumentChunker>();
         services.AddSingleton<QdrantVectorStore>();
         services.AddSingleton<DocumentIngestor>();
+        services.AddSingleton<GitSourceSnapshotProvider>();
         services.AddSingleton<ApiSurfaceIngestor>();
         services.AddSingleton<IngestionRunner>();
         services.AddSingleton<QuestionSafetyGuard>();
         services.AddSingleton<GroundedAnswerService>();
         services.AddSingleton<AgenticAnswerService>();
+        services.AddSingleton<GroundingToolProvider>();
+        services.AddSingleton<IAgentToolProvider>(sp => sp.GetRequiredService<GroundingToolProvider>());
+        services.AddSingleton<IAgentToolProvider>(sp => sp.GetRequiredService<GitHubMcpToolProvider>());
+        services.AddSingleton<IAgentToolProvider>(sp => sp.GetRequiredService<GitHubLiveSearchToolProvider>());
+        services.AddSingleton<AgentToolCatalog>();
 
         // Select the answer pipeline: agentic (tool-calling research loop, default) or single-shot.
         // Agentic requires a tool-capable provider (Responses API); fall back to single otherwise.

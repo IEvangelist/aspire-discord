@@ -1,4 +1,5 @@
 using AspireDiscordBot.Core.Configuration;
+using AspireDiscordBot.Core.Ai;
 using AspireDiscordBot.Core.Documents;
 using Microsoft.Extensions.Options;
 
@@ -11,6 +12,7 @@ namespace AspireDiscordBot.Ingestion;
 /// </summary>
 public sealed class IngestionWorker(
     IngestionRunner runner,
+    EmbeddingModelReadiness embeddingReadiness,
     IOptions<IngestionOptions> options,
     ILogger<IngestionWorker> logger) : BackgroundService
 {
@@ -20,7 +22,7 @@ public sealed class IngestionWorker(
     {
         try
         {
-            await runner.RunStartupAsync(stoppingToken);
+            await RunStartupUntilSuccessfulAsync(stoppingToken);
 
             var intervalHours = _options.RefreshIntervalHours;
             if (intervalHours <= 0)
@@ -45,6 +47,41 @@ public sealed class IngestionWorker(
         catch (Exception ex)
         {
             logger.LogError(ex, "Ingestion worker terminated unexpectedly.");
+        }
+    }
+
+    private async Task RunStartupUntilSuccessfulAsync(CancellationToken cancellationToken)
+    {
+        var delay = TimeSpan.FromSeconds(5);
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                await embeddingReadiness.EnsureReadyAsync(cancellationToken);
+                var outcome = await runner.RunStartupAsync(cancellationToken);
+                if (outcome.Status is not (RunStatus.Failed or RunStatus.Busy))
+                {
+                    return;
+                }
+
+                logger.LogWarning(
+                    "Startup ingestion did not complete ({Status}): {Message}. Retrying in {Delay}.",
+                    outcome.Status,
+                    outcome.Message,
+                    delay);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "Startup prerequisites failed. Retrying in {Delay}.", delay);
+            }
+
+            await Task.Delay(delay, cancellationToken);
+            delay = TimeSpan.FromSeconds(Math.Min(60, delay.TotalSeconds * 2));
         }
     }
 }

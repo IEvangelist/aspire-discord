@@ -23,12 +23,12 @@ public sealed class IngestionOptions
     /// <summary>Overlap between consecutive chunks in characters.</summary>
     public int ChunkOverlapChars { get; set; } = 150;
 
-    /// <summary>Re-embed and upsert everything on startup even if the collection already exists.</summary>
+    /// <summary>Build and publish fresh index generations on startup even when compatible ones exist.</summary>
     public bool ForceReindex { get; set; }
 
     /// <summary>
-    /// When true, the startup ingest is skipped if the Qdrant collection is already populated
-    /// (fast restarts). Refreshes then happen on the schedule or via the dashboard command.
+    /// When true, startup ingestion is skipped when Qdrant contains a compatible published
+    /// generation (same embedding provider/model/dimensions and extractor version).
     /// Ignored when <see cref="ForceReindex"/> is true.
     /// </summary>
     public bool SkipStartupIngestWhenPopulated { get; set; } = true;

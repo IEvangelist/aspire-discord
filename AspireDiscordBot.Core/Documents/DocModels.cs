@@ -14,6 +14,9 @@ public sealed record DocSource
 
     /// <summary>Canonical URL used when citing this document.</summary>
     public required string Url { get; init; }
+
+    /// <summary>Immutable source revision when available.</summary>
+    public string? Revision { get; init; }
 }
 
 /// <summary>A retrievable slice of a documentation file.</summary>

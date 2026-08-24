@@ -23,35 +23,59 @@ public sealed class GitHubDocSourceReader(IHttpClientFactory httpFactory, ILogge
 
         foreach (var repo in sources)
         {
-            var paths = await ListPathsAsync(http, repo, cancellationToken);
-            logger.LogInformation("GitHub: {Count} candidate files in {Repo}@{Branch}.", paths.Count, repo.Repo, repo.Branch);
+            var snapshot = await ListPathsAsync(http, repo, cancellationToken);
+            logger.LogInformation(
+                "GitHub: {Count} candidate files in {Repo}@{Revision}.",
+                snapshot.Paths.Count,
+                repo.Repo,
+                snapshot.Revision);
 
-            foreach (var path in paths)
+            foreach (var path in snapshot.Paths)
             {
                 cancellationToken.ThrowIfCancellationRequested();
 
-                var raw = await DownloadRawAsync(http, repo, path, cancellationToken);
+                var raw = await DownloadRawAsync(http, repo, snapshot.Revision, path, cancellationToken);
                 if (raw is not null)
                 {
-                    yield return new RawDocument(repo.Repo, path, raw, repo.UrlStyle, repo.Branch);
+                    yield return new RawDocument(repo.Repo, path, raw, repo.UrlStyle, snapshot.Revision);
                 }
             }
         }
     }
 
-    private async Task<List<string>> ListPathsAsync(HttpClient http, DocRepoOptions repo, CancellationToken cancellationToken)
+    private async Task<GitTreeSnapshot> ListPathsAsync(
+        HttpClient http,
+        DocRepoOptions repo,
+        CancellationToken cancellationToken)
     {
         var url = $"https://api.github.com/repos/{repo.Repo}/git/trees/{repo.Branch}?recursive=1";
         using var response = await http.GetAsync(url, cancellationToken);
         if (!response.IsSuccessStatusCode)
         {
             var body = await response.Content.ReadAsStringAsync(cancellationToken);
-            logger.LogError("GitHub tree request failed ({Status}) for {Repo}: {Body}", (int)response.StatusCode, repo.Repo, body);
-            return [];
+            throw new HttpRequestException(
+                $"GitHub tree request failed ({(int)response.StatusCode}) for {repo.Repo}: {body}");
         }
 
         await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
         using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+
+        if (doc.RootElement.TryGetProperty("truncated", out var truncated)
+            && truncated.ValueKind is JsonValueKind.True)
+        {
+            throw new InvalidOperationException(
+                $"GitHub returned a truncated recursive tree for {repo.Repo}@{repo.Branch}; "
+                + "refusing to publish a partial index. Use the managed/local Git source mode.");
+        }
+
+        var revision = doc.RootElement.TryGetProperty("sha", out var sha)
+            ? sha.GetString()
+            : null;
+        if (string.IsNullOrWhiteSpace(revision))
+        {
+            throw new InvalidOperationException(
+                $"GitHub tree response for {repo.Repo}@{repo.Branch} did not include a revision.");
+        }
 
         var results = new List<string>();
         if (doc.RootElement.TryGetProperty("tree", out var tree))
@@ -68,27 +92,26 @@ public sealed class GitHubDocSourceReader(IHttpClientFactory httpFactory, ILogge
             }
         }
 
-        return results;
+        return new GitTreeSnapshot(revision, results);
     }
 
-    private async Task<string?> DownloadRawAsync(HttpClient http, DocRepoOptions repo, string path, CancellationToken cancellationToken)
+    private async Task<string?> DownloadRawAsync(
+        HttpClient http,
+        DocRepoOptions repo,
+        string revision,
+        string path,
+        CancellationToken cancellationToken)
     {
-        var url = $"https://raw.githubusercontent.com/{repo.Repo}/{repo.Branch}/{Uri.EscapeDataString(path).Replace("%2F", "/")}";
-        try
+        var url = $"https://raw.githubusercontent.com/{repo.Repo}/{revision}/{Uri.EscapeDataString(path).Replace("%2F", "/")}";
+        using var response = await http.GetAsync(url, cancellationToken);
+        if (!response.IsSuccessStatusCode)
         {
-            using var response = await http.GetAsync(url, cancellationToken);
-            if (!response.IsSuccessStatusCode)
-            {
-                logger.LogWarning("Failed to download {Url} ({Status}).", url, (int)response.StatusCode);
-                return null;
-            }
+            throw new HttpRequestException(
+                $"GitHub raw-content request failed ({(int)response.StatusCode}) for {url}.");
+        }
 
-            return await response.Content.ReadAsStringAsync(cancellationToken);
-        }
-        catch (HttpRequestException ex)
-        {
-            logger.LogWarning(ex, "Error downloading {Url}.", url);
-            return null;
-        }
+        return await response.Content.ReadAsStringAsync(cancellationToken);
     }
+
+    private sealed record GitTreeSnapshot(string Revision, IReadOnlyList<string> Paths);
 }

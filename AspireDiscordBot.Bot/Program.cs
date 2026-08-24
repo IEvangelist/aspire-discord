@@ -1,4 +1,5 @@
 using AspireDiscordBot.Bot;
+using AspireDiscordBot.Copilot;
 using AspireDiscordBot.Core;
 using Discord;
 using Discord.WebSocket;
@@ -9,6 +10,10 @@ var builder = WebApplication.CreateBuilder(args);
 
 builder.AddServiceDefaults();
 builder.AddAspireDiscordBotCore("qdrant");
+if (builder.UsesCopilotSdk())
+{
+    builder.AddCopilotSdkAnswering();
+}
 
 // OpenAPI document (served at /openapi/v1.json) + a Scalar API reference UI (served at /scalar),
 // surfaced as a link on the bot resource in the Aspire dashboard.

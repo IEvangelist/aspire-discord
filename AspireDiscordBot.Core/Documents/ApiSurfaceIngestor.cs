@@ -7,8 +7,8 @@ using Microsoft.Extensions.Options;
 namespace AspireDiscordBot.Core.Documents;
 
 /// <summary>
-/// Ingests the microsoft/aspire public API surface from a local source clone into its own Qdrant
-/// collection. It walks the configured <c>src</c> subtrees, extracts public types + XML docs with
+/// Ingests the microsoft/aspire public API surface from a managed or local Git snapshot into its own
+/// Qdrant index. It walks the configured <c>src</c> subtrees, extracts public types + XML docs with
 /// <see cref="ApiSurfaceExtractor"/>, chunks and embeds them, and upserts to the API collection so
 /// the agent's <c>search_api</c> tool can retrieve real type/method-level knowledge.
 /// </summary>
@@ -16,88 +16,132 @@ public sealed class ApiSurfaceIngestor(
     DocumentChunker chunker,
     IEmbeddingModel embeddingModel,
     QdrantVectorStore vectorStore,
+    GitSourceSnapshotProvider snapshots,
     IOptions<ApiSurfaceOptions> options,
     ILogger<ApiSurfaceIngestor> logger)
 {
     private const int EmbeddingBatchSize = 16;
     private readonly ApiSurfaceOptions _options = options.Value;
 
-    /// <summary>Whether API surface ingestion is configured (a local src path is set and exists).</summary>
+    /// <summary>Whether API surface ingestion and retrieval are configured.</summary>
     public bool IsEnabled =>
-        !string.IsNullOrWhiteSpace(_options.LocalSrcPath) && Directory.Exists(_options.LocalSrcPath);
+        _options.Enabled
+        || (!string.IsNullOrWhiteSpace(_options.LocalSrcPath)
+            && Directory.Exists(_options.LocalSrcPath));
 
     /// <summary>The Qdrant collection storing the API surface.</summary>
     public string CollectionName => _options.CollectionName;
 
-    /// <param name="forceReindex">When true, the API collection is dropped and rebuilt.</param>
     public async Task<IngestionResult> IngestAsync(bool forceReindex, CancellationToken cancellationToken = default)
+    {
+        var completed = await BuildAsync(forceReindex, cancellationToken);
+        try
+        {
+            await vectorStore.CommitBuildAsync(completed.Build, cancellationToken);
+            return completed.Result;
+        }
+        catch
+        {
+            await vectorStore.AbortBuildAsync(completed.Build, CancellationToken.None);
+            throw;
+        }
+    }
+
+    /// <summary>Builds a complete API generation without publishing its logical alias.</summary>
+    public async Task<IngestionBuildResult> BuildAsync(
+        bool forceReindex,
+        CancellationToken cancellationToken = default)
     {
         if (!IsEnabled)
         {
-            logger.LogInformation("API surface ingestion is disabled (ApiSurface:LocalSrcPath not set).");
-            return new IngestionResult(0, 0, "api");
+            throw new InvalidOperationException("API surface ingestion is disabled.");
         }
 
-        await vectorStore.EnsureCollectionAsync(forceReindex, cancellationToken, _options.CollectionName);
+        var snapshot = await snapshots.GetAsync(cancellationToken);
+        var files = EnumerateSourceFiles(snapshot.SourceRoot).ToList();
+        if (files.Count == 0)
+        {
+            throw new InvalidOperationException(
+                $"No API source files were found under '{snapshot.SourceRoot}'.");
+        }
 
-        var files = EnumerateSourceFiles(_options.LocalSrcPath!).ToList();
-        logger.LogInformation("API surface: scanning {Count} source files under {Path}.", files.Count, _options.LocalSrcPath);
+        logger.LogInformation(
+            "API surface: scanning {Count} source files under {Path} at {Revision}.",
+            files.Count,
+            snapshot.SourceRoot,
+            snapshot.Revision);
+        var build = await vectorStore.BeginBuildAsync(_options.CollectionName, cancellationToken);
 
         var typeCount = 0;
         var chunkCount = 0;
         var buffer = new List<DocChunk>(EmbeddingBatchSize);
 
-        foreach (var file in files)
+        try
         {
-            cancellationToken.ThrowIfCancellationRequested();
-
-            string text;
-            try
+            foreach (var file in files)
             {
-                text = await File.ReadAllTextAsync(file, cancellationToken);
-            }
-            catch (Exception ex)
-            {
-                logger.LogDebug(ex, "Skipping unreadable file {File}.", file);
-                continue;
-            }
+                cancellationToken.ThrowIfCancellationRequested();
 
-            var relativePath = Path.GetRelativePath(_options.LocalSrcPath!, file).Replace('\\', '/');
-
-            foreach (var api in ApiSurfaceExtractor.Extract(text, relativePath))
-            {
-                typeCount++;
-                var source = new DocSource
+                string text;
+                try
                 {
-                    Repo = _options.CitationRepo,
-                    Path = $"src/{relativePath}",
-                    Title = $"{api.TypeName} ({api.Namespace})",
-                    Url = $"https://github.com/{_options.CitationRepo}/blob/{_options.CitationBranch}/src/{relativePath}",
-                };
-
-                foreach (var chunk in chunker.Chunk(source, api.Body))
+                    text = await File.ReadAllTextAsync(file, cancellationToken);
+                }
+                catch (Exception ex)
                 {
-                    buffer.Add(chunk);
-                    chunkCount++;
-                    if (buffer.Count >= EmbeddingBatchSize)
+                    throw new IOException($"Unable to read API source file '{file}'.", ex);
+                }
+
+                var relativePath = Path.GetRelativePath(snapshot.SourceRoot, file).Replace('\\', '/');
+
+                foreach (var api in ApiSurfaceExtractor.Extract(text, relativePath))
+                {
+                    typeCount++;
+                    var source = new DocSource
                     {
-                        await FlushAsync(buffer, cancellationToken);
-                        buffer.Clear();
+                        Repo = _options.CitationRepo,
+                        Path = $"src/{relativePath}",
+                        Title = $"{api.TypeName} ({api.Namespace})",
+                        Url = $"https://github.com/{_options.CitationRepo}/blob/{snapshot.Revision}/src/{relativePath}",
+                        Revision = snapshot.Revision,
+                    };
+
+                    foreach (var chunk in chunker.Chunk(source, api.Body))
+                    {
+                        buffer.Add(chunk);
+                        chunkCount++;
+                        if (buffer.Count >= EmbeddingBatchSize)
+                        {
+                            await FlushAsync(buffer, build, cancellationToken);
+                            buffer.Clear();
+                        }
                     }
                 }
             }
-        }
 
-        if (buffer.Count > 0)
+            if (buffer.Count > 0)
+            {
+                await FlushAsync(buffer, build, cancellationToken);
+            }
+
+            if (typeCount == 0 || chunkCount == 0)
+            {
+                throw new InvalidOperationException(
+                    "The API source snapshot produced no public API entries; the current index was preserved.");
+            }
+
+            logger.LogInformation(
+                "API generation built: {Types} public types, {Chunks} chunks for '{Collection}'.",
+                typeCount, chunkCount, _options.CollectionName);
+            return new IngestionBuildResult(
+                new IngestionResult(typeCount, chunkCount, "api"),
+                build);
+        }
+        catch
         {
-            await FlushAsync(buffer, cancellationToken);
+            await vectorStore.AbortBuildAsync(build, CancellationToken.None);
+            throw;
         }
-
-        logger.LogInformation(
-            "API surface ingestion complete: {Types} public types, {Chunks} chunks into '{Collection}'.",
-            typeCount, chunkCount, _options.CollectionName);
-
-        return new IngestionResult(typeCount, chunkCount, "api");
     }
 
     private IEnumerable<string> EnumerateSourceFiles(string srcRoot)
@@ -129,10 +173,18 @@ public sealed class ApiSurfaceIngestor(
         }
     }
 
-    private async Task FlushAsync(List<DocChunk> chunks, CancellationToken cancellationToken)
+    private async Task FlushAsync(
+        List<DocChunk> chunks,
+        VectorIndexBuild build,
+        CancellationToken cancellationToken)
     {
         var inputs = chunks.Select(c => c.Content).ToList();
         var embeddings = await embeddingModel.EmbedAsync(inputs, cancellationToken);
-        await vectorStore.UpsertAsync(chunks, embeddings, cancellationToken, _options.CollectionName);
+        await vectorStore.UpsertAsync(
+            chunks,
+            embeddings,
+            cancellationToken,
+            build.PhysicalCollection,
+            build);
     }
 }

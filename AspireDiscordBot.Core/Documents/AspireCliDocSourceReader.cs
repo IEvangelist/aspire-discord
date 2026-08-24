@@ -1,4 +1,5 @@
 using System.Runtime.CompilerServices;
+using System.Collections.Concurrent;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Threading.Channels;
@@ -52,6 +53,7 @@ public sealed class AspireCliDocSourceReader(
             SingleReader = true,
             SingleWriter = false,
         });
+        var failures = new ConcurrentQueue<string>();
 
         var producer = Task.Run(async () =>
         {
@@ -80,7 +82,8 @@ public sealed class AspireCliDocSourceReader(
                 }
                 catch (Exception ex) when (ex is not OperationCanceledException)
                 {
-                    logger.LogWarning(ex, "Failed to fetch Aspire docs page '{Slug}'; skipping.", page.Slug);
+                    logger.LogWarning(ex, "Failed to fetch Aspire docs page '{Slug}'.", page.Slug);
+                    failures.Enqueue($"{page.Slug}: {ex.Message}");
                 }
                 finally
                 {
@@ -104,6 +107,17 @@ public sealed class AspireCliDocSourceReader(
         }
 
         await producer;
+        if (!failures.IsEmpty)
+        {
+            throw new InvalidOperationException(
+                $"{failures.Count} Aspire documentation pages failed to load; "
+                + "the current index was preserved. First failure: "
+                + failures.TryPeek(out var first) switch
+                {
+                    true => first,
+                    false => "unknown",
+                });
+        }
     }
 
     private async Task<List<DocListItem>> ListPagesAsync(TimeSpan timeout, CancellationToken cancellationToken)
@@ -138,12 +152,13 @@ public sealed class AspireCliDocSourceReader(
 
         if (result.ExitCode != 0)
         {
-            logger.LogWarning("`aspire docs get {Slug}` failed (exit {Exit}).", slug, result.ExitCode);
-            return null;
+            throw new InvalidOperationException(
+                $"`aspire docs get {slug}` failed (exit {result.ExitCode}): {result.StandardError}");
         }
 
         var page = ParseJson<DocPage>(result.StandardOutput);
-        return page?.Content;
+        return page?.Content
+            ?? throw new InvalidOperationException($"`aspire docs get {slug}` returned invalid JSON.");
     }
 
     /// <summary>
@@ -161,8 +176,8 @@ public sealed class AspireCliDocSourceReader(
         var objectStart = output.IndexOf('{');
         var start = (arrayStart, objectStart) switch
         {
-            (< 0, < 0) => -1,
-            (< 0, _) => objectStart,
+            ( < 0, < 0) => -1,
+            ( < 0, _) => objectStart,
             (_, < 0) => arrayStart,
             _ => Math.Min(arrayStart, objectStart),
         };

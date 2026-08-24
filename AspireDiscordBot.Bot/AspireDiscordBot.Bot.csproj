@@ -15,6 +15,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\AspireDiscordBot.Copilot\AspireDiscordBot.Copilot.csproj" />
     <ProjectReference Include="..\AspireDiscordBot.Core\AspireDiscordBot.Core.csproj" />
     <ProjectReference Include="..\AspireDiscordBot.ServiceDefaults\AspireDiscordBot.ServiceDefaults.csproj" />
   </ItemGroup>

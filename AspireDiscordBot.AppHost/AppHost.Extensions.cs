@@ -2,65 +2,82 @@ using Aspire.Hosting.ApplicationModel;
 
 namespace AspireDiscordBot.AppHost;
 
-/// <summary>
-/// The resolved AI settings applied to the services as <c>Ai__*</c> environment variables.
-/// Built once in the AppHost and shared by the ingestion worker and the bot. When
-/// <see cref="OllamaEndpoint"/> is set, the endpoint is wired from the orchestrated Ollama
-/// container and no API key is sent; otherwise the configured endpoint/key are used.
-/// </summary>
+/// <summary>Resolved chat and embedding settings shared by the bot and ingestion worker.</summary>
 internal sealed record AiConfiguration
 {
     public required string Provider { get; init; }
-
     public required string ChatModel { get; init; }
-
-    public required string EmbeddingModel { get; init; }
-
-    public required string EmbeddingDimensions { get; init; }
-
-    /// <summary>Endpoint used when not running against an orchestrated Ollama container.</summary>
     public string? Endpoint { get; init; }
-
-    /// <summary>API key used when not running against an orchestrated Ollama container.</summary>
     public string? ApiKey { get; init; }
+    public EndpointReference? ChatEndpointReference { get; init; }
 
-    /// <summary>When set, AI is served by this orchestrated Ollama container endpoint.</summary>
-    public EndpointReference? OllamaEndpoint { get; init; }
+    public required string EmbeddingProvider { get; init; }
+    public required string EmbeddingModel { get; init; }
+    public required string EmbeddingDimensions { get; init; }
+    public string? EmbeddingEndpoint { get; init; }
+    public string? EmbeddingApiKey { get; init; }
+    public string? EmbeddingApiVersion { get; init; }
+    public EndpointReference? EmbeddingEndpointReference { get; init; }
 
-    /// <summary>
-    /// For the copilot provider: whether the service should run the interactive device-flow
-    /// sign-in itself. Set false when the AppHost drives the sign-in via the dashboard.
-    /// </summary>
-    public bool? CopilotInteractiveSignIn { get; init; }
+    public string? CopilotGitHubToken { get; init; }
+    public string? GitHubMcpToken { get; init; }
 }
 
-/// <summary>AppHost helper extensions for wiring shared configuration onto resources.</summary>
 internal static class AppHostExtensions
 {
-    /// <summary>Applies the shared AI environment (<c>Ai__*</c>) to a service resource.</summary>
-    public static IResourceBuilder<T> WithAiEnvironment<T>(this IResourceBuilder<T> builder, AiConfiguration ai)
+    public static IResourceBuilder<T> WithAiEnvironment<T>(
+        this IResourceBuilder<T> builder,
+        AiConfiguration ai)
         where T : IResourceWithEnvironment
     {
         builder
             .WithEnvironment("Ai__Provider", ai.Provider)
             .WithEnvironment("Ai__ChatModel", ai.ChatModel)
+            .WithEnvironment("Ai__EmbeddingProvider", ai.EmbeddingProvider)
             .WithEnvironment("Ai__EmbeddingModel", ai.EmbeddingModel)
             .WithEnvironment("Ai__EmbeddingDimensions", ai.EmbeddingDimensions);
 
-        if (ai.OllamaEndpoint is not null)
+        if (ai.ChatEndpointReference is not null)
         {
-            builder.WithEnvironment("Ai__Endpoint", ai.OllamaEndpoint);
+            builder.WithEnvironment("Ai__Endpoint", ai.ChatEndpointReference);
         }
-        else
+        else if (!string.IsNullOrWhiteSpace(ai.Endpoint))
         {
-            builder
-                .WithEnvironment("Ai__Endpoint", ai.Endpoint)
-                .WithEnvironment("Ai__ApiKey", ai.ApiKey);
+            builder.WithEnvironment("Ai__Endpoint", ai.Endpoint);
         }
 
-        if (ai.CopilotInteractiveSignIn is { } interactive)
+        if (!string.IsNullOrWhiteSpace(ai.ApiKey))
         {
-            builder.WithEnvironment("Ai__Copilot__InteractiveSignIn", interactive ? "true" : "false");
+            builder.WithEnvironment("Ai__ApiKey", ai.ApiKey);
+        }
+
+        if (ai.EmbeddingEndpointReference is not null)
+        {
+            builder.WithEnvironment("Ai__EmbeddingEndpoint", ai.EmbeddingEndpointReference);
+        }
+        else if (!string.IsNullOrWhiteSpace(ai.EmbeddingEndpoint))
+        {
+            builder.WithEnvironment("Ai__EmbeddingEndpoint", ai.EmbeddingEndpoint);
+        }
+
+        if (!string.IsNullOrWhiteSpace(ai.EmbeddingApiKey))
+        {
+            builder.WithEnvironment("Ai__EmbeddingApiKey", ai.EmbeddingApiKey);
+        }
+
+        if (!string.IsNullOrWhiteSpace(ai.EmbeddingApiVersion))
+        {
+            builder.WithEnvironment("Ai__EmbeddingApiVersion", ai.EmbeddingApiVersion);
+        }
+
+        if (!string.IsNullOrWhiteSpace(ai.CopilotGitHubToken))
+        {
+            builder.WithEnvironment("COPILOT_GITHUB_TOKEN", ai.CopilotGitHubToken);
+        }
+
+        if (!string.IsNullOrWhiteSpace(ai.GitHubMcpToken))
+        {
+            builder.WithEnvironment("GITHUB_MCP_TOKEN", ai.GitHubMcpToken);
         }
 
         return builder;

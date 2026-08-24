@@ -1,4 +1,5 @@
 using AspireDiscordBot.Core;
+using AspireDiscordBot.Copilot;
 using AspireDiscordBot.Core.Evals;
 using AspireDiscordBot.Core.Rag;
 using Microsoft.Extensions.Configuration;
@@ -34,8 +35,11 @@ public sealed class AnswerQualityEvalTests(ITestOutputHelper output)
             ["ConnectionStrings:qdrant"] = Qdrant,
             ["Ai:Provider"] = "copilot",
             ["Ai:ChatModel"] = "gpt-5.6-sol",
-            ["Ai:EmbeddingModel"] = "text-embedding-3-small",
-            ["Ai:EmbeddingDimensions"] = "1536",
+            ["Ai:EmbeddingProvider"] = Environment.GetEnvironmentVariable("LIVE_EVAL_EMBEDDING_PROVIDER") ?? "ollama",
+            ["Ai:EmbeddingEndpoint"] = Environment.GetEnvironmentVariable("LIVE_EVAL_EMBEDDING_ENDPOINT") ?? "http://localhost:11434",
+            ["Ai:EmbeddingApiKey"] = Environment.GetEnvironmentVariable("LIVE_EVAL_EMBEDDING_API_KEY"),
+            ["Ai:EmbeddingModel"] = Environment.GetEnvironmentVariable("LIVE_EVAL_EMBEDDING_MODEL") ?? "nomic-embed-text",
+            ["Ai:EmbeddingDimensions"] = Environment.GetEnvironmentVariable("LIVE_EVAL_EMBEDDING_DIMENSIONS") ?? "768",
             ["Ai:ReasoningEffort"] = "low",
             ["Ai:MaxOutputTokens"] = "2000",
             ["Ingestion:CollectionName"] = "aspire_docs",
@@ -48,6 +52,7 @@ public sealed class AnswerQualityEvalTests(ITestOutputHelper output)
         var builder = Host.CreateApplicationBuilder();
         builder.Configuration.AddInMemoryCollection(settings);
         builder.AddAspireDiscordBotCore("qdrant");
+        builder.AddCopilotSdkAnswering();
         using var host = builder.Build();
 
         var runner = new EvalRunner(host.Services.GetRequiredService<IAnswerService>());

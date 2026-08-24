@@ -80,6 +80,63 @@ public sealed class OpenAiCompatibleClientTests : IDisposable
         Assert.Equal("", request.Auth); // no Authorization / api-key header for local Ollama
     }
 
+    [Fact]
+    public async Task OllamaChat_SendsConfiguredBearerToken()
+    {
+        var client = CreateClient("ollama", apiKey: "ollama-secret");
+
+        await client.CompleteAsync([AiChatMessage.User("hi")]);
+
+        Assert.Equal(
+            "Bearer ollama-secret",
+            _requests.Single(request => request.Path.Contains("chat/completions")).Auth);
+    }
+
+    [Fact]
+    public async Task CopilotChat_IsRejectedByLegacyHttpClient()
+    {
+        var client = CreateClient("copilot");
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            client.CompleteAsync([AiChatMessage.User("hi")]));
+
+        Assert.Contains("GitHub.Copilot.SDK", error.Message);
+    }
+
+    [Fact]
+    public async Task CopilotEmbeddings_RequireASeparateSupportedProvider()
+    {
+        var client = CreateClient("copilot");
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            client.EmbedAsync(["hello"]));
+
+        Assert.Contains("EmbeddingProvider", error.Message);
+    }
+
+    [Fact]
+    public async Task SeparateOllamaEmbeddings_DoNotReceiveChatApiKey()
+    {
+        var options = Options.Create(new AiOptions
+        {
+            Provider = "openai",
+            Endpoint = _prefix.TrimEnd('/'),
+            ApiKey = "chat-secret",
+            ChatModel = "gpt-4o-mini",
+            EmbeddingProvider = "ollama",
+            EmbeddingEndpoint = _prefix.TrimEnd('/'),
+            EmbeddingModel = "nomic-embed-text",
+        });
+        var client = new OpenAiCompatibleClient(
+            new SingleClientFactory(),
+            options,
+            NullLogger<OpenAiCompatibleClient>.Instance);
+
+        await client.EmbedAsync(["hello"]);
+
+        Assert.Equal("", _requests.Single(request => request.Path.Contains("embeddings")).Auth);
+    }
+
     private OpenAiCompatibleClient CreateClient(string provider, string apiKey = "test-key")
     {
         var options = Options.Create(new AiOptions
@@ -93,8 +150,7 @@ public sealed class OpenAiCompatibleClientTests : IDisposable
         });
 
         var factory = new SingleClientFactory();
-        var copilot = new CopilotTokenProvider(factory, options, NullLogger<CopilotTokenProvider>.Instance);
-        return new OpenAiCompatibleClient(factory, copilot, options, NullLogger<OpenAiCompatibleClient>.Instance);
+        return new OpenAiCompatibleClient(factory, options, NullLogger<OpenAiCompatibleClient>.Instance);
     }
 
     private async Task HandleRequestsAsync()

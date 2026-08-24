@@ -27,7 +27,9 @@ public sealed class GitHubLiveSearch(
     private string? Token =>
         !string.IsNullOrWhiteSpace(_options.GitHubToken)
             ? _options.GitHubToken
-            : Environment.GetEnvironmentVariable("GITHUB_TOKEN");
+            : Environment.GetEnvironmentVariable("GITHUB_MCP_TOKEN")
+                ?? Environment.GetEnvironmentVariable("GH_TOKEN")
+                ?? Environment.GetEnvironmentVariable("GITHUB_TOKEN");
 
     /// <summary>Whether live search is configured (enabled and a token is available).</summary>
     public bool IsEnabled => _options.Enabled && !string.IsNullOrWhiteSpace(Token);

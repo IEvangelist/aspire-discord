@@ -11,21 +11,25 @@ namespace AspireDiscordBot.Core.Rag;
 /// </summary>
 public sealed partial class CitationRegistry
 {
+    private readonly object _sync = new();
     private readonly Dictionary<string, Citation> _byUrl = new(StringComparer.OrdinalIgnoreCase);
     private readonly List<Citation> _ordered = [];
 
     /// <summary>Registers a source (if new) and returns its stable citation number.</summary>
     public int Register(string title, string url, string repo)
     {
-        if (_byUrl.TryGetValue(url, out var existing))
+        lock (_sync)
         {
-            return existing.Number;
-        }
+            if (_byUrl.TryGetValue(url, out var existing))
+            {
+                return existing.Number;
+            }
 
-        var citation = new Citation(_ordered.Count + 1, title, url, repo);
-        _byUrl[url] = citation;
-        _ordered.Add(citation);
-        return citation.Number;
+            var citation = new Citation(_ordered.Count + 1, title, url, repo);
+            _byUrl[url] = citation;
+            _ordered.Add(citation);
+            return citation.Number;
+        }
     }
 
     /// <summary>Formats a batch of search results as a numbered, grounded context block for the model.</summary>
@@ -51,7 +55,16 @@ public sealed partial class CitationRegistry
     }
 
     /// <summary>All sources registered so far, in citation order.</summary>
-    public IReadOnlyList<Citation> All => _ordered;
+    public IReadOnlyList<Citation> All
+    {
+        get
+        {
+            lock (_sync)
+            {
+                return _ordered.ToArray();
+            }
+        }
+    }
 
     /// <summary>
     /// Registers a single external source (e.g. a GitHub code/issue result) and returns a numbered,
@@ -70,18 +83,21 @@ public sealed partial class CitationRegistry
     /// </summary>
     public IReadOnlyList<Citation> CitedBy(string answer)
     {
-        var referenced = new List<Citation>();
-        var seen = new HashSet<int>();
-        foreach (System.Text.RegularExpressions.Match m in CitationMarker().Matches(answer))
+        lock (_sync)
         {
-            if (int.TryParse(m.Groups[1].Value, out var n)
-                && n >= 1 && n <= _ordered.Count && seen.Add(n))
+            var referenced = new List<Citation>();
+            var seen = new HashSet<int>();
+            foreach (System.Text.RegularExpressions.Match m in CitationMarker().Matches(answer))
             {
-                referenced.Add(_ordered[n - 1]);
+                if (int.TryParse(m.Groups[1].Value, out var n)
+                    && n >= 1 && n <= _ordered.Count && seen.Add(n))
+                {
+                    referenced.Add(_ordered[n - 1]);
+                }
             }
-        }
 
-        return referenced.Count > 0 ? referenced : _ordered;
+            return referenced.Count > 0 ? referenced : _ordered.ToArray();
+        }
     }
 
     [System.Text.RegularExpressions.GeneratedRegex(@"\[(\d+)\]")]

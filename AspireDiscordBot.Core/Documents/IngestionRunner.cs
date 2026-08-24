@@ -47,11 +47,14 @@ public sealed class IngestionRunner(
     private readonly SemaphoreSlim _gate = new(1, 1);
 
     private volatile bool _isRunning;
+    private volatile bool _hasPublishedIndex;
     private DateTimeOffset? _lastStartedUtc;
     private DateTimeOffset? _lastFinishedUtc;
     private RunOutcome? _lastOutcome;
 
     public bool IsRunning => _isRunning;
+
+    public bool HasPublishedIndex => _hasPublishedIndex;
 
     public RunOutcome? LastOutcome => _lastOutcome;
 
@@ -68,12 +71,11 @@ public sealed class IngestionRunner(
 
         if (!force && _options.SkipStartupIngestWhenPopulated)
         {
-            await vectorStore.EnsureCollectionAsync(recreate: false, cancellationToken);
-            includeDocs = await vectorStore.CountAsync(cancellationToken) == 0;
+            includeDocs = !await vectorStore.IsCompatibleAsync(cancellationToken: cancellationToken);
         }
 
         var includeApi = apiIngestor.IsEnabled &&
-            (force || !await vectorStore.IsPopulatedAsync(apiIngestor.CollectionName, cancellationToken));
+            (force || !await vectorStore.IsCompatibleAsync(apiIngestor.CollectionName, cancellationToken));
 
         if (!includeDocs && !includeApi)
         {
@@ -82,6 +84,7 @@ public sealed class IngestionRunner(
                           "Use the dashboard command or the scheduled refresh to update it.";
             logger.LogInformation("{Message}", message);
             var outcome = new RunOutcome(RunStatus.SkippedAlreadyPopulated, message, 0, 0, false, null, null);
+            _hasPublishedIndex = true;
             _lastOutcome = outcome;
             return outcome;
         }
@@ -109,6 +112,7 @@ public sealed class IngestionRunner(
             return busy;
         }
 
+        var pendingBuilds = new List<IngestionBuildResult>();
         try
         {
             _isRunning = true;
@@ -123,7 +127,9 @@ public sealed class IngestionRunner(
 
             if (includeDocs)
             {
-                var docs = await ingestor.IngestAsync(force, cancellationToken);
+                var completed = await ingestor.BuildAsync(force, cancellationToken);
+                pendingBuilds.Add(completed);
+                var docs = completed.Result;
                 files += docs.Files;
                 chunks += docs.Chunks;
                 parts.Add($"{docs.Files} pages ({docs.Chunks} chunks) via '{docs.Mode}'");
@@ -131,12 +137,18 @@ public sealed class IngestionRunner(
 
             if (includeApi)
             {
-                var api = await apiIngestor.IngestAsync(force, cancellationToken);
+                var completed = await apiIngestor.BuildAsync(force, cancellationToken);
+                pendingBuilds.Add(completed);
+                var api = completed.Result;
                 files += api.Files;
                 chunks += api.Chunks;
                 parts.Add($"{api.Files} API types ({api.Chunks} chunks)");
             }
 
+            await vectorStore.CommitBuildsAsync(
+                pendingBuilds.Select(completed => completed.Build).ToArray(),
+                cancellationToken);
+            _hasPublishedIndex = true;
             _lastFinishedUtc = DateTimeOffset.UtcNow;
             var outcome = new RunOutcome(
                 RunStatus.Completed,
@@ -148,10 +160,12 @@ public sealed class IngestionRunner(
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
+            await AbortPendingAsync(pendingBuilds);
             throw;
         }
         catch (Exception ex)
         {
+            await AbortPendingAsync(pendingBuilds);
             _lastFinishedUtc = DateTimeOffset.UtcNow;
             var outcome = new RunOutcome(
                 RunStatus.Failed, $"Ingestion failed: {ex.Message}", 0, 0, force, _lastStartedUtc, _lastFinishedUtc);
@@ -163,6 +177,24 @@ public sealed class IngestionRunner(
         {
             _isRunning = false;
             _gate.Release();
+        }
+    }
+
+    private async Task AbortPendingAsync(IReadOnlyList<IngestionBuildResult> pendingBuilds)
+    {
+        foreach (var completed in pendingBuilds)
+        {
+            try
+            {
+                await vectorStore.AbortBuildAsync(completed.Build, CancellationToken.None);
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(
+                    ex,
+                    "Unable to clean up staging generation {Collection}.",
+                    completed.Build.PhysicalCollection);
+            }
         }
     }
 }

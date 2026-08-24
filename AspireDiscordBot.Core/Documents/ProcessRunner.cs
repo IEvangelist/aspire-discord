@@ -58,12 +58,12 @@ public static class ProcessRunner
         }
         catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
         {
-            TryKill(process);
+            await KillAndWaitAsync(process);
             throw new TimeoutException($"Process '{fileName}' timed out after {timeout.TotalSeconds:N0}s.");
         }
         catch (OperationCanceledException)
         {
-            TryKill(process);
+            await KillAndWaitAsync(process);
             throw;
         }
 
@@ -108,6 +108,25 @@ public static class ProcessRunner
         catch
         {
             // Best effort.
+        }
+    }
+
+    private static async Task KillAndWaitAsync(Process process)
+    {
+        TryKill(process);
+        if (process.HasExited)
+        {
+            return;
+        }
+
+        using var waitCts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        try
+        {
+            await process.WaitForExitAsync(waitCts.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            // The original timeout/cancellation remains the actionable failure.
         }
     }
 }

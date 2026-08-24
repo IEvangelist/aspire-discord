@@ -2,91 +2,131 @@ using Aspire.Hosting.ApplicationModel;
 using AspireDiscordBot.AppHost;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
-
 
 var builder = DistributedApplication.CreateBuilder(args);
 
-// Optionally orchestrate a local Ollama container for fully-local runs (set "Ollama:Enabled": true,
-// e.g. via user-secrets or environment). When enabled, AI is served by this container.
-var ollamaEnabled = builder.Configuration.GetValue<bool>("Ollama:Enabled");
+var fullOllamaMode = builder.Configuration.GetValue<bool>("Ollama:Enabled");
+var configuredChatProvider = builder.Configuration["Parameters:AiProvider"] ?? "copilot";
+var chatProvider = fullOllamaMode ? "ollama" : configuredChatProvider;
+var embeddingProvider = fullOllamaMode
+    ? "ollama"
+    : builder.Configuration["Parameters:AiEmbeddingProvider"]
+        ?? (string.Equals(chatProvider, "copilot", StringComparison.OrdinalIgnoreCase)
+            ? "ollama"
+            : chatProvider);
+
 var ollamaChatModel = builder.Configuration["Ollama:ChatModel"] ?? "llama3.1";
 var ollamaEmbeddingModel = builder.Configuration["Ollama:EmbeddingModel"] ?? "nomic-embed-text";
 var ollamaEmbeddingDimensions = builder.Configuration.GetValue("Ollama:EmbeddingDimensions", 768);
+var needsOllama =
+    string.Equals(chatProvider, "ollama", StringComparison.OrdinalIgnoreCase)
+    || string.Equals(embeddingProvider, "ollama", StringComparison.OrdinalIgnoreCase);
 
-// The Discord bot token is the one always-required secret. As an unresolved secret parameter,
-// Aspire prompts for it once in the dashboard (a single dialog) when it isn't already provided via
-// user-secrets, and offers to save it back to user-secrets so later runs don't prompt.
+// The Discord bot token remains the one always-required secret.
 var discordToken = builder.AddParameter("DiscordToken", secret: true);
 
-// --- Qdrant vector database (persisted across runs) ---
 var qdrant = builder.AddQdrant("qdrant")
     .WithDataVolume()
     .WithLifetime(ContainerLifetime.Persistent);
 
-// --- Optional local Ollama server ---
 IResourceBuilder<ContainerResource>? ollama = null;
-if (ollamaEnabled)
+if (needsOllama)
 {
     ollama = builder.AddContainer("ollama", "ollama/ollama")
         .WithHttpEndpoint(targetPort: 11434, name: "http")
         .WithVolume("aspire-discord-ollama", "/root/.ollama")
         .WithLifetime(ContainerLifetime.Persistent);
 
-    // Pull the configured models once the server is ready (best-effort, in the background).
-    builder.Eventing.Subscribe<ResourceReadyEvent>(ollama.Resource, (evt, ct) =>
+    var models = new List<string>();
+    if (string.Equals(chatProvider, "ollama", StringComparison.OrdinalIgnoreCase))
+    {
+        models.Add(ollamaChatModel);
+    }
+
+    if (string.Equals(embeddingProvider, "ollama", StringComparison.OrdinalIgnoreCase))
+    {
+        models.Add(ollamaEmbeddingModel);
+    }
+
+    builder.Eventing.Subscribe<ResourceReadyEvent>(ollama.Resource, async (evt, ct) =>
     {
         var logger = evt.Services.GetRequiredService<ILoggerFactory>().CreateLogger("Ollama");
-        var baseUrl = ollama!.GetEndpoint("http").Url;
-        _ = Task.Run(() => OllamaModelPuller.PullAsync(baseUrl, [ollamaChatModel, ollamaEmbeddingModel], logger, ct), ct);
-        return Task.CompletedTask;
+        var baseUrl = ollama.GetEndpoint("http").Url;
+        await OllamaModelPuller.PullAsync(
+            baseUrl,
+            models.Distinct().ToArray(),
+            logger,
+            ct);
     });
 }
 
-// Resolve the AI settings once. In Ollama mode the endpoint is the container; otherwise the
-// configured provider/endpoint/key is used (the default Copilot provider needs no endpoint/key).
-// When using Copilot with no cached token, the AppHost drives the sign-in (surfaced in the
-// dashboard) so the services just wait for the shared token instead of prompting in their logs.
-var copilotMode = !ollamaEnabled &&
-    string.Equals(builder.Configuration["Parameters:AiProvider"] ?? "copilot", "copilot", StringComparison.OrdinalIgnoreCase);
-var appHostDrivenSignIn = builder.ExecutionContext.IsRunMode && copilotMode && !CopilotSignIn.HasCachedToken();
+var configuredEndpoint = builder.Configuration["Parameters:AiEndpoint"] ?? "";
+var configuredApiKey = builder.Configuration["Parameters:AiApiKey"] ?? "";
+var providersMatch = string.Equals(
+    chatProvider,
+    embeddingProvider,
+    StringComparison.OrdinalIgnoreCase);
+var configuredEmbeddingEndpoint =
+    builder.Configuration["Parameters:AiEmbeddingEndpoint"]
+    ?? (providersMatch ? configuredEndpoint : "");
+var configuredEmbeddingApiKey =
+    builder.Configuration["Parameters:AiEmbeddingApiKey"]
+    ?? (providersMatch ? configuredApiKey : "");
+var configuredEmbeddingModel =
+    builder.Configuration["Parameters:AiEmbeddingModel"]
+    ?? (string.Equals(embeddingProvider, "ollama", StringComparison.OrdinalIgnoreCase)
+        ? ollamaEmbeddingModel
+        : "text-embedding-3-small");
+var configuredEmbeddingDimensions =
+    builder.Configuration["Parameters:AiEmbeddingDimensions"]
+    ?? (string.Equals(embeddingProvider, "ollama", StringComparison.OrdinalIgnoreCase)
+        ? ollamaEmbeddingDimensions.ToString()
+        : "1536");
+var legacyGitHubToken = builder.Configuration["Parameters:GitHubToken"];
 
-var ai = ollamaEnabled
-    ? new AiConfiguration
-    {
-        Provider = "ollama",
-        ChatModel = ollamaChatModel,
-        EmbeddingModel = ollamaEmbeddingModel,
-        EmbeddingDimensions = ollamaEmbeddingDimensions.ToString(),
-        OllamaEndpoint = ollama!.GetEndpoint("http"),
-    }
-    : new AiConfiguration
-    {
-        Provider = builder.Configuration["Parameters:AiProvider"] ?? "copilot",
-        Endpoint = builder.Configuration["Parameters:AiEndpoint"] ?? "",
-        ApiKey = builder.Configuration["Parameters:AiApiKey"] ?? "",
-        ChatModel = builder.Configuration["Parameters:AiChatModel"] ?? "gpt-5.6-sol",
-        EmbeddingModel = builder.Configuration["Parameters:AiEmbeddingModel"] ?? "text-embedding-3-small",
-        EmbeddingDimensions = builder.Configuration["Parameters:AiEmbeddingDimensions"] ?? "1536",
-        // Services wait for the AppHost-driven sign-in rather than prompting themselves.
-        CopilotInteractiveSignIn = appHostDrivenSignIn ? false : null,
-    };
+var ai = new AiConfiguration
+{
+    Provider = chatProvider,
+    ChatModel = string.Equals(chatProvider, "ollama", StringComparison.OrdinalIgnoreCase)
+        ? ollamaChatModel
+        : builder.Configuration["Parameters:AiChatModel"] ?? "gpt-5.6-sol",
+    Endpoint = configuredEndpoint,
+    ApiKey = configuredApiKey,
+    ChatEndpointReference = string.Equals(chatProvider, "ollama", StringComparison.OrdinalIgnoreCase)
+        ? ollama!.GetEndpoint("http")
+        : null,
+    EmbeddingProvider = embeddingProvider,
+    EmbeddingModel = configuredEmbeddingModel,
+    EmbeddingDimensions = configuredEmbeddingDimensions,
+    EmbeddingEndpoint = configuredEmbeddingEndpoint,
+    EmbeddingApiKey = configuredEmbeddingApiKey,
+    EmbeddingApiVersion = builder.Configuration["Parameters:AiEmbeddingApiVersion"]
+        ?? builder.Configuration["Parameters:AiApiVersion"]
+        ?? "2024-10-21",
+    EmbeddingEndpointReference =
+        string.Equals(embeddingProvider, "ollama", StringComparison.OrdinalIgnoreCase)
+            ? ollama!.GetEndpoint("http")
+            : null,
+    CopilotGitHubToken =
+        builder.Configuration["Parameters:CopilotGitHubToken"] ?? legacyGitHubToken,
+    GitHubMcpToken =
+        builder.Configuration["Parameters:GitHubMcpToken"] ?? legacyGitHubToken,
+};
 
-// --- Ingestion worker: pulls Aspire docs (source of truth) -> embeds -> Qdrant ---
-// Exposes dashboard commands to refresh the index on demand (backed by its /admin endpoints).
 var ingestion = builder.AddProject<Projects.AspireDiscordBot_Ingestion>("ingestion")
     .WithHttpEndpoint()
+    .WithHttpHealthCheck("/ready")
     .WithReference(qdrant)
     .WaitFor(qdrant)
     .WithHttpCommand(
         "/admin/reingest",
-        "Re-ingest docs",
+        "Refresh index",
         endpointName: "http",
         commandOptions: new HttpCommandOptions
         {
             Method = HttpMethod.Post,
-            Description = "Re-read the Aspire docs and update the index (incremental).",
+            Description = "Build and atomically publish fresh documentation and API index generations.",
             IconName = "ArrowSync",
         })
     .WithHttpCommand(
@@ -96,9 +136,9 @@ var ingestion = builder.AddProject<Projects.AspireDiscordBot_Ingestion>("ingesti
         commandOptions: new HttpCommandOptions
         {
             Method = HttpMethod.Post,
-            Description = "Drop and rebuild the whole index from scratch (prunes deleted pages).",
+            Description = "Resolve fresh source snapshots and atomically replace all index generations.",
             IconName = "DatabaseArrowUp",
-            ConfirmationMessage = "This drops the current index and re-embeds every page. Continue?",
+            ConfirmationMessage = "This re-embeds every page and API entry. Continue?",
             IsHighlighted = false,
         })
     .WithUrlForEndpoint("http", _ => new ResourceUrlAnnotation
@@ -108,11 +148,11 @@ var ingestion = builder.AddProject<Projects.AspireDiscordBot_Ingestion>("ingesti
     })
     .WithAiEnvironment(ai);
 
-// --- Discord bot: answers questions grounded in the ingested docs ---
 var bot = builder.AddProject<Projects.AspireDiscordBot_Bot>("bot")
     .WithHttpEndpoint()
     .WithReference(qdrant)
     .WaitFor(qdrant)
+    .WaitFor(ingestion)
     .WithEnvironment("Discord__Token", discordToken)
     .WithUrlForEndpoint("http", _ => new ResourceUrlAnnotation
     {
@@ -127,35 +167,4 @@ if (ollama is not null)
     bot.WaitFor(ollama);
 }
 
-var app = builder.Build();
-
-// Drive the GitHub Copilot device-flow sign-in from the AppHost so the code + link are surfaced
-// prominently in the dashboard (via the interaction service) rather than buried in service logs.
-// Runs in the background so it never blocks startup; the services wait for the shared cached token.
-if (appHostDrivenSignIn)
-{
-    var interaction = app.Services.GetService<IInteractionService>();
-    if (interaction is not null)
-    {
-        var logger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("CopilotSignIn");
-        var lifetime = app.Services.GetRequiredService<IHostApplicationLifetime>();
-
-        var http = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
-        http.DefaultRequestHeaders.Accept.ParseAdd("application/json");
-        http.DefaultRequestHeaders.UserAgent.ParseAdd("aspire-discord-bot/1.0");
-
-        _ = Task.Run(async () =>
-        {
-            try
-            {
-                await CopilotSignIn.RunAsync(interaction, http, logger, lifetime.ApplicationStopping);
-            }
-            finally
-            {
-                http.Dispose();
-            }
-        });
-    }
-}
-
-app.Run();
+builder.Build().Run();
