@@ -101,8 +101,15 @@ The AppHost:
 3. Waits for the .NET ingestion service to publish compatible indexes.
 4. Starts the Node bot and waits for `/ready`.
 
-Ask through `/ask`, mention the bot, or invoke `/ask` without text inside a forum post/thread to
-answer its starter message.
+In a regular text channel, mention the bot with the question:
+
+```text
+@Aspirey Bot How do I add Redis to an Aspire app?
+```
+
+Use `/ask <question>` for a direct slash-command question. Inside a forum post/thread, invoke
+`/ask` without text to answer its starter message. Answers use standard Discord messages rather
+than fixed-width embeds, and long answers continue across messages.
 
 ## TypeScript AppHost
 
@@ -224,7 +231,7 @@ Embedding credentials are never inherited across different providers.
 | Parameter | Default | Description |
 | --- | --- | --- |
 | `Parameters:DiscordGuildId` | unset | Guild-scoped command registration for immediate development updates |
-| `Parameters:DiscordMentionEnabled` | `true` | Enables mention handling and Message Content intent |
+| `Parameters:DiscordMentionEnabled` | `true` | Enables `@mention` questions and Message Content intent |
 | `Parameters:DiscordAllowedUserIds` | empty | Comma-separated Discord user IDs; empty allows everyone |
 
 The gateway replaces the command set idempotently on startup instead of creating duplicates.

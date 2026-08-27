@@ -16,7 +16,7 @@ import { WorkLimiter, WorkQueueFullError } from '../work-limiter.js';
 import { resolveQuestion, referencesThread } from './ask-resolver.js';
 import { isUserAllowed } from './authorizer.js';
 import { readOriginalPost, type OriginalPostResult } from './context-reader.js';
-import { buildAnswerEmbed } from './formatter.js';
+import { buildAnswerMessages } from './formatter.js';
 
 const askCommandName = 'ask';
 const interactionDeadlineMilliseconds = 14 * 60_000;
@@ -199,7 +199,11 @@ export class DiscordGateway {
         async () => await this.answers.answer(question, requestSignal),
         requestSignal,
       );
-      await interaction.editReply({ embeds: [buildAnswerEmbed(question, answer)] });
+      const [first, ...rest] = buildAnswerMessages(question, answer);
+      await interaction.editReply(answerPayload(first));
+      for (const content of rest) {
+        await interaction.followUp(answerPayload(content));
+      }
     } catch (error) {
       if (error instanceof WorkQueueFullError) {
         await interaction.editReply('The bot is busy right now. Please retry shortly.');
@@ -237,13 +241,22 @@ export class DiscordGateway {
         async () => await this.answers.answer(question, requestSignal),
         requestSignal,
       );
-      await message.reply({ embeds: [buildAnswerEmbed(question, answer)] });
+      const [first, ...rest] = buildAnswerMessages(question, answer);
+      await message.reply(answerPayload(first));
+      for (const content of rest) {
+        if (message.channel.isSendable()) {
+          await message.channel.send(answerPayload(content));
+        } else {
+          await message.reply(answerPayload(content));
+        }
+      }
     } catch (error) {
       if (error instanceof WorkQueueFullError) {
         await message.reply('The bot is busy right now. Please retry shortly.');
         return;
       }
       this.logger.error({ err: error }, 'Discord mention failed.');
+      await message.reply('Sorry — something went wrong answering that. Please try again.');
     }
   }
 
@@ -307,6 +320,16 @@ function originalPostProblem(status: OriginalPostResult['status']): string {
 
 function truncateForLog(value: string): string {
   return value.length <= 120 ? value : `${value.slice(0, 120)}…`;
+}
+
+function answerPayload(content: string): {
+  readonly allowedMentions: { readonly parse: readonly []; readonly repliedUser: false };
+  readonly content: string;
+} {
+  return {
+    allowedMentions: { parse: [], repliedUser: false },
+    content,
+  };
 }
 
 async function withTimeout<T>(
