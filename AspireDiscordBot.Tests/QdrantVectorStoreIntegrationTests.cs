@@ -22,7 +22,7 @@ public class QdrantVectorStoreIntegrationTests
         Skip.If(string.IsNullOrWhiteSpace(Endpoint), "QDRANT_TEST_ENDPOINT not set.");
 
         const int dims = 8;
-        var client = new QdrantClient(new Uri(Endpoint!));
+        var client = new QdrantClient(new Uri(Endpoint));
         var collection = "test_" + Guid.NewGuid().ToString("N")[..8];
 
         var store = new QdrantVectorStore(

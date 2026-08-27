@@ -6,7 +6,8 @@ read-only GitHub research. The runtime is intentionally polyglot:
 - **Node.js/TypeScript** owns Discord, agent orchestration, GitHub Copilot, GitHub MCP, retrieval,
   safety, citations, and HTTP health.
 - **.NET** owns ingestion, Roslyn API extraction, embeddings, and atomic Qdrant index publication.
-- An official **Aspire TypeScript AppHost** orchestrates both services plus Qdrant and Ollama.
+- An official **Aspire TypeScript AppHost** orchestrates both services plus Qdrant. Ollama is an
+  explicit local-development fallback.
 
 The bot refuses uncovered questions instead of filling gaps with model knowledge.
 
@@ -16,8 +17,8 @@ The bot refuses uncovered questions instead of filling gaps with model knowledge
 aspire docs CLI ─┐
                  ├─> .NET ingestion ─> Qdrant generation aliases <─ Node agent/Discord <─> Discord
 pinned Git src ──┘          │                         ▲                    │
-                            └─ Ollama/cloud embeddings                    ├─ GitHub Copilot SDK
-                                                                          └─ GitHub MCP (read-only)
+                            └─ Foundry embeddings                         ├─ GitHub Copilot SDK
+                               (Ollama opt-in)                            └─ GitHub MCP (read-only)
 ```
 
 An ingestion run builds documentation and API collections off-path. Qdrant aliases move only after
@@ -42,8 +43,10 @@ The replaced C# Discord and Copilot runtimes were removed; there is one producti
 - [.NET 10 SDK](https://dotnet.microsoft.com/)
 - [Aspire CLI 13.5](https://aspire.dev/get-started/install-cli/)
 - [Git](https://git-scm.com/)
-- Docker Desktop or Podman for Qdrant and Ollama
+- Docker Desktop or Podman for Qdrant
 - A GitHub Copilot plan, unless using a configured BYOK chat provider
+- An Azure AI Foundry embedding deployment and an identity with the
+  **Cognitive Services OpenAI User** role
 - A Discord application and bot token
 
 GitHub Models is not used; that service was retired in July 2026.
@@ -78,6 +81,9 @@ an explicit token:
 aspire secret set Parameters:CopilotGitHubToken "COPILOT-CAPABLE-TOKEN"
 ```
 
+Foundry embeddings use Microsoft Entra ID instead of a stored API key. Run `az login` for local
+development. In Azure, assign the same role to the application's managed identity.
+
 For unattended production services, use GitHub's documented GitHub App server-to-server Copilot
 authentication and refresh installation tokens before expiry.
 
@@ -91,15 +97,18 @@ From the repository root:
 ```powershell
 npm ci
 cd AspireDiscordBot.AppHost
+$env:Parameters__AiEmbeddingEndpoint = "https://YOUR-RESOURCE.openai.azure.com"
 aspire run
 ```
 
 The AppHost:
 
 1. Starts persistent Qdrant storage.
-2. Starts Ollama when chat or embeddings require it.
+2. Uses Azure AI Foundry embeddings with Entra authentication by default.
 3. Waits for the .NET ingestion service to publish compatible indexes.
 4. Starts the Node bot and waits for `/ready`.
+
+Ollama starts only when local AI is explicitly enabled.
 
 In a regular text channel, mention the bot with the question:
 
@@ -188,7 +197,8 @@ dimensions, generation, and ingestion timestamp. Commit-pinned citations cannot 
 
 ## AI providers
 
-Chat and embeddings are configured independently.
+Chat and embeddings are configured independently. The default hosted path uses GitHub Copilot for
+chat and Azure AI Foundry for embeddings.
 
 | Chat provider | `Parameters:AiProvider` | Notes |
 | --- | --- | --- |
@@ -196,23 +206,32 @@ Chat and embeddings are configured independently.
 | Azure OpenAI | `azureopenai` | BYOK Responses API |
 | Azure AI Foundry | `azureaifoundry` | BYOK OpenAI-compatible Responses API |
 | OpenAI | `openai` | BYOK Responses API |
-| Ollama | `ollama` | Local chat-completions API |
+| Ollama | `ollama` | Explicit local chat-completions fallback |
 
-With Copilot chat, embeddings default to AppHost-managed Ollama:
+Foundry embeddings use the OpenAI-compatible v1 API and `DefaultAzureCredential` in both the Node
+bot and .NET ingestion service. Configure the resource endpoint without `/openai/v1`; the clients
+append that route.
 
-```text
-nomic-embed-text, 768 dimensions
+```powershell
+$env:Parameters__AiEmbeddingEndpoint = "https://YOUR-RESOURCE.openai.azure.com"
+$env:Parameters__AiEmbeddingModel = "text-embedding-3-small"
+$env:Parameters__AiEmbeddingDimensions = "1536"
 ```
 
-Example cloud override:
+The model value is the Foundry deployment name. The default is `text-embedding-3-small`.
+
+For fully local development without hosted AI access, explicitly enable Ollama:
 
 ```powershell
 cd AspireDiscordBot.AppHost
-aspire secret set Parameters:AiEmbeddingApiKey "EMBEDDING-KEY"
-aspire secret set Parameters:AiApiKey "CHAT-KEY"
+$env:Ollama__Enabled = "true"
+aspire run
 ```
 
-Configure non-secret values using AppHost configuration/environment:
+Local mode switches both chat and embeddings to AppHost-managed Ollama. It uses `llama3.1` for chat
+and `nomic-embed-text` with 768 dimensions for embeddings.
+
+Other cloud providers remain available through AppHost configuration:
 
 ```text
 Parameters__AiProvider=azureopenai
@@ -224,7 +243,8 @@ Parameters__AiEmbeddingModel=EMBEDDING-DEPLOYMENT
 Parameters__AiEmbeddingDimensions=1536
 ```
 
-Embedding credentials are never inherited across different providers.
+For key-based providers, configure `Parameters:AiApiKey` and `Parameters:AiEmbeddingApiKey` through
+the Aspire secret store. Credentials are never inherited across different providers or endpoints.
 
 ## Discord options
 

@@ -1,3 +1,5 @@
+using Azure.Core;
+using Azure.Identity;
 using AspireDiscordBot.Core.Ai;
 using AspireDiscordBot.Core.Configuration;
 using AspireDiscordBot.Core.Documents;
@@ -23,7 +25,12 @@ public static class CoreServiceCollectionExtensions
         var services = builder.Services;
         var configuration = builder.Configuration;
 
-        services.Configure<AiOptions>(configuration.GetSection(AiOptions.SectionName));
+        services.AddOptions<AiOptions>()
+            .Bind(configuration.GetSection(AiOptions.SectionName))
+            .Validate(
+                IsValidFoundryConfiguration,
+                "Ai:EmbeddingEndpoint must be a valid HTTPS endpoint for Azure AI Foundry.")
+            .ValidateOnStart();
         services.Configure<IngestionOptions>(configuration.GetSection(IngestionOptions.SectionName));
         services.Configure<ApiSurfaceOptions>(configuration.GetSection(ApiSurfaceOptions.SectionName));
 
@@ -42,6 +49,7 @@ public static class CoreServiceCollectionExtensions
         {
             http.Timeout = TimeSpan.FromMinutes(30);
         });
+        services.AddSingleton<TokenCredential>(_ => new DefaultAzureCredential());
         services.AddSingleton<EmbeddingModelReadiness>();
         services.AddSingleton<OpenAiCompatibleClient>();
         services.AddSingleton<IEmbeddingModel>(sp => sp.GetRequiredService<OpenAiCompatibleClient>());
@@ -86,5 +94,15 @@ public static class CoreServiceCollectionExtensions
         services.AddSingleton<IngestionRunner>();
 
         return builder;
+    }
+
+    private static bool IsValidFoundryConfiguration(AiOptions options)
+    {
+        var provider = string.IsNullOrWhiteSpace(options.EmbeddingProvider)
+            ? options.Provider
+            : options.EmbeddingProvider;
+        return !provider.Equals("azureaifoundry", StringComparison.OrdinalIgnoreCase)
+            || Uri.TryCreate(options.EmbeddingEndpoint, UriKind.Absolute, out var endpoint)
+                && endpoint.Scheme == Uri.UriSchemeHttps;
     }
 }

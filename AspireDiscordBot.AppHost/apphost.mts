@@ -22,16 +22,14 @@ const githubMcpToken = await optionalSecret("GitHubMcpToken");
 const aiApiKey = await optionalSecret("AiApiKey");
 const embeddingApiKey = await optionalSecret("AiEmbeddingApiKey");
 
-const useOllamaForChat = await configBool("Ollama:Enabled", false);
+const useLocalAi = await configBool("Ollama:Enabled", false);
 const configuredChatProvider = await config("Parameters:AiProvider", "copilot");
-const chatProvider = useOllamaForChat ? "ollama" : configuredChatProvider;
+const chatProvider = useLocalAi ? "ollama" : configuredChatProvider;
 const configuredEmbeddingProvider = await config(
   "Parameters:AiEmbeddingProvider",
+  "azureaifoundry",
 );
-const embeddingProvider = useOllamaForChat
-  ? "ollama"
-  : configuredEmbeddingProvider ||
-    (chatProvider === "copilot" ? "ollama" : chatProvider);
+const embeddingProvider = useLocalAi ? "ollama" : configuredEmbeddingProvider;
 const ollamaChatModel = await config("Ollama:ChatModel", "llama3.1");
 const ollamaEmbeddingModel = await config(
   "Ollama:EmbeddingModel",
@@ -72,9 +70,31 @@ const embeddingDimensions =
   (embeddingProvider === "ollama" ? ollamaEmbeddingDimensions : "1536");
 const providersMatch = chatProvider === embeddingProvider;
 const configuredAiEndpoint = await config("Parameters:AiEndpoint");
-const configuredEmbeddingEndpoint =
+const configuredEmbeddingEndpoint = (
   (await config("Parameters:AiEmbeddingEndpoint")) ||
-  (providersMatch ? configuredAiEndpoint : "");
+  (providersMatch ? configuredAiEndpoint : "")
+).trim();
+if (embeddingProvider !== "ollama" && !configuredEmbeddingEndpoint) {
+  throw new Error(
+    `Parameters:AiEmbeddingEndpoint is required for ${embeddingProvider} embeddings. ` +
+      "Set it to the Microsoft Foundry resource endpoint, or enable Ollama for local AI.",
+  );
+}
+if (embeddingProvider === "azureaifoundry") {
+  let endpoint: URL;
+  try {
+    endpoint = new URL(configuredEmbeddingEndpoint);
+  } catch {
+    throw new Error(
+      "Parameters:AiEmbeddingEndpoint must be a valid Microsoft Foundry HTTPS endpoint.",
+    );
+  }
+  if (endpoint.protocol !== "https:") {
+    throw new Error(
+      "Parameters:AiEmbeddingEndpoint must use HTTPS for Microsoft Foundry.",
+    );
+  }
+}
 const endpointsMatch =
   providersMatch &&
   configuredAiEndpoint.replace(/\/+$/u, "") ===
@@ -112,7 +132,7 @@ if (embeddingProvider === "ollama" && ollama) {
     "Ai__EmbeddingEndpoint",
     configuredEmbeddingEndpoint,
   );
-  if (effectiveEmbeddingApiKey) {
+  if (effectiveEmbeddingApiKey && embeddingProvider !== "azureaifoundry") {
     await ingestion.withEnvironment(
       "Ai__EmbeddingApiKey",
       effectiveEmbeddingApiKey,
@@ -194,7 +214,7 @@ if (embeddingProvider === "ollama" && ollama) {
     "AI_EMBEDDING_ENDPOINT",
     configuredEmbeddingEndpoint,
   );
-  if (effectiveEmbeddingApiKey) {
+  if (effectiveEmbeddingApiKey && embeddingProvider !== "azureaifoundry") {
     await bot.withEnvironment("AI_EMBEDDING_API_KEY", effectiveEmbeddingApiKey);
   }
 }

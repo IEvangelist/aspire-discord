@@ -1,6 +1,7 @@
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using Azure.Core;
 using AspireDiscordBot.Core.Ai;
 using AspireDiscordBot.Core.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -55,6 +56,21 @@ public sealed class OpenAiCompatibleClientTests : IDisposable
     }
 
     [Fact]
+    public async Task FoundryEmbeddingsUseV1RouteAndEntraBearerToken()
+    {
+        var client = CreateClient("azureaifoundry", "");
+
+        await client.EmbedAsync(["hello"]);
+
+        var request = Assert.Single(_requests);
+        Assert.Equal("Bearer foundry-token", request.Auth);
+        Assert.Contains("/openai/v1/embeddings", request.Path);
+        Assert.DoesNotContain("api-version", request.Path);
+        Assert.Contains("\"dimensions\":4", request.Body);
+        Assert.Contains("\"model\":\"test-embedding\"", request.Body);
+    }
+
+    [Fact]
     public async Task OllamaEmbeddingsDoNotInheritAnotherProvidersKey()
     {
         var options = Options.Create(new AiOptions
@@ -70,7 +86,9 @@ public sealed class OpenAiCompatibleClientTests : IDisposable
 
         await client.EmbedAsync(["hello"]);
 
-        Assert.Empty(Assert.Single(_requests).Auth);
+        var request = Assert.Single(_requests);
+        Assert.Empty(request.Auth);
+        Assert.DoesNotContain("\"dimensions\"", request.Body);
     }
 
     [Fact]
@@ -127,6 +145,7 @@ public sealed class OpenAiCompatibleClientTests : IDisposable
         return new OpenAiCompatibleClient(
             new SingleClientFactory(),
             options,
+            new TestTokenCredential(),
             NullLogger<OpenAiCompatibleClient>.Instance);
     }
 
@@ -198,5 +217,21 @@ public sealed class OpenAiCompatibleClientTests : IDisposable
     private sealed class SingleClientFactory : IHttpClientFactory
     {
         public HttpClient CreateClient(string name) => new();
+    }
+
+    private sealed class TestTokenCredential : TokenCredential
+    {
+        public override AccessToken GetToken(
+            TokenRequestContext requestContext,
+            CancellationToken cancellationToken)
+        {
+            Assert.Contains("https://ai.azure.com/.default", requestContext.Scopes);
+            return new AccessToken("foundry-token", DateTimeOffset.UtcNow.AddHours(1));
+        }
+
+        public override ValueTask<AccessToken> GetTokenAsync(
+            TokenRequestContext requestContext,
+            CancellationToken cancellationToken) =>
+            ValueTask.FromResult(GetToken(requestContext, cancellationToken));
     }
 }

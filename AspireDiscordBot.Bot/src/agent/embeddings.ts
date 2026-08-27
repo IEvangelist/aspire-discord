@@ -1,5 +1,8 @@
+import { DefaultAzureCredential, getBearerTokenProvider } from '@azure/identity';
 import OpenAI, { AzureOpenAI } from 'openai';
 import type { AppConfig } from '../config.js';
+
+const foundryTokenScope = 'https://ai.azure.com/.default';
 
 export interface EmbeddingModel {
   embed(input: string, signal?: AbortSignal): Promise<readonly number[]>;
@@ -66,11 +69,8 @@ function createEmbeddingClient(config: AppConfig['ai']): OpenAI {
     case 'azureaifoundry':
       return new OpenAI({
         ...common,
-        apiKey: config.embeddingApiKey,
-        baseURL: config.embeddingEndpoint.replace(/\/+$/u, ''),
-        defaultQuery: {
-          'api-version': config.embeddingApiVersion,
-        },
+        apiKey: getBearerTokenProvider(new DefaultAzureCredential(), foundryTokenScope),
+        baseURL: ensureFoundryV1Endpoint(config.embeddingEndpoint),
       });
     case 'copilot':
       throw new Error(
@@ -82,4 +82,11 @@ function createEmbeddingClient(config: AppConfig['ai']): OpenAI {
 export function ensureV1Endpoint(endpoint: string): string {
   const trimmed = endpoint.replace(/\/+$/u, '');
   return trimmed.endsWith('/v1') ? trimmed : `${trimmed}/v1`;
+}
+
+export function ensureFoundryV1Endpoint(endpoint: string): string {
+  const trimmed = endpoint.replace(/\/+$/u, '');
+  return trimmed.toLocaleLowerCase('en-US').endsWith('/openai/v1')
+    ? trimmed
+    : `${trimmed}/openai/v1`;
 }

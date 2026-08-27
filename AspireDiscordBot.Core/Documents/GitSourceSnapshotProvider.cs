@@ -28,7 +28,7 @@ public sealed partial class GitSourceSnapshotProvider(
     {
         if (!string.IsNullOrWhiteSpace(_options.LocalSrcPath))
         {
-            return await ResolveLocalAsync(_options.LocalSrcPath!, cancellationToken);
+            return await ResolveLocalAsync(_options.LocalSrcPath, cancellationToken);
         }
 
         if (!_options.Enabled)
@@ -96,7 +96,7 @@ public sealed partial class GitSourceSnapshotProvider(
 
         if (!Directory.Exists(mirrorPath))
         {
-            var stagingMirror = mirrorPath + $".tmp-{Guid.NewGuid():N}";
+            var stagingMirror = $"{mirrorPath}.tmp-{Guid.NewGuid():N}";
             try
             {
                 await RunRequiredAsync(
@@ -130,7 +130,7 @@ public sealed partial class GitSourceSnapshotProvider(
         var snapshotPath = Path.Combine(snapshotsRoot, revision);
         if (!Directory.Exists(snapshotPath))
         {
-            var stagingPath = snapshotPath + $".tmp-{Guid.NewGuid():N}";
+            var stagingPath = $"{snapshotPath}.tmp-{Guid.NewGuid():N}";
             var archivePath = Path.Combine(repositoryRoot, $"src-{revision}-{Guid.NewGuid():N}.tar");
             try
             {

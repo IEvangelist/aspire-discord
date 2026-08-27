@@ -65,7 +65,7 @@ public sealed class AspireDocUrlIndex(
             {
                 var cleaned = MarkdownCleaner.Clean(raw.Raw);
                 var title = !string.IsNullOrWhiteSpace(cleaned.Title)
-                    ? cleaned.Title!
+                    ? cleaned.Title
                     : DocSourceCatalog.TitleFromPath(raw.Path);
 
                 var key = NormalizeTitle(title);

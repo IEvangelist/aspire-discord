@@ -20,6 +20,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
+    "@azure/identity": "4.13.2",
     "@fastify/helmet": "13.1.1",
     "@fastify/swagger": "9.8.1",
     "@github/copilot-sdk": "1.0.11",

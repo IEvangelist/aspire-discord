@@ -2,18 +2,41 @@ import { describe, expect, it } from 'vitest';
 import { ConfigurationError, loadConfig } from '../../src/config.js';
 
 const validEnvironment = {
-  AI_EMBEDDING_ENDPOINT: 'http://localhost:11434',
+  AI_EMBEDDING_ENDPOINT: 'https://example.openai.azure.com',
   QDRANT_URL: 'http://localhost:6333',
 };
 
 describe('loadConfig', () => {
-  it('loads secure local defaults', () => {
+  it('loads hosted Foundry defaults', () => {
     const config = loadConfig(validEnvironment);
 
     expect(config.ai.provider).toBe('copilot');
-    expect(config.ai.embeddingProvider).toBe('ollama');
+    expect(config.ai.embeddingProvider).toBe('azureaifoundry');
+    expect(config.ai.embeddingModel).toBe('text-embedding-3-small');
+    expect(config.ai.embeddingDimensions).toBe(1_536);
     expect(config.discord.mentionEnabled).toBe(true);
     expect(config.qdrant.url).toBe('http://localhost:6333');
+  });
+
+  it('uses Ollama defaults only when explicitly selected', () => {
+    const config = loadConfig({
+      ...validEnvironment,
+      AI_EMBEDDING_ENDPOINT: 'http://localhost:11434',
+      AI_EMBEDDING_PROVIDER: 'ollama',
+    });
+
+    expect(config.ai.embeddingProvider).toBe('ollama');
+    expect(config.ai.embeddingModel).toBe('nomic-embed-text');
+    expect(config.ai.embeddingDimensions).toBe(768);
+  });
+
+  it('requires HTTPS for Foundry embeddings', () => {
+    expect(() =>
+      loadConfig({
+        ...validEnvironment,
+        AI_EMBEDDING_ENDPOINT: 'http://example.openai.azure.com',
+      }),
+    ).toThrow(/HTTPS endpoint/u);
   });
 
   it('parses comma-separated and JSON user allow lists', () => {
@@ -46,6 +69,7 @@ describe('loadConfig', () => {
       ...validEnvironment,
       AI_API_KEY: 'shared',
       AI_ENDPOINT: 'http://localhost:11434',
+      AI_EMBEDDING_ENDPOINT: 'http://localhost:11434',
       AI_EMBEDDING_PROVIDER: 'openai',
       AI_PROVIDER: 'openai',
     });

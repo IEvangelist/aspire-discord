@@ -3,6 +3,7 @@ using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Azure.Core;
 using AspireDiscordBot.Core.Configuration;
 using AspireDiscordBot.Core.Telemetry;
 using Microsoft.Extensions.Logging;
@@ -14,8 +15,10 @@ namespace AspireDiscordBot.Core.Ai;
 public sealed class OpenAiCompatibleClient(
     IHttpClientFactory httpFactory,
     IOptions<AiOptions> options,
+    TokenCredential credential,
     ILogger<OpenAiCompatibleClient> logger) : IEmbeddingModel
 {
+    private static readonly string[] FoundryScopes = ["https://ai.azure.com/.default"];
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web)
     {
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
@@ -50,6 +53,7 @@ public sealed class OpenAiCompatibleClient(
                 ? _options.ApiKey
                 : null;
         if (!provider.Equals("ollama", StringComparison.OrdinalIgnoreCase)
+            && !provider.Equals("azureaifoundry", StringComparison.OrdinalIgnoreCase)
             && string.IsNullOrWhiteSpace(embeddingApiKey))
         {
             throw new InvalidOperationException(
@@ -58,6 +62,9 @@ public sealed class OpenAiCompatibleClient(
 
         var body = new EmbeddingRequest
         {
+            Dimensions = provider.Equals("ollama", StringComparison.OrdinalIgnoreCase)
+                ? null
+                : _options.EmbeddingDimensions,
             Model = ModelInBody(provider) ? _options.EmbeddingModel : null,
             Input = inputs,
         };
@@ -72,7 +79,12 @@ public sealed class OpenAiCompatibleClient(
         string? errorType = null;
         try
         {
-            using var request = CreateRequest(provider, url, body, embeddingApiKey);
+            using var request = await CreateRequestAsync(
+                provider,
+                url,
+                body,
+                embeddingApiKey,
+                cancellationToken);
             using var response = await http.SendAsync(request, cancellationToken);
             await EnsureSuccessAsync(response, cancellationToken);
 
@@ -84,6 +96,12 @@ public sealed class OpenAiCompatibleClient(
             {
                 throw new InvalidOperationException(
                     $"Embedding provider returned {payload.Data.Count} vectors for {inputs.Count} inputs.");
+            }
+            if (payload.Data.Any(data => data.Embedding.Length != _options.EmbeddingDimensions))
+            {
+                throw new InvalidOperationException(
+                    $"Embedding provider returned vectors that do not match the configured "
+                    + $"{_options.EmbeddingDimensions} dimensions.");
             }
 
             if (payload.Usage?.PromptTokens is { } promptTokens)
@@ -140,7 +158,7 @@ public sealed class OpenAiCompatibleClient(
         {
             "azureopenai" =>
                 $"{endpoint.TrimEnd('/')}/openai/deployments/{model}/embeddings?api-version={apiVersion}",
-            "azureaifoundry" => $"{endpoint.TrimEnd('/')}/embeddings?api-version={apiVersion}",
+            "azureaifoundry" => $"{EnsureFoundryV1Endpoint(endpoint)}/embeddings",
             "openai" or "ollama" => $"{endpoint.TrimEnd('/')}/v1/embeddings",
             "copilot" => throw new InvalidOperationException(
                 "GitHub Copilot does not expose a supported embeddings API."),
@@ -149,12 +167,18 @@ public sealed class OpenAiCompatibleClient(
         };
     }
 
-    private HttpRequestMessage CreateRequest<T>(
+    private async Task<HttpRequestMessage> CreateRequestAsync<T>(
         string provider,
         string url,
         T body,
-        string? apiKey)
+        string? apiKey,
+        CancellationToken cancellationToken)
     {
+        var foundryToken = provider.Equals("azureaifoundry", StringComparison.OrdinalIgnoreCase)
+            ? (await credential.GetTokenAsync(
+                new TokenRequestContext(FoundryScopes),
+                cancellationToken)).Token
+            : null;
         var request = new HttpRequestMessage(HttpMethod.Post, url)
         {
             Content = JsonContent.Create(body, options: SerializerOptions),
@@ -169,6 +193,9 @@ public sealed class OpenAiCompatibleClient(
                 break;
             case "openai":
                 request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
+                break;
+            case "azureaifoundry":
+                request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", foundryToken);
                 break;
             default:
                 request.Headers.TryAddWithoutValidation("api-key", apiKey);
@@ -198,6 +225,14 @@ public sealed class OpenAiCompatibleClient(
     private static bool ModelInBody(string provider) =>
         !provider.Equals("azureopenai", StringComparison.OrdinalIgnoreCase);
 
+    private static string EnsureFoundryV1Endpoint(string endpoint)
+    {
+        var trimmed = endpoint.TrimEnd('/');
+        return trimmed.EndsWith("/openai/v1", StringComparison.OrdinalIgnoreCase)
+            ? trimmed
+            : $"{trimmed}/openai/v1";
+    }
+
     private static string NormalizeEndpoint(string? endpoint)
     {
         if (!Uri.TryCreate(endpoint, UriKind.Absolute, out var uri))
@@ -214,6 +249,9 @@ public sealed class OpenAiCompatibleClient(
 
     private sealed class EmbeddingRequest
     {
+        [JsonPropertyName("dimensions")]
+        public int? Dimensions { get; set; }
+
         [JsonPropertyName("model")]
         public string? Model { get; set; }
 

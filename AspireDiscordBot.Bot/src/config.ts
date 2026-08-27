@@ -7,10 +7,10 @@ const rawEnvironmentSchema = z.object({
   AI_CHAT_MODEL: z.string().min(1).default('gpt-5.6-sol'),
   AI_EMBEDDING_API_KEY: z.string().optional(),
   AI_EMBEDDING_API_VERSION: z.string().min(1).default('2024-10-21'),
-  AI_EMBEDDING_DIMENSIONS: z.coerce.number().int().positive().default(768),
+  AI_EMBEDDING_DIMENSIONS: z.coerce.number().int().positive().optional(),
   AI_EMBEDDING_ENDPOINT: z.url(),
-  AI_EMBEDDING_MODEL: z.string().min(1).default('nomic-embed-text'),
-  AI_EMBEDDING_PROVIDER: providerSchema.default('ollama'),
+  AI_EMBEDDING_MODEL: z.string().min(1).optional(),
+  AI_EMBEDDING_PROVIDER: providerSchema.default('azureaifoundry'),
   AI_ENDPOINT: z.url().optional().or(z.literal('')),
   AI_MAX_OUTPUT_TOKENS: z.coerce.number().int().min(256).max(32_768).default(2_000),
   AI_PROVIDER: providerSchema.default('copilot'),
@@ -138,6 +138,11 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): AppCon
   const allowedUserIds = parseIdentifierSet(env.DISCORD_ALLOWED_USER_IDS);
   const discordGuildId = env.DISCORD_GUILD_ID ? env.DISCORD_GUILD_ID : undefined;
   const mentionEnabled = parseBoolean(env.DISCORD_MENTION_ENABLED, 'DISCORD_MENTION_ENABLED');
+  const embeddingModel =
+    env.AI_EMBEDDING_MODEL ??
+    (env.AI_EMBEDDING_PROVIDER === 'ollama' ? 'nomic-embed-text' : 'text-embedding-3-small');
+  const embeddingDimensions =
+    env.AI_EMBEDDING_DIMENSIONS ?? (env.AI_EMBEDDING_PROVIDER === 'ollama' ? 768 : 1_536);
   const sameProvider = env.AI_PROVIDER === env.AI_EMBEDDING_PROVIDER;
   const endpointsMatch =
     sameProvider &&
@@ -147,7 +152,25 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): AppCon
   const embeddingApiKey = env.AI_EMBEDDING_API_KEY ?? (endpointsMatch ? env.AI_API_KEY : undefined);
   const qdrantApiKey = env.QDRANT_API_KEY ?? env.QDRANT_APIKEY;
 
-  if (env.AI_EMBEDDING_PROVIDER !== 'ollama' && !embeddingApiKey) {
+  if (
+    env.AI_EMBEDDING_PROVIDER === 'azureaifoundry' &&
+    new URL(env.AI_EMBEDDING_ENDPOINT).protocol !== 'https:'
+  ) {
+    throw new ConfigurationError([
+      {
+        code: 'custom',
+        input: undefined,
+        message: 'Azure AI Foundry embeddings require an HTTPS endpoint',
+        path: ['AI_EMBEDDING_ENDPOINT'],
+      },
+    ]);
+  }
+
+  if (
+    env.AI_EMBEDDING_PROVIDER !== 'ollama' &&
+    env.AI_EMBEDDING_PROVIDER !== 'azureaifoundry' &&
+    !embeddingApiKey
+  ) {
     throw new ConfigurationError([
       {
         code: 'custom',
@@ -179,9 +202,9 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): AppCon
       chatModel: env.AI_CHAT_MODEL,
       ...(embeddingApiKey ? { embeddingApiKey } : {}),
       embeddingApiVersion: env.AI_EMBEDDING_API_VERSION,
-      embeddingDimensions: env.AI_EMBEDDING_DIMENSIONS,
+      embeddingDimensions,
       embeddingEndpoint: env.AI_EMBEDDING_ENDPOINT,
-      embeddingModel: env.AI_EMBEDDING_MODEL,
+      embeddingModel,
       embeddingProvider: env.AI_EMBEDDING_PROVIDER,
       ...(env.AI_ENDPOINT ? { endpoint: env.AI_ENDPOINT } : {}),
       maxOutputTokens: env.AI_MAX_OUTPUT_TOKENS,
