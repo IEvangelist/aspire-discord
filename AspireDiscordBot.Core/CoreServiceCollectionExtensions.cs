@@ -1,17 +1,14 @@
 using AspireDiscordBot.Core.Ai;
 using AspireDiscordBot.Core.Configuration;
 using AspireDiscordBot.Core.Documents;
-using AspireDiscordBot.Core.Rag;
-using AspireDiscordBot.Core.Safety;
 using AspireDiscordBot.Core.Vectors;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
-using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 namespace AspireDiscordBot.Core;
 
-/// <summary>Registers the shared RAG pipeline (AI client, Qdrant store, retrieval, ingestion).</summary>
+/// <summary>Registers document ingestion, embeddings, and Qdrant generation publishing.</summary>
 public static class CoreServiceCollectionExtensions
 {
     /// <param name="builder">The host application builder.</param>
@@ -27,13 +24,8 @@ public static class CoreServiceCollectionExtensions
         var configuration = builder.Configuration;
 
         services.Configure<AiOptions>(configuration.GetSection(AiOptions.SectionName));
-        services.Configure<RetrievalOptions>(configuration.GetSection(RetrievalOptions.SectionName));
         services.Configure<IngestionOptions>(configuration.GetSection(IngestionOptions.SectionName));
-        services.Configure<SafetyOptions>(configuration.GetSection(SafetyOptions.SectionName));
-        services.Configure<AgentOptions>(configuration.GetSection(AgentOptions.SectionName));
         services.Configure<ApiSurfaceOptions>(configuration.GetSection(ApiSurfaceOptions.SectionName));
-        services.Configure<LiveSearchOptions>(configuration.GetSection(LiveSearchOptions.SectionName));
-        services.Configure<GitHubMcpOptions>(configuration.GetSection(GitHubMcpOptions.SectionName));
 
         // Default the ingestion sources to the catalog when none are configured.
         services.PostConfigure<IngestionOptions>(options =>
@@ -44,8 +36,7 @@ public static class CoreServiceCollectionExtensions
             }
         });
 
-        // OpenAI-compatible AI client shared as both chat + embedding model (named-client factory
-        // avoids captive HttpClient handlers when consumed by singleton services).
+        // Named clients avoid captive handlers in singleton ingestion services.
         services.AddHttpClient("ai");
         services.AddHttpClient("ollama-bootstrap", http =>
         {
@@ -53,7 +44,6 @@ public static class CoreServiceCollectionExtensions
         });
         services.AddSingleton<EmbeddingModelReadiness>();
         services.AddSingleton<OpenAiCompatibleClient>();
-        services.AddSingleton<IChatModel>(sp => sp.GetRequiredService<OpenAiCompatibleClient>());
         services.AddSingleton<IEmbeddingModel>(sp => sp.GetRequiredService<OpenAiCompatibleClient>());
 
         // Document source readers. GitHub reader uses a configured named client; local reader is plain.
@@ -76,26 +66,6 @@ public static class CoreServiceCollectionExtensions
         services.AddSingleton<AspireDocUrlIndex>();
         services.AddSingleton<AspireCliDocSourceReader>();
 
-        // Live GitHub search (code + issues) over microsoft/aspire.
-        services.AddHttpClient("github-search", http =>
-        {
-            http.Timeout = TimeSpan.FromSeconds(30);
-            http.DefaultRequestHeaders.UserAgent.ParseAdd("aspire-discord-bot/1.0");
-        });
-        services.AddSingleton<GitHubLiveSearch>();
-
-        // Official GitHub MCP client. Its transport owns each factory-created HttpClient because the
-        // MCP session is long-lived and disposed with the singleton provider.
-        services.AddHttpClient("github-mcp", http =>
-        {
-            http.Timeout = Timeout.InfiniteTimeSpan;
-            http.DefaultRequestHeaders.UserAgent.ParseAdd("aspire-discord-bot/1.0");
-        });
-        services.AddSingleton<GitHubMcpToolPolicy>();
-        services.AddSingleton<GitHubMcpResultFormatter>();
-        services.AddSingleton<GitHubMcpToolProvider>();
-        services.AddSingleton<GitHubLiveSearchToolProvider>();
-
         // Select the reader implementation based on the configured source mode.
         services.AddSingleton<IDocSourceReader>(sp =>
         {
@@ -114,36 +84,6 @@ public static class CoreServiceCollectionExtensions
         services.AddSingleton<GitSourceSnapshotProvider>();
         services.AddSingleton<ApiSurfaceIngestor>();
         services.AddSingleton<IngestionRunner>();
-        services.AddSingleton<QuestionSafetyGuard>();
-        services.AddSingleton<GroundedAnswerService>();
-        services.AddSingleton<AgenticAnswerService>();
-        services.AddSingleton<GroundingToolProvider>();
-        services.AddSingleton<IAgentToolProvider>(sp => sp.GetRequiredService<GroundingToolProvider>());
-        services.AddSingleton<IAgentToolProvider>(sp => sp.GetRequiredService<GitHubMcpToolProvider>());
-        services.AddSingleton<IAgentToolProvider>(sp => sp.GetRequiredService<GitHubLiveSearchToolProvider>());
-        services.AddSingleton<AgentToolCatalog>();
-
-        // Select the answer pipeline: agentic (tool-calling research loop, default) or single-shot.
-        // Agentic requires a tool-capable provider (Responses API); fall back to single otherwise.
-        services.AddSingleton<IAnswerService>(sp =>
-        {
-            var mode = sp.GetRequiredService<IOptions<AgentOptions>>().Value.Mode;
-            var client = sp.GetRequiredService<OpenAiCompatibleClient>();
-            var wantsAgentic = !string.Equals(mode, "single", StringComparison.OrdinalIgnoreCase);
-
-            if (wantsAgentic && client.SupportsTools)
-            {
-                return sp.GetRequiredService<AgenticAnswerService>();
-            }
-
-            if (wantsAgentic && !client.SupportsTools)
-            {
-                sp.GetRequiredService<ILogger<AgenticAnswerService>>().LogInformation(
-                    "Agentic mode requested but the AI provider doesn't support tool calling; using single-shot answering.");
-            }
-
-            return sp.GetRequiredService<GroundedAnswerService>();
-        });
 
         return builder;
     }

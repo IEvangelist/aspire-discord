@@ -1,5 +1,29 @@
 {
   "appHost": {
-    "path": "AspireDiscordBot.AppHost.csproj"
+    "path": "apphost.mts",
+    "language": "typescript/nodejs"
+  },
+  "sdk": {
+    "version": "13.5.0"
+  },
+  "packages": {
+    "Aspire.Hosting.JavaScript": "13.5.0",
+    "Aspire.Hosting.Qdrant": "13.5.0"
+  },
+  "profiles": {
+    "https": {
+      "applicationUrl": "https://localhost:17002;http://localhost:15028",
+      "environmentVariables": {
+        "ASPIRE_DASHBOARD_OTLP_ENDPOINT_URL": "https://localhost:21040",
+        "ASPIRE_RESOURCE_SERVICE_ENDPOINT_URL": "https://localhost:22229"
+      }
+    },
+    "http": {
+      "applicationUrl": "http://localhost:15028",
+      "environmentVariables": {
+        "ASPIRE_DASHBOARD_OTLP_ENDPOINT_URL": "http://localhost:19240",
+        "ASPIRE_RESOURCE_SERVICE_ENDPOINT_URL": "http://localhost:20295"
+      }
+    }
   }
 }

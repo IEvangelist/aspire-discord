@@ -16,6 +16,15 @@ artifacts/
 ## Aspire / local dev
 **/appsettings.*.local.json
 *.received.*
+.aspire/
+**/.aspire/
+
+## Node.js
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+.eslintcache
 
 ## Secrets — never commit
 .env

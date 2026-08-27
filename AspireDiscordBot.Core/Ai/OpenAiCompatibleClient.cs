@@ -1,9 +1,7 @@
 using System.Diagnostics;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
-using System.Text;
 using System.Text.Json;
-using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using AspireDiscordBot.Core.Configuration;
 using AspireDiscordBot.Core.Telemetry;
@@ -12,16 +10,11 @@ using Microsoft.Extensions.Options;
 
 namespace AspireDiscordBot.Core.Ai;
 
-/// <summary>
-/// HTTP client for documented OpenAI-compatible chat and embedding providers. Chat uses the modern
-/// <b>Responses API</b> (<c>/responses</c>) — the successor to chat/completions and the only surface
-/// that serves GPT-5-class models — for Azure OpenAI, Azure AI Foundry and OpenAI. Ollama keeps its
-/// native chat/completions surface. GitHub Copilot chat is handled only by the official SDK.
-/// </summary>
+/// <summary>Embedding client for documented OpenAI-compatible providers.</summary>
 public sealed class OpenAiCompatibleClient(
     IHttpClientFactory httpFactory,
     IOptions<AiOptions> options,
-    ILogger<OpenAiCompatibleClient> logger) : IChatModel, IEmbeddingModel
+    ILogger<OpenAiCompatibleClient> logger) : IEmbeddingModel
 {
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web)
     {
@@ -29,265 +22,38 @@ public sealed class OpenAiCompatibleClient(
     };
     private readonly AiOptions _options = options.Value;
 
-    public async Task<string> CompleteAsync(IReadOnlyList<AiChatMessage> messages, CancellationToken cancellationToken = default)
-    {
-        var provider = _options.Provider;
-        if (string.Equals(provider, "copilot", StringComparison.OrdinalIgnoreCase))
-        {
-            throw new InvalidOperationException(
-                "The copilot chat provider is served by GitHub.Copilot.SDK, not the OpenAI-compatible client.");
-        }
-
-        // Every modern provider (Copilot, OpenAI, Azure OpenAI, Azure AI Foundry) uses the Responses
-        // API — the successor to chat/completions and the only surface that serves GPT-5-class
-        // models. Ollama has no Responses API, so it keeps its native chat/completions surface.
-        return UsesResponsesApi(provider)
-            ? await CompleteViaResponsesAsync(provider, messages, cancellationToken)
-            : await CompleteViaChatCompletionsAsync(provider, messages, cancellationToken);
-    }
-
-    /// <summary>Whether this provider supports the tool-calling agent loop (Responses API only).</summary>
-    public bool SupportsTools => UsesResponsesApi(_options.Provider);
-
-    /// <summary>
-    /// Runs a single agent turn on the Responses API: sends the running conversation plus the tool
-    /// specs, and returns either the model's final text or the tool calls it wants executed.
-    /// </summary>
-    public async Task<AgentTurn> RunAgentTurnAsync(
-        IReadOnlyList<AgentItem> items,
-        IReadOnlyList<ToolSpec> tools,
+    public async Task<IReadOnlyList<float[]>> EmbedAsync(
+        IReadOnlyList<string> inputs,
         CancellationToken cancellationToken = default)
-    {
-        var provider = _options.Provider;
-        if (!UsesResponsesApi(provider))
-        {
-            throw new InvalidOperationException($"Provider '{provider}' does not support tool calling.");
-        }
-
-        var input = new JsonArray();
-        foreach (var item in items)
-        {
-            input.Add(item switch
-            {
-                AgentMessage m => new JsonObject { ["role"] = m.Role, ["content"] = m.Content },
-                AgentToolCall c => new JsonObject
-                {
-                    ["type"] = "function_call",
-                    ["call_id"] = c.CallId,
-                    ["name"] = c.Name,
-                    ["arguments"] = c.ArgumentsJson,
-                },
-                AgentToolOutput o => new JsonObject
-                {
-                    ["type"] = "function_call_output",
-                    ["call_id"] = o.CallId,
-                    ["output"] = o.Output,
-                },
-                _ => throw new InvalidOperationException($"Unknown agent item {item.GetType().Name}."),
-            });
-        }
-
-        var toolArray = new JsonArray();
-        foreach (var t in tools)
-        {
-            toolArray.Add(new JsonObject
-            {
-                ["type"] = "function",
-                ["name"] = t.Name,
-                ["description"] = t.Description,
-                ["parameters"] = JsonNode.Parse(t.ParametersJsonSchema),
-            });
-        }
-
-        var body = new JsonObject
-        {
-            ["model"] = _options.ChatModel,
-            ["input"] = input,
-            ["tools"] = toolArray,
-            ["tool_choice"] = "auto",
-            ["parallel_tool_calls"] = true,
-            ["max_output_tokens"] = _options.MaxOutputTokens,
-        };
-        if (!string.IsNullOrWhiteSpace(_options.ReasoningEffort))
-        {
-            body["reasoning"] = new JsonObject { ["effort"] = _options.ReasoningEffort };
-        }
-
-        var http = httpFactory.CreateClient("ai");
-        using var activity = GenAiTelemetry.StartOperation(GenAiTelemetry.OpChat, provider, _options.ChatModel);
-        SetRequestTags(activity);
-        CaptureAgentInput(activity, items);
-        var start = Stopwatch.GetTimestamp();
-        string? errorType = null;
-        try
-        {
-            using var request = CreateRequest(provider, HttpMethod.Post, BuildResponsesUrl(provider), body);
-            using var response = await http.SendAsync(request, cancellationToken);
-            await EnsureSuccessAsync(response, cancellationToken);
-
-            var payload = await response.Content.ReadFromJsonAsync<ResponsesResponse>(SerializerOptions, cancellationToken)
-                          ?? throw new InvalidOperationException("Responses body was empty.");
-            RecordResponsesUsage(activity, GenAiTelemetry.OpChat, provider, payload);
-
-            var calls = new List<ToolCall>();
-            foreach (var item in payload.Output ?? [])
-            {
-                if (string.Equals(item.Type, "function_call", StringComparison.Ordinal)
-                    && item.CallId is { Length: > 0 } callId
-                    && item.Name is { Length: > 0 } name)
-                {
-                    calls.Add(new ToolCall(callId, name, item.Arguments ?? "{}"));
-                }
-            }
-
-            activity?.SetTag("gen_ai.response.tool_calls", calls.Count);
-            var text = ExtractOutputText(payload).Trim();
-            CaptureAgentOutput(activity, text, calls, payload.Status);
-            return new AgentTurn(text, calls);
-        }
-        catch (Exception ex)
-        {
-            errorType = ex.GetType().FullName;
-            GenAiTelemetry.RecordError(activity, ex);
-            throw;
-        }
-        finally
-        {
-            GenAiTelemetry.RecordDuration(GenAiTelemetry.OpChat, provider, _options.ChatModel,
-                Stopwatch.GetElapsedTime(start).TotalSeconds, errorType);
-        }
-    }
-
-    private async Task<string> CompleteViaResponsesAsync(
-        string provider, IReadOnlyList<AiChatMessage> messages, CancellationToken cancellationToken)
-    {
-        var url = BuildResponsesUrl(provider);
-        var body = new ResponsesRequest
-        {
-            Model = _options.ChatModel,
-            Input = messages.Select(m => new ResponsesMessage { Role = m.Role, Content = m.Content }).ToList(),
-            MaxOutputTokens = _options.MaxOutputTokens,
-            // Reasoning models (GPT-5-class) only accept the default temperature, so none is sent.
-            // The reasoning block is omitted when ReasoningEffort is empty (non-reasoning models).
-            Reasoning = string.IsNullOrWhiteSpace(_options.ReasoningEffort)
-                ? null
-                : new ResponsesReasoning { Effort = _options.ReasoningEffort },
-        };
-
-        using var activity = GenAiTelemetry.StartOperation(GenAiTelemetry.OpChat, provider, _options.ChatModel);
-        SetRequestTags(activity);
-        CaptureChatInput(activity, messages);
-        var start = Stopwatch.GetTimestamp();
-        string? errorType = null;
-        try
-        {
-            var http = httpFactory.CreateClient("ai");
-            using var request = CreateRequest(provider, HttpMethod.Post, url, body, _options.ApiKey);
-            using var response = await http.SendAsync(request, cancellationToken);
-            await EnsureSuccessAsync(response, cancellationToken);
-
-            var payload = await response.Content.ReadFromJsonAsync<ResponsesResponse>(SerializerOptions, cancellationToken)
-                          ?? throw new InvalidOperationException("Responses body was empty.");
-            RecordResponsesUsage(activity, GenAiTelemetry.OpChat, provider, payload);
-            var text = ExtractOutputText(payload).Trim();
-            CaptureAgentOutput(activity, text, [], payload.Status);
-            return text;
-        }
-        catch (Exception ex)
-        {
-            errorType = ex.GetType().FullName;
-            GenAiTelemetry.RecordError(activity, ex);
-            throw;
-        }
-        finally
-        {
-            GenAiTelemetry.RecordDuration(GenAiTelemetry.OpChat, provider, _options.ChatModel,
-                Stopwatch.GetElapsedTime(start).TotalSeconds, errorType);
-        }
-    }
-
-    private async Task<string> CompleteViaChatCompletionsAsync(
-        string provider, IReadOnlyList<AiChatMessage> messages, CancellationToken cancellationToken)
-    {
-        var url = BuildChatCompletionsUrl(provider);
-        var body = new ChatRequest
-        {
-            Model = _options.ChatModel,
-            Messages = messages.Select(m => new ChatRequestMessage { Role = m.Role, Content = m.Content }).ToList(),
-            Temperature = _options.Temperature,
-            MaxTokens = _options.MaxOutputTokens,
-        };
-
-        var http = httpFactory.CreateClient("ai");
-        using var request = CreateRequest(provider, HttpMethod.Post, url, body, _options.ApiKey);
-        using var response = await http.SendAsync(request, cancellationToken);
-        await EnsureSuccessAsync(response, cancellationToken);
-
-        var payload = await response.Content.ReadFromJsonAsync<ChatResponse>(SerializerOptions, cancellationToken)
-                      ?? throw new InvalidOperationException("Chat response body was empty.");
-        return payload.Choices?.FirstOrDefault()?.Message?.Content?.Trim() ?? string.Empty;
-    }
-
-    /// <summary>
-    /// Extracts the assistant's text from a Responses payload. The convenience <c>output_text</c>
-    /// field isn't populated by every provider (Copilot returns null), so the text is aggregated
-    /// from the <c>message</c> output items, skipping reasoning and tool items.
-    /// </summary>
-    private static string ExtractOutputText(ResponsesResponse payload)
-    {
-        if (!string.IsNullOrEmpty(payload.OutputText))
-        {
-            return payload.OutputText;
-        }
-
-        if (payload.Output is null)
-        {
-            return string.Empty;
-        }
-
-        var builder = new StringBuilder();
-        foreach (var item in payload.Output)
-        {
-            if (!string.Equals(item.Type, "message", StringComparison.Ordinal) || item.Content is null)
-            {
-                continue;
-            }
-
-            foreach (var part in item.Content)
-            {
-                if (string.Equals(part.Type, "output_text", StringComparison.Ordinal) && part.Text is { Length: > 0 })
-                {
-                    builder.Append(part.Text);
-                }
-            }
-        }
-
-        return builder.ToString();
-    }
-
-    public async Task<IReadOnlyList<float[]>> EmbedAsync(IReadOnlyList<string> inputs, CancellationToken cancellationToken = default)
     {
         if (inputs.Count == 0)
         {
             return [];
         }
 
-        // Embeddings may use a different provider than chat (see AiOptions.EmbeddingProvider).
-        var provider = string.IsNullOrWhiteSpace(_options.EmbeddingProvider) ? _options.Provider : _options.EmbeddingProvider!;
+        var provider = string.IsNullOrWhiteSpace(_options.EmbeddingProvider)
+            ? _options.Provider
+            : _options.EmbeddingProvider;
         var url = BuildEmbeddingsUrl(provider, _options.EmbeddingModel);
         var sameProvider = string.Equals(provider, _options.Provider, StringComparison.OrdinalIgnoreCase);
+        var effectiveEmbeddingEndpoint = !string.IsNullOrWhiteSpace(_options.EmbeddingEndpoint)
+            ? _options.EmbeddingEndpoint
+            : sameProvider
+                ? _options.Endpoint
+                : null;
+        var endpointsMatch = sameProvider
+            && !provider.Equals("ollama", StringComparison.OrdinalIgnoreCase)
+            && NormalizeEndpoint(_options.Endpoint) == NormalizeEndpoint(effectiveEmbeddingEndpoint);
         var embeddingApiKey = !string.IsNullOrWhiteSpace(_options.EmbeddingApiKey)
             ? _options.EmbeddingApiKey
-            : sameProvider
+            : endpointsMatch
                 ? _options.ApiKey
                 : null;
-        if (provider is not "ollama"
-            && !provider.Equals("ollama", StringComparison.OrdinalIgnoreCase)
+        if (!provider.Equals("ollama", StringComparison.OrdinalIgnoreCase)
             && string.IsNullOrWhiteSpace(embeddingApiKey))
         {
             throw new InvalidOperationException(
-                $"Embedding provider '{provider}' differs from chat provider '{_options.Provider}' "
-                + "and requires Ai:EmbeddingApiKey.");
+                $"Embedding provider '{provider}' requires Ai:EmbeddingApiKey.");
         }
 
         var body = new EmbeddingRequest
@@ -297,34 +63,43 @@ public sealed class OpenAiCompatibleClient(
         };
 
         var http = httpFactory.CreateClient("ai");
-        using var activity = GenAiTelemetry.StartOperation(GenAiTelemetry.OpEmbeddings, provider, _options.EmbeddingModel);
+        using var activity = GenAiTelemetry.StartOperation(
+            GenAiTelemetry.OpEmbeddings,
+            provider,
+            _options.EmbeddingModel);
         activity?.SetTag("gen_ai.request.input_count", inputs.Count);
         var start = Stopwatch.GetTimestamp();
         string? errorType = null;
         try
         {
-            using var request = CreateRequest(
-                provider,
-                HttpMethod.Post,
-                url,
-                body,
-                embeddingApiKey);
+            using var request = CreateRequest(provider, url, body, embeddingApiKey);
             using var response = await http.SendAsync(request, cancellationToken);
             await EnsureSuccessAsync(response, cancellationToken);
 
-            var payload = await response.Content.ReadFromJsonAsync<EmbeddingResponse>(SerializerOptions, cancellationToken)
-                          ?? throw new InvalidOperationException("Embedding response body was empty.");
+            var payload = await response.Content.ReadFromJsonAsync<EmbeddingResponse>(
+                SerializerOptions,
+                cancellationToken)
+                ?? throw new InvalidOperationException("Embedding response body was empty.");
+            if (payload.Data.Count != inputs.Count)
+            {
+                throw new InvalidOperationException(
+                    $"Embedding provider returned {payload.Data.Count} vectors for {inputs.Count} inputs.");
+            }
 
             if (payload.Usage?.PromptTokens is { } promptTokens)
             {
-                GenAiTelemetry.RecordUsage(activity, GenAiTelemetry.OpEmbeddings, provider,
-                    _options.EmbeddingModel, promptTokens, null);
+                GenAiTelemetry.RecordUsage(
+                    activity,
+                    GenAiTelemetry.OpEmbeddings,
+                    provider,
+                    _options.EmbeddingModel,
+                    promptTokens,
+                    null);
             }
 
-            // Preserve request order using the returned index.
             return payload.Data
-                .OrderBy(d => d.Index)
-                .Select(d => d.Embedding)
+                .OrderBy(data => data.Index)
+                .Select(data => data.Embedding)
                 .ToList();
         }
         catch (Exception ex)
@@ -335,157 +110,14 @@ public sealed class OpenAiCompatibleClient(
         }
         finally
         {
-            GenAiTelemetry.RecordDuration(GenAiTelemetry.OpEmbeddings, provider, _options.EmbeddingModel,
-                Stopwatch.GetElapsedTime(start).TotalSeconds, errorType);
+            GenAiTelemetry.RecordDuration(
+                GenAiTelemetry.OpEmbeddings,
+                provider,
+                _options.EmbeddingModel,
+                Stopwatch.GetElapsedTime(start).TotalSeconds,
+                errorType);
         }
     }
-
-    /// <summary>Sets request-parameter tags on a chat span (max tokens, reasoning level).</summary>
-    private void SetRequestTags(Activity? activity)
-    {
-        if (activity is null)
-        {
-            return;
-        }
-
-        activity.SetTag(GenAiTelemetry.RequestMaxTokens, _options.MaxOutputTokens);
-        if (!string.IsNullOrWhiteSpace(_options.ReasoningEffort))
-        {
-            activity.SetTag(GenAiTelemetry.RequestReasoningLevel, _options.ReasoningEffort);
-        }
-    }
-
-    /// <summary>Records token usage + response metadata from a Responses payload on the span/metrics.</summary>
-    private void RecordResponsesUsage(Activity? activity, string operation, string provider, ResponsesResponse payload)
-    {
-        var finish = payload.Status;
-        GenAiTelemetry.RecordUsage(
-            activity, operation, provider, _options.ChatModel,
-            payload.Usage?.InputTokens, payload.Usage?.OutputTokens,
-            payload.Model, payload.Id, finish);
-    }
-
-    /// <summary>
-    /// When content capture is enabled, records the system instructions + input messages on the span
-    /// in the OTel GenAI shape so the Aspire dashboard renders them. Splits system messages out into
-    /// gen_ai.system_instructions per the conventions.
-    /// </summary>
-    private void CaptureChatInput(Activity? activity, IReadOnlyList<AiChatMessage> messages)
-    {
-        if (activity is null || !_options.CaptureMessageContent)
-        {
-            return;
-        }
-
-        var systemTexts = messages.Where(m => m.Role == "system").Select(m => m.Content).ToList();
-        var inputMsgs = messages
-            .Where(m => m.Role != "system")
-            .Select(m => new GenAiMsg(m.Role, [GenAiPart.Text(m.Content)]))
-            .ToList();
-
-        if (systemTexts.Count > 0)
-        {
-            activity.SetTag(GenAiContent.SystemInstructionsKey, GenAiContent.SystemInstructions(systemTexts));
-        }
-
-        if (inputMsgs.Count > 0)
-        {
-            activity.SetTag(GenAiContent.InputMessagesKey, GenAiContent.Messages(inputMsgs));
-        }
-    }
-
-    /// <summary>Records the running agent conversation as input messages (system split out).</summary>
-    private void CaptureAgentInput(Activity? activity, IReadOnlyList<AgentItem> items)
-    {
-        if (activity is null || !_options.CaptureMessageContent)
-        {
-            return;
-        }
-
-        var systemTexts = new List<string>();
-        var inputMsgs = new List<GenAiMsg>();
-        foreach (var item in items)
-        {
-            switch (item)
-            {
-                case AgentMessage { Role: "system" } sys:
-                    systemTexts.Add(sys.Content);
-                    break;
-                case AgentMessage m:
-                    inputMsgs.Add(new GenAiMsg(m.Role, [GenAiPart.Text(m.Content)]));
-                    break;
-                case AgentToolCall c:
-                    inputMsgs.Add(new GenAiMsg("assistant", [GenAiPart.ToolCall(c.CallId, c.Name, c.ArgumentsJson)]));
-                    break;
-                case AgentToolOutput o:
-                    inputMsgs.Add(new GenAiMsg("tool", [GenAiPart.ToolResult(o.CallId, o.Output)]));
-                    break;
-            }
-        }
-
-        if (systemTexts.Count > 0)
-        {
-            activity.SetTag(GenAiContent.SystemInstructionsKey, GenAiContent.SystemInstructions(systemTexts));
-        }
-
-        if (inputMsgs.Count > 0)
-        {
-            activity.SetTag(GenAiContent.InputMessagesKey, GenAiContent.Messages(inputMsgs));
-        }
-    }
-
-    /// <summary>Records the model's output (text and/or tool calls) as an output message on the span.</summary>
-    private void CaptureAgentOutput(Activity? activity, string text, IReadOnlyList<ToolCall> calls, string? finishReason)
-    {
-        if (activity is null || !_options.CaptureMessageContent)
-        {
-            return;
-        }
-
-        var parts = new List<GenAiPart>();
-        if (!string.IsNullOrEmpty(text))
-        {
-            parts.Add(GenAiPart.Text(text));
-        }
-
-        foreach (var call in calls)
-        {
-            parts.Add(GenAiPart.ToolCall(call.CallId, call.Name, call.ArgumentsJson));
-        }
-
-        if (parts.Count == 0)
-        {
-            return;
-        }
-
-        activity.SetTag(GenAiContent.OutputMessagesKey,
-            GenAiContent.Messages([new GenAiMsg("assistant", parts, finishReason)]));
-    }
-
-    // Azure OpenAI puts the model in the URL (deployment) for embeddings; others put it in the body.
-    private static bool ModelInBody(string provider) => !string.Equals(provider, "azureopenai", StringComparison.OrdinalIgnoreCase);
-
-    private static bool UsesResponsesApi(string provider) =>
-        provider is "azureopenai" or "azureaifoundry" or "openai"
-        || provider.Equals("azureopenai", StringComparison.OrdinalIgnoreCase)
-        || provider.Equals("azureaifoundry", StringComparison.OrdinalIgnoreCase)
-        || provider.Equals("openai", StringComparison.OrdinalIgnoreCase);
-
-    private string BuildResponsesUrl(string provider) => provider.ToLowerInvariant() switch
-    {
-        // The Azure OpenAI v1 GA surface takes the model in the body (no deployment path / api-version).
-        "azureopenai" or "azureaifoundry" => $"{_options.Endpoint.TrimEnd('/')}/openai/v1/responses",
-        "openai" => $"{_options.Endpoint.TrimEnd('/')}/v1/responses",
-        _ => throw new InvalidOperationException(
-            $"Provider '{provider}' does not support this Responses API client. Use azureopenai, azureaifoundry, or openai."),
-    };
-
-    private string BuildChatCompletionsUrl(string provider) => provider.ToLowerInvariant() switch
-    {
-        "ollama" => $"{_options.Endpoint.TrimEnd('/')}/v1/chat/completions",
-        _ => throw new InvalidOperationException(
-            $"Provider '{provider}' should use the Responses API, not chat/completions."),
-    };
 
     private string BuildEmbeddingsUrl(string provider, string model)
     {
@@ -498,8 +130,7 @@ public sealed class OpenAiCompatibleClient(
         if (string.IsNullOrWhiteSpace(endpoint))
         {
             throw new InvalidOperationException(
-                $"Embedding provider '{provider}' differs from chat provider '{_options.Provider}' "
-                + "and requires Ai:EmbeddingEndpoint.");
+                $"Embedding provider '{provider}' requires Ai:EmbeddingEndpoint.");
         }
 
         var apiVersion = string.IsNullOrWhiteSpace(_options.EmbeddingApiVersion)
@@ -507,51 +138,48 @@ public sealed class OpenAiCompatibleClient(
             : _options.EmbeddingApiVersion;
         return provider.ToLowerInvariant() switch
         {
-            "azureopenai" => $"{endpoint.TrimEnd('/')}/openai/deployments/{model}/embeddings?api-version={apiVersion}",
+            "azureopenai" =>
+                $"{endpoint.TrimEnd('/')}/openai/deployments/{model}/embeddings?api-version={apiVersion}",
             "azureaifoundry" => $"{endpoint.TrimEnd('/')}/embeddings?api-version={apiVersion}",
             "openai" or "ollama" => $"{endpoint.TrimEnd('/')}/v1/embeddings",
             "copilot" => throw new InvalidOperationException(
-                "GitHub Copilot does not expose a supported embeddings API. Configure Ai:EmbeddingProvider."),
+                "GitHub Copilot does not expose a supported embeddings API."),
             _ => throw new InvalidOperationException(
-                $"Unknown embedding provider '{provider}'. Use azureopenai, azureaifoundry, openai, or ollama."),
+                $"Unknown embedding provider '{provider}'."),
         };
     }
 
     private HttpRequestMessage CreateRequest<T>(
         string provider,
-        HttpMethod method,
         string url,
         T body,
-        string? apiKey = null)
+        string? apiKey)
     {
-        var request = new HttpRequestMessage(method, url)
+        var request = new HttpRequestMessage(HttpMethod.Post, url)
         {
             Content = JsonContent.Create(body, options: SerializerOptions),
         };
-
         switch (provider.ToLowerInvariant())
         {
             case "ollama":
-                // Local Ollama needs no authentication; send only the API key if one was configured.
-                if (!string.IsNullOrEmpty(apiKey))
+                if (!string.IsNullOrWhiteSpace(apiKey))
                 {
                     request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
                 }
                 break;
-
             case "openai":
-                request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey ?? _options.ApiKey);
+                request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
                 break;
-
-            default: // azureopenai, azureaifoundry
-                request.Headers.TryAddWithoutValidation("api-key", apiKey ?? _options.ApiKey);
+            default:
+                request.Headers.TryAddWithoutValidation("api-key", apiKey);
                 break;
         }
-
         return request;
     }
 
-    private async Task EnsureSuccessAsync(HttpResponseMessage response, CancellationToken cancellationToken)
+    private async Task EnsureSuccessAsync(
+        HttpResponseMessage response,
+        CancellationToken cancellationToken)
     {
         if (response.IsSuccessStatusCode)
         {
@@ -559,112 +187,61 @@ public sealed class OpenAiCompatibleClient(
         }
 
         var content = await response.Content.ReadAsStringAsync(cancellationToken);
-        logger.LogError("AI provider request failed ({StatusCode}): {Body}", (int)response.StatusCode, content);
+        logger.LogError(
+            "Embedding provider request failed ({StatusCode}): {Body}",
+            (int)response.StatusCode,
+            content);
         throw new HttpRequestException(
-            $"AI provider request failed with status {(int)response.StatusCode}. See logs for details.");
+            $"Embedding provider request failed with status {(int)response.StatusCode}.");
     }
 
-    private sealed class ChatRequest
-    {
-        [JsonPropertyName("model")] public string? Model { get; set; }
-        [JsonPropertyName("messages")] public required List<ChatRequestMessage> Messages { get; set; }
-        [JsonPropertyName("temperature")] public double Temperature { get; set; }
-        [JsonPropertyName("max_tokens")] public int MaxTokens { get; set; }
-    }
+    private static bool ModelInBody(string provider) =>
+        !provider.Equals("azureopenai", StringComparison.OrdinalIgnoreCase);
 
-    private sealed class ChatRequestMessage
+    private static string NormalizeEndpoint(string? endpoint)
     {
-        [JsonPropertyName("role")] public required string Role { get; set; }
-        [JsonPropertyName("content")] public required string Content { get; set; }
-    }
+        if (!Uri.TryCreate(endpoint, UriKind.Absolute, out var uri))
+        {
+            return "";
+        }
 
-    private sealed class ChatResponse
-    {
-        [JsonPropertyName("choices")] public List<ChatChoice>? Choices { get; set; }
-    }
-
-    private sealed class ChatChoice
-    {
-        [JsonPropertyName("message")] public ChatResponseMessage? Message { get; set; }
-    }
-
-    private sealed class ChatResponseMessage
-    {
-        [JsonPropertyName("content")] public string? Content { get; set; }
-    }
-
-    private sealed class ResponsesRequest
-    {
-        [JsonPropertyName("model")] public required string Model { get; set; }
-        [JsonPropertyName("input")] public required List<ResponsesMessage> Input { get; set; }
-        [JsonPropertyName("max_output_tokens")] public int MaxOutputTokens { get; set; }
-        [JsonPropertyName("reasoning")] public ResponsesReasoning? Reasoning { get; set; }
-    }
-
-    private sealed class ResponsesMessage
-    {
-        [JsonPropertyName("role")] public required string Role { get; set; }
-        [JsonPropertyName("content")] public required string Content { get; set; }
-    }
-
-    private sealed class ResponsesReasoning
-    {
-        [JsonPropertyName("effort")] public required string Effort { get; set; }
-    }
-
-    private sealed class ResponsesResponse
-    {
-        [JsonPropertyName("id")] public string? Id { get; set; }
-        [JsonPropertyName("model")] public string? Model { get; set; }
-        [JsonPropertyName("status")] public string? Status { get; set; }
-        [JsonPropertyName("output_text")] public string? OutputText { get; set; }
-        [JsonPropertyName("output")] public List<ResponsesOutputItem>? Output { get; set; }
-        [JsonPropertyName("usage")] public ResponsesUsage? Usage { get; set; }
-    }
-
-    private sealed class ResponsesUsage
-    {
-        [JsonPropertyName("input_tokens")] public int? InputTokens { get; set; }
-        [JsonPropertyName("output_tokens")] public int? OutputTokens { get; set; }
-        [JsonPropertyName("total_tokens")] public int? TotalTokens { get; set; }
-    }
-
-    private sealed class ResponsesOutputItem
-    {
-        [JsonPropertyName("type")] public string? Type { get; set; }
-        [JsonPropertyName("content")] public List<ResponsesContentPart>? Content { get; set; }
-        [JsonPropertyName("call_id")] public string? CallId { get; set; }
-        [JsonPropertyName("name")] public string? Name { get; set; }
-        [JsonPropertyName("arguments")] public string? Arguments { get; set; }
-    }
-
-    private sealed class ResponsesContentPart
-    {
-        [JsonPropertyName("type")] public string? Type { get; set; }
-        [JsonPropertyName("text")] public string? Text { get; set; }
+        var port = uri.IsDefaultPort ? "" : $":{uri.Port}";
+        var path = uri.GetComponents(UriComponents.Path, UriFormat.UriEscaped).TrimEnd('/');
+        var query = uri.GetComponents(UriComponents.Query, UriFormat.UriEscaped);
+        return $"{uri.Scheme.ToLowerInvariant()}://{uri.IdnHost.ToLowerInvariant()}{port}/{path}"
+            + (string.IsNullOrEmpty(query) ? "" : $"?{query}");
     }
 
     private sealed class EmbeddingRequest
     {
-        [JsonPropertyName("model")] public string? Model { get; set; }
-        [JsonPropertyName("input")] public required IReadOnlyList<string> Input { get; set; }
+        [JsonPropertyName("model")]
+        public string? Model { get; set; }
+
+        [JsonPropertyName("input")]
+        public required IReadOnlyList<string> Input { get; set; }
     }
 
     private sealed class EmbeddingResponse
     {
-        [JsonPropertyName("data")] public List<EmbeddingData> Data { get; set; } = [];
-        [JsonPropertyName("usage")] public EmbeddingUsage? Usage { get; set; }
-    }
+        [JsonPropertyName("data")]
+        public List<EmbeddingData> Data { get; set; } = [];
 
-    private sealed class EmbeddingUsage
-    {
-        [JsonPropertyName("prompt_tokens")] public int? PromptTokens { get; set; }
-        [JsonPropertyName("total_tokens")] public int? TotalTokens { get; set; }
+        [JsonPropertyName("usage")]
+        public EmbeddingUsage? Usage { get; set; }
     }
 
     private sealed class EmbeddingData
     {
-        [JsonPropertyName("index")] public int Index { get; set; }
-        [JsonPropertyName("embedding")] public float[] Embedding { get; set; } = [];
+        [JsonPropertyName("index")]
+        public int Index { get; set; }
+
+        [JsonPropertyName("embedding")]
+        public float[] Embedding { get; set; } = [];
+    }
+
+    private sealed class EmbeddingUsage
+    {
+        [JsonPropertyName("prompt_tokens")]
+        public int? PromptTokens { get; set; }
     }
 }

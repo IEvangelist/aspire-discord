@@ -77,7 +77,7 @@ public class ApiSurfaceExtractorTests
 
         Assert.Contains(docs, d => d.Kind == "interface" && d.TypeName == "IThing" && d.Body.Contains("Does it."));
         Assert.Contains(docs, d => d.Kind == "record" && d.TypeName == "Point");
-        var mode = Assert.Single(docs.Where(d => d.Kind == "enum"));
+        var mode = Assert.Single(docs, d => d.Kind == "enum");
         Assert.Contains("One — The first.", mode.Body);
         Assert.Contains("Two", mode.Body);
     }

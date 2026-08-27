@@ -1,5 +1,6 @@
 using System.Net;
 using System.Text;
+using System.Text.Json;
 using AspireDiscordBot.Core.Ai;
 using AspireDiscordBot.Core.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -7,11 +8,6 @@ using Microsoft.Extensions.Options;
 
 namespace AspireDiscordBot.Tests;
 
-/// <summary>
-/// Exercises <see cref="OpenAiCompatibleClient"/> over a real HTTP round-trip using a local
-/// stub. Verifies URL construction (Responses API for chat, chat/completions for Ollama),
-/// the auth header, and request/response (de)serialization without needing a real provider.
-/// </summary>
 public sealed class OpenAiCompatibleClientTests : IDisposable
 {
     private readonly HttpListener _listener = new();
@@ -28,129 +24,110 @@ public sealed class OpenAiCompatibleClientTests : IDisposable
     }
 
     [Fact]
-    public async Task Embed_SendsAuthHeader_AndParsesVectors()
+    public async Task OpenAiEmbeddingsSendBearerAuthenticationAndPreserveOrder()
     {
-        var client = CreateClient("openai");
+        var client = CreateClient("openai", "credential");
 
         var vectors = await client.EmbedAsync(["hello", "world"]);
 
         Assert.Equal(2, vectors.Count);
-        Assert.Equal(4, vectors[0].Length);
-        var embedRequest = _requests.Single(r => r.Path.Contains("embeddings"));
-        Assert.Equal("Bearer test-key", embedRequest.Auth);
-        Assert.Contains("\"input\"", embedRequest.Body);
+        Assert.Equal([1f, 0f, 0f, 0f], vectors[0]);
+        Assert.Equal([0f, 1f, 0f, 0f], vectors[1]);
+        var request = Assert.Single(_requests);
+        Assert.StartsWith("Bearer ", request.Auth);
+        Assert.True(request.Auth.Length > "Bearer ".Length);
+        Assert.Contains("/v1/embeddings", request.Path);
     }
 
     [Fact]
-    public async Task Complete_UsesResponsesApi_AndAggregatesOutputText()
+    public async Task AzureOpenAiEmbeddingsUseDeploymentRouteAndApiKeyHeader()
     {
-        var client = CreateClient("openai");
+        var client = CreateClient("azureopenai", "credential");
 
-        var reply = await client.CompleteAsync([AiChatMessage.System("s"), AiChatMessage.User("hi")]);
+        await client.EmbedAsync(["hello"]);
 
-        Assert.Equal("stub answer", reply);
-        var chatRequest = _requests.Single(r => r.Path.Contains("/responses"));
-        Assert.Contains("/v1/responses", chatRequest.Path);
-        Assert.Contains("\"input\"", chatRequest.Body);
+        var request = Assert.Single(_requests);
+        Assert.DoesNotContain("Bearer ", request.Auth);
+        Assert.NotEmpty(request.Auth);
+        Assert.Contains(
+            "/openai/deployments/test-embedding/embeddings?api-version=2024-10-21",
+            request.Path);
     }
 
     [Fact]
-    public async Task AzureOpenAi_UsesV1ResponsesUrl_AndApiKeyHeader()
-    {
-        var client = CreateClient("azureopenai");
-
-        await client.CompleteAsync([AiChatMessage.User("hi")]);
-
-        var request = _requests.Single(r => r.Path.Contains("/responses"));
-        Assert.Contains("/openai/v1/responses", request.Path);
-        Assert.DoesNotContain("/deployments/", request.Path); // v1 surface: model in body, not URL
-        Assert.Contains("\"model\":\"gpt-4o-mini\"", request.Body);
-        Assert.Equal("test-key", request.Auth); // api-key header, not Bearer
-    }
-
-    [Fact]
-    public async Task Ollama_UsesChatCompletions_AndSendsNoAuthWhenKeyEmpty()
-    {
-        var client = CreateClient("ollama", apiKey: "");
-
-        await client.CompleteAsync([AiChatMessage.User("hi")]);
-
-        var request = _requests.Single(r => r.Path.Contains("chat/completions"));
-        Assert.Contains("/v1/chat/completions", request.Path);
-        Assert.Equal("", request.Auth); // no Authorization / api-key header for local Ollama
-    }
-
-    [Fact]
-    public async Task OllamaChat_SendsConfiguredBearerToken()
-    {
-        var client = CreateClient("ollama", apiKey: "ollama-secret");
-
-        await client.CompleteAsync([AiChatMessage.User("hi")]);
-
-        Assert.Equal(
-            "Bearer ollama-secret",
-            _requests.Single(request => request.Path.Contains("chat/completions")).Auth);
-    }
-
-    [Fact]
-    public async Task CopilotChat_IsRejectedByLegacyHttpClient()
-    {
-        var client = CreateClient("copilot");
-
-        var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            client.CompleteAsync([AiChatMessage.User("hi")]));
-
-        Assert.Contains("GitHub.Copilot.SDK", error.Message);
-    }
-
-    [Fact]
-    public async Task CopilotEmbeddings_RequireASeparateSupportedProvider()
-    {
-        var client = CreateClient("copilot");
-
-        var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            client.EmbedAsync(["hello"]));
-
-        Assert.Contains("EmbeddingProvider", error.Message);
-    }
-
-    [Fact]
-    public async Task SeparateOllamaEmbeddings_DoNotReceiveChatApiKey()
+    public async Task OllamaEmbeddingsDoNotInheritAnotherProvidersKey()
     {
         var options = Options.Create(new AiOptions
         {
             Provider = "openai",
-            Endpoint = _prefix.TrimEnd('/'),
-            ApiKey = "chat-secret",
-            ChatModel = "gpt-4o-mini",
+            ApiKey = "credential",
             EmbeddingProvider = "ollama",
             EmbeddingEndpoint = _prefix.TrimEnd('/'),
-            EmbeddingModel = "nomic-embed-text",
+            EmbeddingModel = "test-embedding",
+            EmbeddingDimensions = 4,
         });
-        var client = new OpenAiCompatibleClient(
-            new SingleClientFactory(),
-            options,
-            NullLogger<OpenAiCompatibleClient>.Instance);
+        var client = CreateClient(options);
 
         await client.EmbedAsync(["hello"]);
 
-        Assert.Equal("", _requests.Single(request => request.Path.Contains("embeddings")).Auth);
+        Assert.Empty(Assert.Single(_requests).Auth);
     }
 
-    private OpenAiCompatibleClient CreateClient(string provider, string apiKey = "test-key")
+    [Fact]
+    public async Task SameProviderDoesNotInheritKeyAcrossDifferentEndpoints()
     {
         var options = Options.Create(new AiOptions
+        {
+            Provider = "openai",
+            Endpoint = "https://chat.example.invalid",
+            ApiKey = "credential",
+            EmbeddingProvider = "openai",
+            EmbeddingEndpoint = _prefix.TrimEnd('/'),
+            EmbeddingModel = "test-embedding",
+            EmbeddingDimensions = 4,
+        });
+        var client = CreateClient(options);
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => client.EmbedAsync(["hello"]));
+
+        Assert.Contains("requires Ai:EmbeddingApiKey", error.Message);
+        Assert.Empty(_requests);
+    }
+
+    [Fact]
+    public async Task CopilotEmbeddingsAreRejected()
+    {
+        var client = CreateClient("copilot", "");
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => client.EmbedAsync(["hello"]));
+
+        Assert.Contains("does not expose a supported embeddings API", error.Message);
+    }
+
+    private OpenAiCompatibleClient CreateClient(string provider, string apiKey)
+    {
+        return CreateClient(Options.Create(new AiOptions
         {
             Provider = provider,
             Endpoint = _prefix.TrimEnd('/'),
             ApiKey = apiKey,
-            ChatModel = "gpt-4o-mini",
-            EmbeddingModel = "text-embedding-3-small",
+            EmbeddingProvider = provider,
+            EmbeddingEndpoint = _prefix.TrimEnd('/'),
+            EmbeddingApiKey = apiKey,
+            EmbeddingModel = "test-embedding",
+            EmbeddingDimensions = 4,
             ApiVersion = "2024-10-21",
-        });
+        }));
+    }
 
-        var factory = new SingleClientFactory();
-        return new OpenAiCompatibleClient(factory, options, NullLogger<OpenAiCompatibleClient>.Instance);
+    private static OpenAiCompatibleClient CreateClient(IOptions<AiOptions> options)
+    {
+        return new OpenAiCompatibleClient(
+            new SingleClientFactory(),
+            options,
+            NullLogger<OpenAiCompatibleClient>.Instance);
     }
 
     private async Task HandleRequestsAsync()
@@ -168,27 +145,26 @@ public sealed class OpenAiCompatibleClientTests : IDisposable
             }
 
             var path = context.Request.Url!.PathAndQuery;
-            var auth = context.Request.Headers["api-key"] ?? context.Request.Headers["Authorization"] ?? "";
-            using var reader = new StreamReader(context.Request.InputStream, context.Request.ContentEncoding);
+            var auth = context.Request.Headers["api-key"]
+                ?? context.Request.Headers["Authorization"]
+                ?? "";
+            using var reader = new StreamReader(
+                context.Request.InputStream,
+                context.Request.ContentEncoding);
             var body = await reader.ReadToEndAsync();
             _requests.Add((path, auth, body));
 
-            string json;
-            if (path.Contains("embeddings"))
-            {
-                json = """{"data":[{"index":0,"embedding":[0.1,0.2,0.3,0.4]},{"index":1,"embedding":[0.5,0.6,0.7,0.8]}]}""";
-            }
-            else if (path.Contains("/responses"))
-            {
-                // Mirrors the real Responses shape: output_text is null and the text must be
-                // aggregated from the message item, skipping the leading reasoning item.
-                json = """{"output_text":null,"output":[{"type":"reasoning","content":[]},{"type":"message","content":[{"type":"output_text","text":"stub answer"}]}]}""";
-            }
-            else
-            {
-                json = """{"choices":[{"message":{"content":"stub answer"}}]}""";
-            }
-
+            using var request = JsonDocument.Parse(body);
+            var inputCount = request.RootElement.GetProperty("input").GetArrayLength();
+            var data = Enumerable.Range(0, inputCount)
+                .Select(index => new
+                {
+                    index,
+                    embedding = Enumerable.Range(0, 4)
+                        .Select(dimension => dimension == index ? 1f : 0f)
+                        .ToArray(),
+                });
+            var json = JsonSerializer.Serialize(new { data });
             var bytes = Encoding.UTF8.GetBytes(json);
             context.Response.ContentType = "application/json";
             context.Response.StatusCode = 200;
@@ -208,11 +184,17 @@ public sealed class OpenAiCompatibleClientTests : IDisposable
 
     public void Dispose()
     {
-        try { _listener.Stop(); } catch { /* ignore */ }
+        try
+        {
+            _listener.Stop();
+        }
+        catch
+        {
+            // Listener may already be closed.
+        }
         ((IDisposable)_listener).Dispose();
     }
 
-    /// <summary>Minimal IHttpClientFactory that returns a fresh HttpClient per call.</summary>
     private sealed class SingleClientFactory : IHttpClientFactory
     {
         public HttpClient CreateClient(string name) => new();

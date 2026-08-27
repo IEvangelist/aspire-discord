@@ -1,0 +1,28 @@
+{
+  "name": "aspire-discord",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": "^24.0.0"
+  },
+  "workspaces": [
+    "AspireDiscordBot.AppHost",
+    "AspireDiscordBot.Bot"
+  ],
+  "scripts": {
+    "build": "npm run build:node && npm run build:dotnet",
+    "build:dotnet": "dotnet build AspireDiscordBot.slnx --nologo",
+    "build:node": "npm run build --workspaces --if-present",
+    "format": "npm run format --workspaces --if-present",
+    "format:check": "npm run format:check --workspaces --if-present",
+    "lint": "npm run lint --workspaces --if-present",
+    "test": "npm run test:node && npm run test:dotnet",
+    "test:dotnet": "dotnet test AspireDiscordBot.slnx --nologo",
+    "test:unit": "npm run test:unit --workspace @aspire-discord/bot",
+    "test:integration": "npm run test:integration --workspace @aspire-discord/bot",
+    "test:e2e": "npm run test:e2e --workspace @aspire-discord/bot",
+    "test:node": "npm run test --workspace @aspire-discord/bot",
+    "typecheck": "npm run typecheck --workspaces --if-present"
+  }
+}
