@@ -3,7 +3,7 @@ import { waitForIndexReadiness } from '../../src/main.js';
 import { testLogger } from '../helpers/logger.js';
 
 describe('service startup readiness', () => {
-  it('waits until both Qdrant indexes are available', async () => {
+  it('waits until both vector indexes are available', async () => {
     const isReady = vi
       .fn<() => Promise<boolean>>()
       .mockResolvedValueOnce(false)

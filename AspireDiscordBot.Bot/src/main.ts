@@ -106,7 +106,7 @@ interface IndexReadiness {
 }
 
 export async function waitForIndexReadiness(
-  qdrant: IndexReadiness,
+  vectorStore: IndexReadiness,
   logger: Logger,
   signal: AbortSignal,
   retryMilliseconds = 5_000,
@@ -116,18 +116,18 @@ export async function waitForIndexReadiness(
     signal.throwIfAborted();
     attempts++;
     try {
-      if (await qdrant.isReady(signal)) {
-        logger.info('Compatible Qdrant indexes are ready.');
+      if (await vectorStore.isReady(signal)) {
+        logger.info('Compatible vector indexes are ready.');
         return;
       }
     } catch (error) {
       if (attempts === 1 || attempts % 12 === 0) {
-        logger.warn({ err: error }, 'Qdrant indexes are not reachable yet.');
+        logger.warn({ err: error }, 'Vector indexes are not reachable yet.');
       }
     }
 
     if (attempts === 1 || attempts % 12 === 0) {
-      logger.info('Waiting for the ingestion service to publish both Qdrant indexes.');
+      logger.info('Waiting for the ingestion service to publish both vector indexes.');
     }
     await delay(retryMilliseconds, undefined, { signal });
   }
