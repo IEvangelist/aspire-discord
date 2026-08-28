@@ -298,15 +298,27 @@ function Remove-ContainerApp {
         Write-Warning "Refusing to remove unowned Container App '$ApplicationName'."
         return
     }
-    try {
-        if (-not [string]::IsNullOrWhiteSpace(
-            (Get-ActiveRevision -ApplicationName $ApplicationName))) {
-            Write-Warning "Refusing to remove active Container App '$ApplicationName'."
-            return
+    $revisionStatusVerified = $false
+    $activeRevision = ''
+    for ($attempt = 1; $attempt -le 12; $attempt++) {
+        try {
+        $activeRevision = Get-ActiveRevision -ApplicationName $ApplicationName
+        $revisionStatusVerified = $true
+        if ([string]::IsNullOrWhiteSpace($activeRevision)) {
+            break
         }
+        }
+        catch {
+        $revisionStatusVerified = $false
+        }
+        Start-Sleep -Seconds 5
     }
-    catch {
+    if (-not $revisionStatusVerified) {
         Write-Warning "Cannot verify revision status for '$ApplicationName'; refusing to remove it."
+        return
+    }
+    if (-not [string]::IsNullOrWhiteSpace($activeRevision)) {
+        Write-Warning "Refusing to remove active Container App '$ApplicationName'."
         return
     }
 
