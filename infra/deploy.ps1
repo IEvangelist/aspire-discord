@@ -56,7 +56,7 @@ function Get-ManagementToken {
 }
 
 function Enter-DeploymentLease {
-    $uri = "https://management.azure.com/subscriptions/$SubscriptionId/resourcegroups/$ResourceGroup?api-version=2024-03-01"
+    $uri = "https://management.azure.com/subscriptions/$SubscriptionId/resourcegroups/${ResourceGroup}?api-version=2024-03-01"
     $leaseToken = [Guid]::NewGuid().ToString('N')
     for ($attempt = 1; $attempt -le 4; $attempt++) {
         $managementToken = Get-ManagementToken
@@ -117,7 +117,7 @@ function Exit-DeploymentLease {
     if ([string]::IsNullOrWhiteSpace($LeaseToken)) {
         return
     }
-    $uri = "https://management.azure.com/subscriptions/$SubscriptionId/resourcegroups/$ResourceGroup?api-version=2024-03-01"
+    $uri = "https://management.azure.com/subscriptions/$SubscriptionId/resourcegroups/${ResourceGroup}?api-version=2024-03-01"
     for ($attempt = 1; $attempt -le 4; $attempt++) {
         try {
             $managementToken = Get-ManagementToken
