@@ -106,6 +106,21 @@ describe('loadConfig', () => {
     );
   });
 
+  it('supports Azure AI Search without a Qdrant endpoint', () => {
+    const config = loadConfig({
+      AI_EMBEDDING_ENDPOINT: 'https://example.openai.azure.com',
+      VECTOR_STORE_ENDPOINT: 'https://example.search.windows.net',
+      VECTOR_STORE_PROVIDER: 'azuresearch',
+    });
+
+    expect(config.vectorStore).toMatchObject({
+      apiIndex: 'aspire-api',
+      docsIndex: 'aspire-docs',
+      endpoint: 'https://example.search.windows.net',
+      provider: 'azuresearch',
+    });
+  });
+
   it('rejects malformed booleans without exposing secrets', () => {
     expect(() =>
       loadConfig({

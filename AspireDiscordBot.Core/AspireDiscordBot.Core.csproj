@@ -10,6 +10,7 @@
     <!-- Qdrant vector DB client (gRPC) + Aspire client integration (AddQdrantClient) -->
     <PackageReference Include="Aspire.Qdrant.Client" Version="13.5.0" />
     <PackageReference Include="Azure.Identity" Version="1.21.0" />
+    <PackageReference Include="Azure.Search.Documents" Version="12.0.0" />
     <!-- Typed HttpClient for the OpenAI-compatible embeddings provider -->
     <PackageReference Include="Microsoft.Extensions.Http" Version="10.0.11" />
     <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" Version="10.0.11" />

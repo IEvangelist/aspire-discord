@@ -5,7 +5,8 @@ read-only GitHub research. The runtime is intentionally polyglot:
 
 - **Node.js/TypeScript** owns Discord, agent orchestration, GitHub Copilot, GitHub MCP, retrieval,
   safety, citations, and HTTP health.
-- **.NET** owns ingestion, Roslyn API extraction, embeddings, and atomic Qdrant index publication.
+- **.NET** owns ingestion, Roslyn API extraction, embeddings, and versioned vector-index
+  publication.
 - An official **Aspire TypeScript AppHost** orchestrates both services plus Qdrant. Ollama is an
   explicit local-development fallback.
 
@@ -15,23 +16,23 @@ The bot refuses uncovered questions instead of filling gaps with model knowledge
 
 ```text
 aspire docs CLI ─┐
-                 ├─> .NET ingestion ─> Qdrant generation aliases <─ Node agent/Discord <─> Discord
+                 ├─> .NET ingestion ─> vector index aliases <─ Node agent/Discord <─> Discord
 pinned Git src ──┘          │                         ▲                    │
                             └─ Foundry embeddings                         ├─ GitHub Copilot SDK
                                (Ollama opt-in)                            └─ GitHub MCP (read-only)
 ```
 
-An ingestion run builds documentation and API collections off-path. Qdrant aliases move only after
-both generations are complete, so a failed refresh leaves the last usable index online.
+An ingestion run builds documentation and API indexes off-path. Logical aliases move only after
+both generations are complete, so a failed refresh leaves the last usable indexes online.
 
 ## Projects
 
 | Path | Runtime | Responsibility |
 | --- | --- | --- |
 | `AspireDiscordBot.AppHost` | TypeScript | Aspire resource graph, secrets, endpoints, health dependencies, commands |
-| `AspireDiscordBot.Bot` | Node.js 24 + TypeScript | Discord gateway, grounded agent, MCP, Qdrant retrieval, health API |
+| `AspireDiscordBot.Bot` | Node.js 24 + TypeScript | Discord gateway, grounded agent, MCP, vector retrieval, health API |
 | `AspireDiscordBot.Ingestion` | .NET 10 | Startup/scheduled/manual ingestion worker and admin API |
-| `AspireDiscordBot.Core` | .NET 10 | Document readers, Roslyn extraction, embeddings, Qdrant generations |
+| `AspireDiscordBot.Core` | .NET 10 | Document readers, Roslyn extraction, embeddings, vector generations |
 | `AspireDiscordBot.ServiceDefaults` | .NET 10 | OpenTelemetry, resilience, and health defaults |
 | `AspireDiscordBot.Tests` | .NET 10 | Ingestion and shared-index contract tests |
 
@@ -189,8 +190,8 @@ mirror of `microsoft/aspire`:
 2. Export only `src`.
 3. Parse public types, members, signatures, and XML documentation with Roslyn.
 4. Embed chunks in batches.
-5. Build physical Qdrant generations.
-6. Atomically move the `aspire_docs` and `aspire_api` aliases.
+5. Build physical vector-index generations.
+6. Publish the `aspire_docs` and `aspire_api` aliases with rollback on failure.
 
 Point payloads include revision, content hash, extractor version, embedding provider/model,
 dimensions, generation, and ingestion timestamp. Commit-pinned citations cannot drift with `main`.
@@ -236,32 +237,30 @@ and `nomic-embed-text` with 768 dimensions for embeddings.
 The `infra` deployment targets Azure Container Apps in Central US. It provisions:
 
 - GPT-5.6 Sol and `text-embedding-3-small` in Microsoft Foundry
-- a user-assigned managed identity for Foundry and Azure Container Registry
-- one multi-container app containing the bot, ingestion worker, and private Qdrant sidecar
-- a VNet-restricted 100 GiB Premium NFS share for Qdrant, plus Log Analytics and a Basic container
-  registry
+- Azure AI Search with versioned indexes and aliases
+- a user-assigned managed identity for Foundry, Search, and Azure Container Registry
+- a blue/green Container Apps deployment containing the bot and ingestion worker
+- Log Analytics and a Basic container registry
 
 Foundry local authentication is disabled. The bot and ingestion worker use managed identity in
-Azure, so the deployment does not use a personal GitHub Copilot login or an AI API key.
-
-The NFS storage account disables shared-key authentication and accepts NFS traffic only from the
-dedicated Container Apps subnet. Azure Container Apps does not support NFS encryption in transit,
-so the deployment explicitly disables that NFS-only setting as required by the platform. Azure
-still encrypts the files at rest and protects datacenter traffic at the network layer.
+Azure, so the deployment does not use a personal GitHub Copilot login or AI/Search API keys.
 
 The deployment script reads `DiscordToken`, `GitHubMcpToken`, and the optional Discord user allow
 list from the local Aspire secret store. It also accepts `DISCORD_TOKEN`, `GITHUB_MCP_TOKEN`, and
 `DISCORD_ALLOWED_USER_IDS` environment variables for CI.
 
-Build and deploy the immutable images, stopping the local bot immediately before cloud cutover:
+Build and deploy immutable images:
 
 ```powershell
-.\infra\deploy.ps1 -StopLocalAppHost
+.\infra\deploy.ps1
 ```
 
-The cloud bot starts its HTTP health endpoint immediately but does not connect to Discord until both
-Qdrant indexes are published. Future deployments deactivate the previous revision before starting
-the replacement so two Qdrant processes never mount the same data.
+The script stages the inactive blue/green slot without Discord, waits for both Search aliases to
+become ready, stops the active bot, enables Discord on the replacement, and restores the prior slot
+if cutover fails. Use `-StopLocalAppHost` when a local Aspire instance is running.
+
+After a successful migration from the older Qdrant deployment, the script removes the unsupported
+NFS-backed Container App and storage account.
 
 The defaults deploy to resource group `aspire-discord-prod` in subscription
 `11aa9ca6-306a-4ea9-b614-2d413efd04a8`. Override the script parameters to target another
@@ -298,7 +297,7 @@ Concurrent answers and queued requests are bounded; excess work gets a retry res
 The Node bot exposes:
 
 - `GET /health` — process liveness
-- `GET /ready` — Discord state plus both Qdrant aliases
+- `GET /ready` — Discord state plus both configured vector-index aliases
 - `GET /status` — gateway latency, guild count, mention mode, and work queue
 - `GET /scalar` — Scalar API reference
 
@@ -340,13 +339,25 @@ Opt-in live integrations:
 $env:GITHUB_MCP_TEST_TOKEN = gh auth token
 $env:QDRANT_TEST_URL = "http://127.0.0.1:6333"
 $env:QDRANT_TEST_ENDPOINT = "http://127.0.0.1:6334"
+$env:AZURE_SEARCH_TEST_ENDPOINT = "https://SEARCH-SERVICE.search.windows.net"
 
 npm run test:integration --workspace @aspire-discord/bot
 npm run test:dotnet
 ```
 
-The integration suites exercise the bundled Copilot runtime, remote GitHub MCP, Node Qdrant reads,
-.NET generation swaps, failed-refresh preservation, and legacy alias migration.
+The integration suites exercise the bundled Copilot runtime, remote GitHub MCP, Node retrieval,
+.NET generation swaps, failed-refresh preservation, and both Qdrant and Azure AI Search backends.
+
+## GenAI telemetry
+
+The Node agent, Copilot SDK runtime, and .NET embedding client emit OpenTelemetry GenAI spans and
+metrics using the standard `gen_ai.*` conventions. The local Aspire Dashboard recognizes agent,
+chat, embedding, and tool operations and shows model, duration, token, and error details in its
+GenAI visualizer.
+
+Prompt, response, tool-argument, and tool-result content is captured only when `NODE_ENV` is
+`development`, so the local dashboard can populate its input and output panels. Production keeps
+content capture disabled and does not write Discord question text to application logs.
 
 ## Package feeds
 

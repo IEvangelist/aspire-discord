@@ -1,6 +1,14 @@
 import { DefaultAzureCredential, getBearerTokenProvider } from '@azure/identity';
+import { SpanKind } from '@opentelemetry/api';
 import OpenAI, { AzureOpenAI } from 'openai';
 import type { AppConfig } from '../config.js';
+import {
+  genAiTracer,
+  operationAttributes,
+  recordClientDuration,
+  recordSpanError,
+  recordTokenUsage,
+} from '../genai-telemetry.js';
 
 const foundryTokenScope = 'https://ai.azure.com/.default';
 const foundryBearerTokenProvider = getBearerTokenProvider(
@@ -21,29 +29,61 @@ export class OpenAiEmbeddingModel implements EmbeddingModel {
   readonly #dimensions: number;
   readonly #model: string;
 
-  public constructor(config: AppConfig['ai']) {
+  public constructor(private readonly config: AppConfig['ai']) {
     this.#dimensions = config.embeddingDimensions;
     this.#model = config.embeddingModel;
     this.#client = createEmbeddingClient(config);
   }
 
   public async embed(input: string, signal?: AbortSignal): Promise<readonly number[]> {
-    const response = await this.#client.embeddings.create(
+    const operation = {
+      model: this.#model,
+      operation: 'embeddings' as const,
+      provider: this.config.embeddingProvider,
+      serverAddress: new URL(this.config.embeddingEndpoint).hostname,
+    };
+    const started = performance.now();
+    let failureType: string | undefined;
+
+    return await genAiTracer.startActiveSpan(
+      `embeddings ${this.#model}`,
       {
-        dimensions: this.#dimensions,
-        encoding_format: 'float',
-        input,
-        model: this.#model,
+        attributes: {
+          ...operationAttributes(operation),
+          'gen_ai.embeddings.dimension.count': this.#dimensions,
+          'gen_ai.request.input_count': 1,
+        },
+        kind: SpanKind.CLIENT,
       },
-      signal ? { signal } : undefined,
+      async (span) => {
+        try {
+          const response = await this.#client.embeddings.create(
+            {
+              dimensions: this.#dimensions,
+              encoding_format: 'float',
+              input,
+              model: this.#model,
+            },
+            signal ? { signal } : undefined,
+          );
+          const embedding = response.data[0]?.embedding;
+          if (embedding?.length !== this.#dimensions) {
+            throw new Error(
+              `Embedding provider returned ${embedding?.length ?? 0} dimensions; expected ${this.#dimensions}.`,
+            );
+          }
+          span.setAttribute('gen_ai.response.model', response.model);
+          recordTokenUsage(span, operation, response.usage.prompt_tokens);
+          return embedding;
+        } catch (error) {
+          failureType = recordSpanError(span, error);
+          throw error;
+        } finally {
+          recordClientDuration(operation, (performance.now() - started) / 1_000, failureType);
+          span.end();
+        }
+      },
     );
-    const embedding = response.data[0]?.embedding;
-    if (embedding?.length !== this.#dimensions) {
-      throw new Error(
-        `Embedding provider returned ${embedding?.length ?? 0} dimensions; expected ${this.#dimensions}.`,
-      );
-    }
-    return embedding;
   }
 }
 

@@ -75,6 +75,12 @@ public sealed class OpenAiCompatibleClient(
             provider,
             _options.EmbeddingModel);
         activity?.SetTag("gen_ai.request.input_count", inputs.Count);
+        activity?.SetTag("gen_ai.embeddings.dimension.count", _options.EmbeddingDimensions);
+        if (Uri.TryCreate(url, UriKind.Absolute, out var server))
+        {
+            activity?.SetTag("server.address", server.Host);
+            activity?.SetTag("server.port", server.Port);
+        }
         var start = Stopwatch.GetTimestamp();
         string? errorType = null;
         try
@@ -112,7 +118,8 @@ public sealed class OpenAiCompatibleClient(
                     provider,
                     _options.EmbeddingModel,
                     promptTokens,
-                    null);
+                    null,
+                    responseModel: payload.Model ?? _options.EmbeddingModel);
             }
 
             return payload.Data
@@ -263,6 +270,9 @@ public sealed class OpenAiCompatibleClient(
     {
         [JsonPropertyName("data")]
         public List<EmbeddingData> Data { get; set; } = [];
+
+        [JsonPropertyName("model")]
+        public string? Model { get; set; }
 
         [JsonPropertyName("usage")]
         public EmbeddingUsage? Usage { get; set; }

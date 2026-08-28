@@ -2,7 +2,16 @@ import type { AppConfig } from '../../src/config.js';
 
 type ConfigOverrides = Omit<
   Partial<AppConfig>,
-  'agent' | 'ai' | 'copilot' | 'discord' | 'githubMcp' | 'http' | 'qdrant' | 'retrieval' | 'safety'
+  | 'agent'
+  | 'ai'
+  | 'copilot'
+  | 'discord'
+  | 'githubMcp'
+  | 'http'
+  | 'qdrant'
+  | 'retrieval'
+  | 'safety'
+  | 'vectorStore'
 > & {
   agent?: Partial<AppConfig['agent']>;
   ai?: Partial<AppConfig['ai']>;
@@ -13,6 +22,7 @@ type ConfigOverrides = Omit<
   qdrant?: Partial<AppConfig['qdrant']>;
   retrieval?: Partial<AppConfig['retrieval']>;
   safety?: Partial<AppConfig['safety']>;
+  vectorStore?: Partial<AppConfig['vectorStore']>;
 };
 
 export function createTestConfig(overrides: ConfigOverrides = {}): AppConfig {
@@ -63,6 +73,11 @@ export function createTestConfig(overrides: ConfigOverrides = {}): AppConfig {
       maxQuestionLength: 600,
       minTopicScore: 0.35,
     },
+    vectorStore: {
+      apiIndex: 'aspire-api',
+      docsIndex: 'aspire-docs',
+      provider: 'qdrant',
+    },
   };
   return {
     ...base,
@@ -76,5 +91,6 @@ export function createTestConfig(overrides: ConfigOverrides = {}): AppConfig {
     qdrant: { ...base.qdrant, ...overrides.qdrant },
     retrieval: { ...base.retrieval, ...overrides.retrieval },
     safety: { ...base.safety, ...overrides.safety },
+    vectorStore: { ...base.vectorStore, ...overrides.vectorStore },
   };
 }

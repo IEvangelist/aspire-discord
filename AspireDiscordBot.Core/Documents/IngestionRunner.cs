@@ -39,7 +39,7 @@ public sealed record RunOutcome(
 public sealed class IngestionRunner(
     DocumentIngestor ingestor,
     ApiSurfaceIngestor apiIngestor,
-    QdrantVectorStore vectorStore,
+    IVectorStore vectorStore,
     IOptions<IngestionOptions> options,
     ILogger<IngestionRunner> logger)
 {
@@ -76,6 +76,24 @@ public sealed class IngestionRunner(
 
         var includeApi = apiIngestor.IsEnabled &&
             (force || !await vectorStore.IsCompatibleAsync(apiIngestor.CollectionName, cancellationToken));
+
+        if (!force && !includeDocs && !includeApi && apiIngestor.IsEnabled)
+        {
+            var docsGroup = await vectorStore.GetPublicationGroupAsync(
+                _options.CollectionName,
+                cancellationToken);
+            var apiGroup = await vectorStore.GetPublicationGroupAsync(
+                apiIngestor.CollectionName,
+                cancellationToken);
+            if (string.IsNullOrWhiteSpace(docsGroup)
+                || !string.Equals(docsGroup, apiGroup, StringComparison.Ordinal))
+            {
+                logger.LogWarning(
+                    "Published vector indexes do not share a publication group; rebuilding both aliases.");
+                includeDocs = true;
+                includeApi = true;
+            }
+        }
 
         if (!includeDocs && !includeApi)
         {
@@ -124,10 +142,14 @@ public sealed class IngestionRunner(
             var files = 0;
             var chunks = 0;
             var parts = new List<string>();
+            var publicationGroup = Guid.NewGuid().ToString("N");
 
             if (includeDocs)
             {
-                var completed = await ingestor.BuildAsync(force, cancellationToken);
+                var completed = await ingestor.BuildAsync(
+                    force,
+                    cancellationToken,
+                    publicationGroup);
                 pendingBuilds.Add(completed);
                 var docs = completed.Result;
                 files += docs.Files;
@@ -137,7 +159,10 @@ public sealed class IngestionRunner(
 
             if (includeApi)
             {
-                var completed = await apiIngestor.BuildAsync(force, cancellationToken);
+                var completed = await apiIngestor.BuildAsync(
+                    force,
+                    cancellationToken,
+                    publicationGroup);
                 pendingBuilds.Add(completed);
                 var api = completed.Result;
                 files += api.Files;

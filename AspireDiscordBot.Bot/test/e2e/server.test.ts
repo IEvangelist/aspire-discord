@@ -24,7 +24,7 @@ describe('HTTP service', () => {
         }),
       },
       logger: testLogger,
-      qdrant: { isReady: async () => true },
+      vectorStore: { isReady: async () => true },
     });
     servers.push(server);
 
@@ -49,7 +49,7 @@ describe('HTTP service', () => {
         }),
       },
       logger: testLogger,
-      qdrant: { isReady: async () => false },
+      vectorStore: { isReady: async () => false },
     });
     servers.push(server);
 
@@ -70,7 +70,7 @@ describe('HTTP service', () => {
         }),
       },
       logger: testLogger,
-      qdrant: {
+      vectorStore: {
         isReady: async () => {
           throw new Error('offline');
         },

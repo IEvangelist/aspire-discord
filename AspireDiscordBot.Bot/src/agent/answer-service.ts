@@ -1,8 +1,8 @@
-import { SpanStatusCode, trace } from '@opentelemetry/api';
 import type { Logger } from 'pino';
 import type { AppConfig } from '../config.js';
 import { CitationRegistry } from '../citations.js';
 import type { AnswerService, GroundedAnswer, VectorSearchResult } from '../domain.js';
+import { withAgentSpan } from '../genai-telemetry.js';
 import { buildAgentPrompt, NOT_COVERED_MESSAGE } from '../prompts.js';
 import { evaluateQuestion, isAnswerSafe } from '../safety.js';
 import type { Tool } from '@github/copilot-sdk';
@@ -27,15 +27,18 @@ export interface GitHubToolProvider {
 }
 
 export interface RetrievalStore {
-  searchApi(vector: readonly number[], limit: number): Promise<readonly VectorSearchResult[]>;
+  searchApi(
+    vector: readonly number[],
+    limit: number,
+    signal?: AbortSignal,
+  ): Promise<readonly VectorSearchResult[]>;
   searchDocs(
     vector: readonly number[],
     limit: number,
     scoreThreshold?: number,
+    signal?: AbortSignal,
   ): Promise<readonly VectorSearchResult[]>;
 }
-
-const tracer = trace.getTracer('AspireDiscordBot.Bot');
 
 export class GroundedAnswerService implements AnswerService {
   public constructor(
@@ -48,8 +51,14 @@ export class GroundedAnswerService implements AnswerService {
   ) {}
 
   public async answer(question: string, signal?: AbortSignal): Promise<GroundedAnswer> {
-    return await tracer.startActiveSpan('invoke_agent aspire-docs-agent', async (span) => {
-      try {
+    return await withAgentSpan(
+      {
+        maxOutputTokens: this.config.ai.maxOutputTokens,
+        model: this.config.ai.chatModel,
+        provider: this.config.ai.provider,
+        reasoningLevel: this.config.ai.reasoningEffort,
+      },
+      async (span) => {
         const trimmed = question.trim();
         const verdict = evaluateQuestion(trimmed, this.config.safety.maxQuestionLength);
         if (!verdict.isAllowed) {
@@ -70,7 +79,12 @@ export class GroundedAnswerService implements AnswerService {
           this.config.retrieval.minScore,
           this.config.safety.minTopicScore,
         );
-        const seed = await this.qdrant.searchDocs(vector, this.config.retrieval.topK, minimumScore);
+        const seed = await this.qdrant.searchDocs(
+          vector,
+          this.config.retrieval.topK,
+          minimumScore,
+          signal,
+        );
         const topScore = seed[0]?.score ?? 0;
         if (seed.length === 0) {
           span.setAttribute('gen_ai.agent.outcome', 'off_topic');
@@ -118,14 +132,8 @@ export class GroundedAnswerService implements AnswerService {
           isGrounded: true,
           topScore,
         };
-      } catch (error) {
-        span.recordException(error instanceof Error ? error : new Error(String(error)));
-        span.setStatus({ code: SpanStatusCode.ERROR });
-        throw error;
-      } finally {
-        span.end();
-      }
-    });
+      },
+    );
   }
 }
 

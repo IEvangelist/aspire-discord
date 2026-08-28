@@ -10,27 +10,12 @@ using System.Text.RegularExpressions;
 
 namespace AspireDiscordBot.Core.Vectors;
 
-/// <summary>A physical generation being built behind a logical collection alias.</summary>
-public sealed class VectorIndexBuild(
-    string logicalCollection,
-    string physicalCollection,
-    string generation,
-    DateTimeOffset startedUtc)
-{
-    public string LogicalCollection { get; } = logicalCollection;
-    public string PhysicalCollection { get; } = physicalCollection;
-    public string Generation { get; } = generation;
-    public DateTimeOffset StartedUtc { get; } = startedUtc;
-    internal bool IsPublished { get; set; }
-    internal bool RetainOnAbort { get; set; }
-}
-
 /// <summary>Stores and searches embedded documentation chunks in Qdrant.</summary>
 public sealed partial class QdrantVectorStore(
     QdrantClient client,
     IOptions<IngestionOptions> ingestionOptions,
     IOptions<AiOptions> aiOptions,
-    ILogger<QdrantVectorStore> logger)
+    ILogger<QdrantVectorStore> logger) : IVectorStore
 {
     private readonly IngestionOptions _ingestion = ingestionOptions.Value;
     private readonly AiOptions _ai = aiOptions.Value;
@@ -40,7 +25,8 @@ public sealed partial class QdrantVectorStore(
     /// <summary>Creates an isolated physical collection for a complete new logical-index generation.</summary>
     public async Task<VectorIndexBuild> BeginBuildAsync(
         string? collectionName = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        string? publicationGroup = null)
     {
         var logical = collectionName ?? Collection;
         var generation = Guid.NewGuid().ToString("N");
@@ -54,7 +40,12 @@ public sealed partial class QdrantVectorStore(
             "Created staging collection '{Physical}' for logical index '{Logical}'.",
             physical,
             logical);
-        return new VectorIndexBuild(logical, physical, generation, DateTimeOffset.UtcNow);
+        return new VectorIndexBuild(
+            logical,
+            physical,
+            generation,
+            DateTimeOffset.UtcNow,
+            publicationGroup ?? generation);
     }
 
     /// <summary>
@@ -310,6 +301,23 @@ public sealed partial class QdrantVectorStore(
                && Payload(point, "extractor_version") == "2";
     }
 
+    public async Task<string?> GetPublicationGroupAsync(
+        string collectionName,
+        CancellationToken cancellationToken = default)
+    {
+        if (!await IndexExistsAsync(collectionName, cancellationToken))
+        {
+            return null;
+        }
+        var page = await client.ScrollAsync(
+            collectionName,
+            limit: 1,
+            payloadSelector: true,
+            cancellationToken: cancellationToken);
+        var point = page.Result.FirstOrDefault();
+        return point is null ? null : Payload(point, "publication_group");
+    }
+
     /// <summary>Upserts a batch of chunks with their aligned embedding vectors.</summary>
     public async Task UpsertAsync(
         IReadOnlyList<DocChunk> chunks,
@@ -354,6 +362,7 @@ public sealed partial class QdrantVectorStore(
             if (build is not null)
             {
                 point.Payload.Add("generation", build.Generation);
+                point.Payload.Add("publication_group", build.PublicationGroup);
                 point.Payload.Add("ingested_at", build.StartedUtc.ToString("O"));
             }
 

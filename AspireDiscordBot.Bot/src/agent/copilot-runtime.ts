@@ -2,6 +2,7 @@ import {
   CopilotClient,
   RuntimeConnection,
   type ProviderConfig,
+  type TelemetryConfig,
   type Tool,
 } from '@github/copilot-sdk';
 import { context, propagation } from '@opentelemetry/api';
@@ -25,6 +26,7 @@ export class CopilotRuntime {
     const baseDirectory =
       config.copilot.runtimeBasePath ??
       join(process.env.LOCALAPPDATA ?? homedir(), 'AspireDiscordBot', 'copilot-node');
+    const telemetry = buildCopilotTelemetry(config);
     this.#client = new CopilotClient({
       baseDirectory,
       connection: RuntimeConnection.forStdio(),
@@ -37,16 +39,7 @@ export class CopilotRuntime {
         return carrier;
       },
       sessionIdleTimeoutSeconds: 300,
-      ...(config.otlpEndpoint
-        ? {
-            telemetry: {
-              captureContent: false,
-              otlpEndpoint: config.otlpEndpoint,
-              otlpProtocol: 'http/protobuf',
-              sourceName: 'aspire-discord-copilot',
-            },
-          }
-        : {}),
+      ...(telemetry ? { telemetry } : {}),
       useLoggedInUser: config.ai.provider === 'copilot' && !config.copilot.token,
       workingDirectory: tmpdir(),
     });
@@ -187,6 +180,18 @@ export class CopilotRuntime {
       this.#startAttempted = false;
     }
   }
+}
+
+export function buildCopilotTelemetry(config: AppConfig): TelemetryConfig | undefined {
+  if (!config.otlpEndpoint) {
+    return undefined;
+  }
+  return {
+    captureContent: config.nodeEnvironment === 'development',
+    otlpEndpoint: config.otlpEndpoint,
+    otlpProtocol: 'http/protobuf',
+    sourceName: 'AspireDiscordBot.GenAI',
+  };
 }
 
 export function buildProvider(config: AppConfig['ai']): ProviderConfig | undefined {

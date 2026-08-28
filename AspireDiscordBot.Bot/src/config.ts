@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 const providerSchema = z.enum(['copilot', 'azureopenai', 'azureaifoundry', 'openai', 'ollama']);
+const vectorStoreProviderSchema = z.enum(['azuresearch', 'qdrant']);
 
 const rawEnvironmentSchema = z.object({
   AI_API_KEY: z.string().optional(),
@@ -41,6 +42,10 @@ const rawEnvironmentSchema = z.object({
   RETRIEVAL_TOP_K: z.coerce.number().int().min(1).max(20).default(6),
   SAFETY_MAX_QUESTION_LENGTH: z.coerce.number().int().min(100).max(4_000).default(600),
   SAFETY_MIN_TOPIC_SCORE: z.coerce.number().min(0).max(1).default(0.35),
+  VECTOR_STORE_API_INDEX: z.string().min(1).default('aspire-api'),
+  VECTOR_STORE_DOCS_INDEX: z.string().min(1).default('aspire-docs'),
+  VECTOR_STORE_ENDPOINT: z.url().optional(),
+  VECTOR_STORE_PROVIDER: vectorStoreProviderSchema.default('qdrant'),
 });
 
 export type AiProvider = z.infer<typeof providerSchema>;
@@ -103,6 +108,12 @@ export interface AppConfig {
     readonly maxQuestionLength: number;
     readonly minTopicScore: number;
   };
+  readonly vectorStore: {
+    readonly apiIndex: string;
+    readonly docsIndex: string;
+    readonly endpoint?: string;
+    readonly provider: z.infer<typeof vectorStoreProviderSchema>;
+  };
 }
 
 export class ConfigurationError extends Error {
@@ -124,13 +135,26 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): AppCon
 
   const env = result.data;
   const qdrantUrl = env.QDRANT_URL ?? env.QDRANT_HTTPURI;
-  if (!qdrantUrl) {
+  if (env.VECTOR_STORE_PROVIDER === 'qdrant' && !qdrantUrl) {
     throw new ConfigurationError([
       {
         code: 'custom',
         input: undefined,
         message: 'QDRANT_URL or QDRANT_HTTPURI is required',
         path: ['QDRANT_URL'],
+      },
+    ]);
+  }
+  if (
+    env.VECTOR_STORE_PROVIDER === 'azuresearch' &&
+    (!env.VECTOR_STORE_ENDPOINT || new URL(env.VECTOR_STORE_ENDPOINT).protocol !== 'https:')
+  ) {
+    throw new ConfigurationError([
+      {
+        code: 'custom',
+        input: undefined,
+        message: 'Azure AI Search requires an HTTPS VECTOR_STORE_ENDPOINT',
+        path: ['VECTOR_STORE_ENDPOINT'],
       },
     ]);
   }
@@ -244,7 +268,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): AppCon
       ...(qdrantApiKey ? { apiKey: qdrantApiKey } : {}),
       apiCollection: 'aspire_api',
       docsCollection: 'aspire_docs',
-      url: qdrantUrl,
+      url: qdrantUrl ?? '',
     },
     retrieval: {
       minScore: env.RETRIEVAL_MIN_SCORE,
@@ -254,6 +278,12 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): AppCon
     safety: {
       maxQuestionLength: env.SAFETY_MAX_QUESTION_LENGTH,
       minTopicScore: env.SAFETY_MIN_TOPIC_SCORE,
+    },
+    vectorStore: {
+      apiIndex: env.VECTOR_STORE_API_INDEX,
+      docsIndex: env.VECTOR_STORE_DOCS_INDEX,
+      ...(env.VECTOR_STORE_ENDPOINT ? { endpoint: env.VECTOR_STORE_ENDPOINT } : {}),
+      provider: env.VECTOR_STORE_PROVIDER,
     },
   };
 }

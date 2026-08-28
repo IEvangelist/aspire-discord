@@ -21,7 +21,7 @@ describe('service composition', () => {
       config,
       discord,
       logger: testLogger,
-      qdrant: { isReady: async () => true },
+      vectorStore: { isReady: async () => true },
     });
 
     try {

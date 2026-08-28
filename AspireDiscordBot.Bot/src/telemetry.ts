@@ -1,5 +1,7 @@
 import { getNodeAutoInstrumentations } from '@opentelemetry/auto-instrumentations-node';
+import { OTLPMetricExporter } from '@opentelemetry/exporter-metrics-otlp-http';
 import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http';
+import { PeriodicExportingMetricReader } from '@opentelemetry/sdk-metrics';
 import { NodeSDK } from '@opentelemetry/sdk-node';
 
 export interface TelemetryHandle {
@@ -11,8 +13,11 @@ export async function startTelemetry(
 ): Promise<TelemetryHandle> {
   const tracesEndpoint =
     environment.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT ??
-    appendTracePath(environment.OTEL_EXPORTER_OTLP_ENDPOINT);
-  if (!tracesEndpoint) {
+    appendSignalPath(environment.OTEL_EXPORTER_OTLP_ENDPOINT, 'traces');
+  const metricsEndpoint =
+    environment.OTEL_EXPORTER_OTLP_METRICS_ENDPOINT ??
+    appendSignalPath(environment.OTEL_EXPORTER_OTLP_ENDPOINT, 'metrics');
+  if (!tracesEndpoint && !metricsEndpoint) {
     return { shutdown: async () => undefined };
   }
 
@@ -22,8 +27,17 @@ export async function startTelemetry(
         '@opentelemetry/instrumentation-fs': { enabled: false },
       }),
     ],
+    ...(metricsEndpoint
+      ? {
+          metricReader: new PeriodicExportingMetricReader({
+            exporter: new OTLPMetricExporter({ url: metricsEndpoint }),
+            exportIntervalMillis: 5_000,
+            exportTimeoutMillis: 4_000,
+          }),
+        }
+      : {}),
     serviceName: 'aspire-discord-bot',
-    traceExporter: new OTLPTraceExporter({ url: tracesEndpoint }),
+    ...(tracesEndpoint ? { traceExporter: new OTLPTraceExporter({ url: tracesEndpoint }) } : {}),
   });
   sdk.start();
   return {
@@ -33,10 +47,14 @@ export async function startTelemetry(
   };
 }
 
-function appendTracePath(endpoint: string | undefined): string | undefined {
+export function appendSignalPath(
+  endpoint: string | undefined,
+  signal: 'metrics' | 'traces',
+): string | undefined {
   if (!endpoint) {
     return undefined;
   }
   const trimmed = endpoint.replace(/\/+$/u, '');
-  return trimmed.endsWith('/v1/traces') ? trimmed : `${trimmed}/v1/traces`;
+  const suffix = `/v1/${signal}`;
+  return trimmed.endsWith(suffix) ? trimmed : `${trimmed}${suffix}`;
 }

@@ -10,7 +10,7 @@ using Microsoft.Extensions.Options;
 
 namespace AspireDiscordBot.Core;
 
-/// <summary>Registers document ingestion, embeddings, and Qdrant generation publishing.</summary>
+/// <summary>Registers document ingestion, embeddings, and vector-index generation publishing.</summary>
 public static class CoreServiceCollectionExtensions
 {
     /// <param name="builder">The host application builder.</param>
@@ -19,11 +19,16 @@ public static class CoreServiceCollectionExtensions
         this IHostApplicationBuilder builder,
         string qdrantConnectionName = "qdrant")
     {
-        // Qdrant client (Aspire client integration wires connection string + telemetry + health checks).
-        builder.AddQdrantClient(qdrantConnectionName);
-
         var services = builder.Services;
         var configuration = builder.Configuration;
+        var vectorStoreProvider = configuration[$"{VectorStoreOptions.SectionName}:Provider"]
+            ?? "qdrant";
+
+        if (vectorStoreProvider.Equals("qdrant", StringComparison.OrdinalIgnoreCase))
+        {
+            // Aspire wires the Qdrant connection string, telemetry, and health checks.
+            builder.AddQdrantClient(qdrantConnectionName);
+        }
 
         services.AddOptions<AiOptions>()
             .Bind(configuration.GetSection(AiOptions.SectionName))
@@ -33,6 +38,12 @@ public static class CoreServiceCollectionExtensions
             .ValidateOnStart();
         services.Configure<IngestionOptions>(configuration.GetSection(IngestionOptions.SectionName));
         services.Configure<ApiSurfaceOptions>(configuration.GetSection(ApiSurfaceOptions.SectionName));
+        services.AddOptions<VectorStoreOptions>()
+            .Bind(configuration.GetSection(VectorStoreOptions.SectionName))
+            .Validate(
+                IsValidVectorStoreConfiguration,
+                "VectorStore must select qdrant or provide an HTTPS Azure AI Search endpoint.")
+            .ValidateOnStart();
 
         // Default the ingestion sources to the catalog when none are configured.
         services.PostConfigure<IngestionOptions>(options =>
@@ -87,7 +98,18 @@ public static class CoreServiceCollectionExtensions
         });
 
         services.AddSingleton<DocumentChunker>();
-        services.AddSingleton<QdrantVectorStore>();
+        if (vectorStoreProvider.Equals("azuresearch", StringComparison.OrdinalIgnoreCase))
+        {
+            services.AddSingleton<AzureSearchVectorStore>();
+            services.AddSingleton<IVectorStore>(sp =>
+                sp.GetRequiredService<AzureSearchVectorStore>());
+        }
+        else
+        {
+            services.AddSingleton<QdrantVectorStore>();
+            services.AddSingleton<IVectorStore>(sp =>
+                sp.GetRequiredService<QdrantVectorStore>());
+        }
         services.AddSingleton<DocumentIngestor>();
         services.AddSingleton<GitSourceSnapshotProvider>();
         services.AddSingleton<ApiSurfaceIngestor>();
@@ -105,4 +127,11 @@ public static class CoreServiceCollectionExtensions
             || Uri.TryCreate(options.EmbeddingEndpoint, UriKind.Absolute, out var endpoint)
                 && endpoint.Scheme == Uri.UriSchemeHttps;
     }
+
+    private static bool IsValidVectorStoreConfiguration(VectorStoreOptions options) =>
+        options.Provider.Equals("qdrant", StringComparison.OrdinalIgnoreCase)
+        || options.Provider.Equals("azuresearch", StringComparison.OrdinalIgnoreCase)
+            && Uri.TryCreate(options.Endpoint, UriKind.Absolute, out var endpoint)
+            && endpoint.Scheme == Uri.UriSchemeHttps
+            && options.GenerationRetention >= 2;
 }

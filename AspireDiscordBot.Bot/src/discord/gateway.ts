@@ -191,7 +191,7 @@ export class DiscordGateway {
       }
 
       this.logger.info(
-        { question: truncateForLog(resolved.question), userId: interaction.user.id },
+        { questionLength: resolved.question.length },
         'Handling Discord slash command.',
       );
       const question = resolved.question;
@@ -316,10 +316,6 @@ function originalPostProblem(status: OriginalPostResult['status']): string {
     case 'found':
       return 'Please include a question.';
   }
-}
-
-function truncateForLog(value: string): string {
-  return value.length <= 120 ? value : `${value.slice(0, 120)}…`;
 }
 
 function answerPayload(content: string): {

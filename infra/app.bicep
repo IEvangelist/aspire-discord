@@ -13,6 +13,12 @@ param imageTag string
 @description('Unique suffix for this Container Apps revision.')
 param revisionSuffix string
 
+@description('Container App name for the blue/green deployment slot.')
+param applicationName string
+
+@description('Connect this slot to Discord after search indexes are ready.')
+param enableDiscord bool = false
+
 @secure()
 param discordToken string
 
@@ -20,14 +26,15 @@ param discordToken string
 param githubToken string
 
 @secure()
-param qdrantApiKey string
-
-@secure()
 param discordAllowedUserIds string = ''
 
 var baseName = 'aspire-discord-${environmentName}'
 var compactName = 'aspirediscord${resourceSuffix}'
 var foundryEndpoint = 'https://aspire-discord-ai-${resourceSuffix}.openai.azure.com'
+var searchEndpoint = 'https://aspire-discord-search-${resourceSuffix}.search.windows.net'
+var slotName = endsWith(applicationName, '-green') ? 'green' : 'blue'
+var apiIndexName = 'aspire-api-${slotName}'
+var docsIndexName = 'aspire-docs-${slotName}'
 var tags = {
   application: 'aspire-discord'
   environment: environmentName
@@ -47,7 +54,7 @@ resource containerEnvironment 'Microsoft.App/managedEnvironments@2025-07-01' exi
 }
 
 resource application 'Microsoft.App/containerApps@2025-07-01' = {
-  name: baseName
+  name: applicationName
   location: location
   tags: tags
   identity: {
@@ -87,14 +94,6 @@ resource application 'Microsoft.App/containerApps@2025-07-01' = {
           {
             name: 'github-token'
             value: githubToken
-          }
-          {
-            name: 'qdrant-api-key'
-            value: qdrantApiKey
-          }
-          {
-            name: 'qdrant-connection'
-            value: 'Endpoint=http://localhost:6334;Key=${qdrantApiKey}'
           }
         ],
         empty(discordAllowedUserIds)
@@ -176,22 +175,34 @@ resource application 'Microsoft.App/containerApps@2025-07-01' = {
                 value: 'true'
               }
               {
-                name: 'DISCORD_TOKEN'
-                secretRef: 'discord-token'
-              }
-              {
                 name: 'GITHUB_MCP_TOKEN'
                 secretRef: 'github-token'
               }
               {
-                name: 'QDRANT_API_KEY'
-                secretRef: 'qdrant-api-key'
+                name: 'VECTOR_STORE_API_INDEX'
+                value: apiIndexName
               }
               {
-                name: 'QDRANT_URL'
-                value: 'http://localhost:6333'
+                name: 'VECTOR_STORE_DOCS_INDEX'
+                value: docsIndexName
+              }
+              {
+                name: 'VECTOR_STORE_ENDPOINT'
+                value: searchEndpoint
+              }
+              {
+                name: 'VECTOR_STORE_PROVIDER'
+                value: 'azuresearch'
               }
             ],
+            enableDiscord
+              ? [
+                  {
+                    name: 'DISCORD_TOKEN'
+                    secretRef: 'discord-token'
+                  }
+                ]
+              : [],
             empty(discordAllowedUserIds)
               ? []
               : [
@@ -277,10 +288,6 @@ resource application 'Microsoft.App/containerApps@2025-07-01' = {
               value: 'ManagedIdentityCredential'
             }
             {
-              name: 'ConnectionStrings__qdrant'
-              secretRef: 'qdrant-connection'
-            }
-            {
               name: 'Ingestion__GitHubToken'
               secretRef: 'github-token'
             }
@@ -289,8 +296,24 @@ resource application 'Microsoft.App/containerApps@2025-07-01' = {
               value: 'github'
             }
             {
-              name: 'QDRANT_APIKEY'
-              secretRef: 'qdrant-api-key'
+              name: 'ApiSurface__CollectionName'
+              value: apiIndexName
+            }
+            {
+              name: 'Ingestion__CollectionName'
+              value: docsIndexName
+            }
+            {
+              name: 'VectorStore__Endpoint'
+              value: searchEndpoint
+            }
+            {
+              name: 'VectorStore__GenerationRetention'
+              value: '2'
+            }
+            {
+              name: 'VectorStore__Provider'
+              value: 'azuresearch'
             }
           ]
           probes: [
@@ -322,71 +345,15 @@ resource application 'Microsoft.App/containerApps@2025-07-01' = {
             memory: '1Gi'
           }
         }
-        {
-          name: 'qdrant'
-          image: '${registry.properties.loginServer}/qdrant:v1.18.0'
-          env: [
-            {
-              name: 'QDRANT__SERVICE__API_KEY'
-              secretRef: 'qdrant-api-key'
-            }
-            {
-              name: 'QDRANT__STORAGE__STORAGE_PATH'
-              value: '/qdrant/storage'
-            }
-          ]
-          probes: [
-            {
-              type: 'Liveness'
-              httpGet: {
-                path: '/healthz'
-                port: 6333
-                scheme: 'HTTP'
-              }
-              initialDelaySeconds: 20
-              periodSeconds: 30
-              timeoutSeconds: 5
-              failureThreshold: 3
-            }
-            {
-              type: 'Readiness'
-              httpGet: {
-                path: '/readyz'
-                port: 6333
-                scheme: 'HTTP'
-              }
-              initialDelaySeconds: 10
-              periodSeconds: 15
-              timeoutSeconds: 5
-              failureThreshold: 3
-            }
-          ]
-          resources: {
-            cpu: json('0.5')
-            memory: '1Gi'
-          }
-          volumeMounts: [
-            {
-              mountPath: '/qdrant/storage'
-              volumeName: 'qdrant-data'
-            }
-          ]
-        }
       ]
       scale: {
         maxReplicas: 1
         minReplicas: 1
       }
-      volumes: [
-        {
-          name: 'qdrant-data'
-          storageName: 'qdrant-storage'
-          storageType: 'NfsAzureFile'
-        }
-      ]
     }
   }
 }
 
 output applicationName string = application.name
 output applicationUrl string = 'https://${application.properties.configuration.ingress.fqdn}'
+output discordEnabled bool = enableDiscord

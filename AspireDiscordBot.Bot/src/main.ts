@@ -1,6 +1,7 @@
 import { setTimeout as delay } from 'node:timers/promises';
 import type { Logger } from 'pino';
 import { GroundedAnswerService } from './agent/answer-service.js';
+import { AzureSearchStore } from './agent/azure-search-store.js';
 import { CopilotRuntime } from './agent/copilot-runtime.js';
 import { OpenAiEmbeddingModel } from './agent/embeddings.js';
 import { GitHubMcpClient } from './agent/github-mcp.js';
@@ -17,12 +18,22 @@ export async function main(telemetry: TelemetryHandle): Promise<void> {
   const logger = createLogger(config);
   const shutdownController = new AbortController();
   const embeddings = new OpenAiEmbeddingModel(config.ai);
-  const qdrant = new QdrantStore(config.qdrant, logger);
+  const vectorStore =
+    config.vectorStore.provider === 'azuresearch'
+      ? new AzureSearchStore(config.vectorStore, logger)
+      : new QdrantStore(config.qdrant, logger);
   const copilot = new CopilotRuntime(config, logger);
   const githubMcp = new GitHubMcpClient(config.githubMcp, logger);
-  const answers = new GroundedAnswerService(config, embeddings, qdrant, copilot, githubMcp, logger);
+  const answers = new GroundedAnswerService(
+    config,
+    embeddings,
+    vectorStore,
+    copilot,
+    githubMcp,
+    logger,
+  );
   const discord = new DiscordGateway(config, answers, logger, undefined, shutdownController.signal);
-  const server = await buildServer({ config, discord, logger, qdrant });
+  const server = await buildServer({ config, discord, logger, vectorStore });
   let shutdownPromise: Promise<void> | undefined;
   const lifecycle: { startup?: Promise<void> } = {};
 
@@ -69,7 +80,7 @@ export async function main(telemetry: TelemetryHandle): Promise<void> {
     throwIfShuttingDown(shutdownController.signal);
     await server.listen(config.http);
     logger.info(config.http, 'Aspire Discord bot HTTP service started.');
-    await waitForIndexReadiness(qdrant, logger, shutdownController.signal);
+    await waitForIndexReadiness(vectorStore, logger, shutdownController.signal);
     throwIfShuttingDown(shutdownController.signal);
     await copilot.start();
     throwIfShuttingDown(shutdownController.signal);
@@ -91,7 +102,7 @@ export async function main(telemetry: TelemetryHandle): Promise<void> {
 }
 
 interface IndexReadiness {
-  isReady(): Promise<boolean>;
+  isReady(signal?: AbortSignal): Promise<boolean>;
 }
 
 export async function waitForIndexReadiness(
@@ -105,7 +116,7 @@ export async function waitForIndexReadiness(
     signal.throwIfAborted();
     attempts++;
     try {
-      if (await qdrant.isReady()) {
+      if (await qdrant.isReady(signal)) {
         logger.info('Compatible Qdrant indexes are ready.');
         return;
       }

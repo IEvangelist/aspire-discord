@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildProvider } from '../../src/agent/copilot-runtime.js';
+import { buildCopilotTelemetry, buildProvider } from '../../src/agent/copilot-runtime.js';
 import { createTestConfig } from '../helpers/config.js';
 
 describe('Copilot BYOK provider configuration', () => {
@@ -46,5 +46,20 @@ describe('Copilot BYOK provider configuration', () => {
     });
     expect(provider?.apiKey).toBeUndefined();
     expect(provider?.bearerTokenProvider).toBeTypeOf('function');
+  });
+
+  it('captures message content only for the local development dashboard', () => {
+    const development = createTestConfig({
+      nodeEnvironment: 'development',
+      otlpEndpoint: 'http://localhost:4318',
+    });
+    const production = createTestConfig({
+      nodeEnvironment: 'production',
+      otlpEndpoint: 'http://collector:4318',
+    });
+
+    expect(buildCopilotTelemetry(development)?.captureContent).toBe(true);
+    expect(buildCopilotTelemetry(production)?.captureContent).toBe(false);
+    expect(buildCopilotTelemetry(createTestConfig())).toBeUndefined();
   });
 });

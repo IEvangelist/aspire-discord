@@ -29,11 +29,13 @@ export class QdrantStore {
     });
   }
 
-  public async isReady(): Promise<boolean> {
+  public async isReady(signal?: AbortSignal): Promise<boolean> {
+    signal?.throwIfAborted();
     const [docs, api] = await Promise.all([
       this.#client.collectionExists(this.config.docsCollection),
       this.#client.collectionExists(this.config.apiCollection),
     ]);
+    signal?.throwIfAborted();
     return docs.exists && api.exists;
   }
 
@@ -41,15 +43,17 @@ export class QdrantStore {
     vector: readonly number[],
     limit: number,
     scoreThreshold?: number,
+    signal?: AbortSignal,
   ): Promise<readonly VectorSearchResult[]> {
-    return await this.#search(this.config.docsCollection, vector, limit, scoreThreshold);
+    return await this.#search(this.config.docsCollection, vector, limit, scoreThreshold, signal);
   }
 
   public async searchApi(
     vector: readonly number[],
     limit: number,
+    signal?: AbortSignal,
   ): Promise<readonly VectorSearchResult[]> {
-    return await this.#search(this.config.apiCollection, vector, limit);
+    return await this.#search(this.config.apiCollection, vector, limit, undefined, signal);
   }
 
   async #search(
@@ -57,7 +61,9 @@ export class QdrantStore {
     vector: readonly number[],
     limit: number,
     scoreThreshold?: number,
+    signal?: AbortSignal,
   ): Promise<readonly VectorSearchResult[]> {
+    signal?.throwIfAborted();
     const response = await this.#client.query(collection, {
       limit,
       query: [...vector],
@@ -65,6 +71,7 @@ export class QdrantStore {
       with_payload: true,
       with_vector: false,
     });
+    signal?.throwIfAborted();
 
     const results: VectorSearchResult[] = [];
     for (const point of response.points) {

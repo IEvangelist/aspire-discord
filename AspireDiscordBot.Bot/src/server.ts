@@ -7,7 +7,7 @@ import type { AppConfig } from './config.js';
 import type { DiscordStatus } from './discord/gateway.js';
 
 export interface ReadinessStore {
-  isReady(): Promise<boolean>;
+  isReady(signal?: AbortSignal): Promise<boolean>;
 }
 
 export interface DiscordServiceStatus {
@@ -19,11 +19,11 @@ interface ServerDependencies {
   readonly config: AppConfig;
   readonly discord: DiscordServiceStatus;
   readonly logger: Logger;
-  readonly qdrant: ReadinessStore;
+  readonly vectorStore: ReadinessStore;
 }
 
 export async function buildServer(dependencies: ServerDependencies) {
-  const { config, discord, logger, qdrant } = dependencies;
+  const { config, discord, logger, vectorStore } = dependencies;
   const server = Fastify({
     bodyLimit: 64 * 1_024,
     logController: new LogController({
@@ -94,12 +94,12 @@ export async function buildServer(dependencies: ServerDependencies) {
     },
     async (_request, reply) => {
       try {
-        const ready = discord.ready && (await qdrant.isReady());
+        const ready = discord.ready && (await vectorStore.isReady());
         if (ready) {
           return { ready: true as const };
         }
       } catch (error) {
-        logger.warn({ err: error }, 'Readiness check could not reach Qdrant.');
+        logger.warn({ err: error }, 'Readiness check could not reach the vector store.');
       }
       return await reply.code(503).send({ ready: false });
     },

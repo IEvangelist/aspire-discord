@@ -9,6 +9,17 @@ param resourceSuffix string
 @description('Deployment environment tag.')
 param environmentName string = 'production'
 
+@description('Optional deployment principal granted Search data-plane access for validation.')
+param deploymentPrincipalId string = ''
+
+@allowed([
+  'Group'
+  'ServicePrincipal'
+  'User'
+])
+@description('Type of the optional deployment principal.')
+param deploymentPrincipalType string = 'User'
+
 var baseName = 'aspire-discord-${environmentName}'
 var compactName = 'aspirediscord${resourceSuffix}'
 var tags = {
@@ -30,6 +41,18 @@ var acrPullRoleDefinitionId = subscriptionResourceId(
 var openAiUserRoleDefinitionId = subscriptionResourceId(
   'Microsoft.Authorization/roleDefinitions',
   '5e0bd9bd-7b93-4f28-af87-19fc36ad61bd'
+)
+var searchDataReaderRoleDefinitionId = subscriptionResourceId(
+  'Microsoft.Authorization/roleDefinitions',
+  '1407120a-92aa-4202-b7e9-c0e197c71c8f'
+)
+var searchDataContributorRoleDefinitionId = subscriptionResourceId(
+  'Microsoft.Authorization/roleDefinitions',
+  '8ebe5a00-799e-43f5-93ac-243d3dce84a7'
+)
+var searchServiceContributorRoleDefinitionId = subscriptionResourceId(
+  'Microsoft.Authorization/roleDefinitions',
+  '7ca78c08-252a-4471-8644-bb5ff32d4ba0'
 )
 
 resource identity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
@@ -99,51 +122,6 @@ resource virtualNetwork 'Microsoft.Network/virtualNetworks@2024-05-01' = {
   }
 }
 
-resource storage 'Microsoft.Storage/storageAccounts@2023-05-01' = {
-  name: compactName
-  location: location
-  tags: tags
-  kind: 'FileStorage'
-  sku: {
-    name: 'Premium_LRS'
-  }
-  properties: {
-    allowBlobPublicAccess: false
-    allowSharedKeyAccess: false
-    defaultToOAuthAuthentication: true
-    minimumTlsVersion: 'TLS1_2'
-    networkAcls: {
-      bypass: 'AzureServices'
-      defaultAction: 'Deny'
-      virtualNetworkRules: [
-        {
-          action: 'Allow'
-          id: containerSubnetId
-        }
-      ]
-    }
-    publicNetworkAccess: 'Enabled'
-    supportsHttpsTrafficOnly: true
-  }
-}
-
-resource fileService 'Microsoft.Storage/storageAccounts/fileServices@2023-05-01' = {
-  parent: storage
-  name: 'default'
-  properties: {}
-}
-
-resource qdrantShare 'Microsoft.Storage/storageAccounts/fileServices/shares@2023-05-01' = {
-  parent: fileService
-  name: 'qdrant'
-  properties: {
-    accessTier: 'Premium'
-    enabledProtocols: 'NFS'
-    rootSquash: 'NoRootSquash'
-    shareQuota: 100
-  }
-}
-
 resource logs 'Microsoft.OperationalInsights/workspaces@2023-09-01' = {
   name: '${baseName}-logs'
   location: location
@@ -184,18 +162,6 @@ resource containerEnvironment 'Microsoft.App/managedEnvironments@2025-07-01' = {
       }
     ]
     zoneRedundant: false
-  }
-}
-
-resource qdrantEnvironmentStorage 'Microsoft.App/managedEnvironments/storages@2025-07-01' = {
-  parent: containerEnvironment
-  name: 'qdrant-storage'
-  properties: {
-    nfsAzureFile: {
-      accessMode: 'ReadWrite'
-      server: '${storage.name}.file.${environment().suffixes.storage}'
-      shareName: '/${storage.name}/${qdrantShare.name}'
-    }
   }
 }
 
@@ -264,6 +230,87 @@ resource embeddingDeployment 'Microsoft.CognitiveServices/accounts/deployments@2
   ]
 }
 
+resource search 'Microsoft.Search/searchServices@2025-05-01' = {
+  name: 'aspire-discord-search-${resourceSuffix}'
+  location: location
+  tags: tags
+  sku: {
+    name: 'basic'
+  }
+  properties: {
+    disableLocalAuth: true
+    hostingMode: 'Default'
+    networkRuleSet: {
+      bypass: 'None'
+      ipRules: []
+    }
+    partitionCount: 1
+    publicNetworkAccess: 'enabled'
+    replicaCount: 1
+    semanticSearch: 'free'
+  }
+}
+
+resource searchDataReader 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(search.id, identity.id, searchDataReaderRoleDefinitionId)
+  scope: search
+  properties: {
+    principalId: identity.properties.principalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: searchDataReaderRoleDefinitionId
+  }
+}
+
+resource searchDataContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(search.id, identity.id, searchDataContributorRoleDefinitionId)
+  scope: search
+  properties: {
+    principalId: identity.properties.principalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: searchDataContributorRoleDefinitionId
+  }
+}
+
+resource searchServiceContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(search.id, identity.id, searchServiceContributorRoleDefinitionId)
+  scope: search
+  properties: {
+    principalId: identity.properties.principalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: searchServiceContributorRoleDefinitionId
+  }
+}
+
+resource deploymentSearchDataReader 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!empty(deploymentPrincipalId)) {
+  name: guid(search.id, deploymentPrincipalId, searchDataReaderRoleDefinitionId)
+  scope: search
+  properties: {
+    principalId: deploymentPrincipalId
+    principalType: deploymentPrincipalType
+    roleDefinitionId: searchDataReaderRoleDefinitionId
+  }
+}
+
+resource deploymentSearchDataContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!empty(deploymentPrincipalId)) {
+  name: guid(search.id, deploymentPrincipalId, searchDataContributorRoleDefinitionId)
+  scope: search
+  properties: {
+    principalId: deploymentPrincipalId
+    principalType: deploymentPrincipalType
+    roleDefinitionId: searchDataContributorRoleDefinitionId
+  }
+}
+
+resource deploymentSearchServiceContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!empty(deploymentPrincipalId)) {
+  name: guid(search.id, deploymentPrincipalId, searchServiceContributorRoleDefinitionId)
+  scope: search
+  properties: {
+    principalId: deploymentPrincipalId
+    principalType: deploymentPrincipalType
+    roleDefinitionId: searchServiceContributorRoleDefinitionId
+  }
+}
+
 output registryName string = registry.name
 output registryServer string = registry.properties.loginServer
 output containerEnvironmentName string = containerEnvironment.name
@@ -271,5 +318,6 @@ output foundryEndpoint string = foundry.properties.endpoint
 output foundryName string = foundry.name
 output identityClientId string = identity.properties.clientId
 output identityName string = identity.name
-output storageName string = storage.name
+output searchEndpoint string = 'https://${search.name}.search.windows.net'
+output searchName string = search.name
 output virtualNetworkName string = virtualNetwork.name

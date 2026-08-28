@@ -56,7 +56,7 @@ public static class GenAiTelemetry
     public static string ProviderName(string provider) => provider.ToLowerInvariant() switch
     {
         "azureopenai" => "azure.ai.openai",
-        "azureaifoundry" => "azure.ai.inference",
+        "azureaifoundry" => "azure.ai.openai",
         "ollama" => "ollama",
         _ => "openai", // openai, copilot
     };

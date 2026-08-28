@@ -14,13 +14,13 @@ public sealed record IngestionBuildResult(IngestionResult Result, VectorIndexBui
 
 /// <summary>
 /// End-to-end ingestion pipeline: read raw docs from the configured source, clean them,
-/// chunk them, embed the chunks in batches, and upsert them into Qdrant.
+/// chunk them, embed the chunks in batches, and upsert them into the configured vector store.
 /// </summary>
 public sealed class DocumentIngestor(
     IDocSourceReader reader,
     DocumentChunker chunker,
     IEmbeddingModel embeddingModel,
-    QdrantVectorStore vectorStore,
+    IVectorStore vectorStore,
     IOptions<IngestionOptions> options,
     ILogger<DocumentIngestor> logger)
 {
@@ -48,11 +48,15 @@ public sealed class DocumentIngestor(
     /// <summary>Builds a complete physical generation without publishing its logical alias.</summary>
     public async Task<IngestionBuildResult> BuildAsync(
         bool forceReindex,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        string? publicationGroup = null)
     {
         var sources = _options.Sources.Count > 0 ? _options.Sources : DocSourceCatalog.Default();
 
-        var build = await vectorStore.BeginBuildAsync(_options.CollectionName, cancellationToken);
+        var build = await vectorStore.BeginBuildAsync(
+            _options.CollectionName,
+            cancellationToken,
+            publicationGroup);
         var fileCount = 0;
         var chunkCount = 0;
         var buffer = new List<DocChunk>(EmbeddingBatchSize);

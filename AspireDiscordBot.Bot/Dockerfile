@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 
-FROM node:24-bookworm-slim AS build
+FROM node:24-bookworm-slim@sha256:ba849c60be29959425b8734d57b8b4b7d56f98edd9504c9af091d5281095a71e AS build
 WORKDIR /src
 
 COPY package.json package-lock.json ./
@@ -12,7 +12,7 @@ COPY AspireDiscordBot.Bot AspireDiscordBot.Bot
 RUN npm run build --workspace @aspire-discord/bot \
     && npm prune --omit=dev --workspaces
 
-FROM node:24-bookworm-slim AS final
+FROM node:24-bookworm-slim@sha256:ba849c60be29959425b8734d57b8b4b7d56f98edd9504c9af091d5281095a71e AS final
 ENV NODE_ENV=production
 ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
 WORKDIR /app

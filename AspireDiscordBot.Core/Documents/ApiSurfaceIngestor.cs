@@ -8,14 +8,14 @@ namespace AspireDiscordBot.Core.Documents;
 
 /// <summary>
 /// Ingests the microsoft/aspire public API surface from a managed or local Git snapshot into its own
-/// Qdrant index. It walks the configured <c>src</c> subtrees, extracts public types + XML docs with
+/// vector index. It walks the configured <c>src</c> subtrees, extracts public types + XML docs with
 /// <see cref="ApiSurfaceExtractor"/>, chunks and embeds them, and upserts to the API collection so
 /// the agent's <c>search_api</c> tool can retrieve real type/method-level knowledge.
 /// </summary>
 public sealed class ApiSurfaceIngestor(
     DocumentChunker chunker,
     IEmbeddingModel embeddingModel,
-    QdrantVectorStore vectorStore,
+    IVectorStore vectorStore,
     GitSourceSnapshotProvider snapshots,
     IOptions<ApiSurfaceOptions> options,
     ILogger<ApiSurfaceIngestor> logger)
@@ -29,7 +29,7 @@ public sealed class ApiSurfaceIngestor(
         || (!string.IsNullOrWhiteSpace(_options.LocalSrcPath)
             && Directory.Exists(_options.LocalSrcPath));
 
-    /// <summary>The Qdrant collection storing the API surface.</summary>
+    /// <summary>The logical vector index storing the API surface.</summary>
     public string CollectionName => _options.CollectionName;
 
     public async Task<IngestionResult> IngestAsync(bool forceReindex, CancellationToken cancellationToken = default)
@@ -50,7 +50,8 @@ public sealed class ApiSurfaceIngestor(
     /// <summary>Builds a complete API generation without publishing its logical alias.</summary>
     public async Task<IngestionBuildResult> BuildAsync(
         bool forceReindex,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        string? publicationGroup = null)
     {
         if (!IsEnabled)
         {
@@ -70,7 +71,10 @@ public sealed class ApiSurfaceIngestor(
             files.Count,
             snapshot.SourceRoot,
             snapshot.Revision);
-        var build = await vectorStore.BeginBuildAsync(_options.CollectionName, cancellationToken);
+        var build = await vectorStore.BeginBuildAsync(
+            _options.CollectionName,
+            cancellationToken,
+            publicationGroup);
 
         var typeCount = 0;
         var chunkCount = 0;
