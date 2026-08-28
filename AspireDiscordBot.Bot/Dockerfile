@@ -14,7 +14,12 @@ RUN npm run build --workspace @aspire-discord/bot \
 
 FROM node:24-bookworm-slim AS final
 ENV NODE_ENV=production
+ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
 WORKDIR /app
+
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 
 COPY --chown=node:node --from=build /src/node_modules ./node_modules
 COPY --chown=node:node --from=build /src/package.json ./package.json
