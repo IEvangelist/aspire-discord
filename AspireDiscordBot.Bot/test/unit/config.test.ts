@@ -39,6 +39,17 @@ describe('loadConfig', () => {
     ).toThrow(/HTTPS endpoint/u);
   });
 
+  it('allows Foundry chat without an API key', () => {
+    const config = loadConfig({
+      ...validEnvironment,
+      AI_ENDPOINT: 'https://example.openai.azure.com',
+      AI_PROVIDER: 'azureaifoundry',
+    });
+
+    expect(config.ai.apiKey).toBeUndefined();
+    expect(config.ai.provider).toBe('azureaifoundry');
+  });
+
   it('parses comma-separated and JSON user allow lists', () => {
     const csv = loadConfig({
       ...validEnvironment,

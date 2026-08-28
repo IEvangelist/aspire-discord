@@ -3,6 +3,14 @@ import OpenAI, { AzureOpenAI } from 'openai';
 import type { AppConfig } from '../config.js';
 
 const foundryTokenScope = 'https://ai.azure.com/.default';
+const foundryBearerTokenProvider = getBearerTokenProvider(
+  new DefaultAzureCredential(),
+  foundryTokenScope,
+);
+
+export async function getFoundryBearerToken(): Promise<string> {
+  return await foundryBearerTokenProvider();
+}
 
 export interface EmbeddingModel {
   embed(input: string, signal?: AbortSignal): Promise<readonly number[]>;
@@ -69,7 +77,7 @@ function createEmbeddingClient(config: AppConfig['ai']): OpenAI {
     case 'azureaifoundry':
       return new OpenAI({
         ...common,
-        apiKey: getBearerTokenProvider(new DefaultAzureCredential(), foundryTokenScope),
+        apiKey: getFoundryBearerToken,
         baseURL: ensureFoundryV1Endpoint(config.embeddingEndpoint),
       });
     case 'copilot':

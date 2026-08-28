@@ -28,4 +28,23 @@ describe('Copilot BYOK provider configuration', () => {
       wireApi: 'completions',
     });
   });
+
+  it('uses managed identity for Microsoft Foundry', () => {
+    const config = createTestConfig({
+      ai: {
+        endpoint: 'https://example.openai.azure.com/',
+        provider: 'azureaifoundry',
+      },
+    });
+
+    const provider = buildProvider(config.ai);
+
+    expect(provider).toMatchObject({
+      baseUrl: 'https://example.openai.azure.com/openai/v1',
+      type: 'openai',
+      wireApi: 'responses',
+    });
+    expect(provider?.apiKey).toBeUndefined();
+    expect(provider?.bearerTokenProvider).toBeTypeOf('function');
+  });
 });

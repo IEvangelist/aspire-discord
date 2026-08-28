@@ -1,3 +1,5 @@
+import { setTimeout as delay } from 'node:timers/promises';
+import type { Logger } from 'pino';
 import { GroundedAnswerService } from './agent/answer-service.js';
 import { CopilotRuntime } from './agent/copilot-runtime.js';
 import { OpenAiEmbeddingModel } from './agent/embeddings.js';
@@ -65,11 +67,14 @@ export async function main(telemetry: TelemetryHandle): Promise<void> {
   lifecycle.startup = (async () => {
     await ensureOllamaModels(config.ai, logger, shutdownController.signal);
     throwIfShuttingDown(shutdownController.signal);
+    await server.listen(config.http);
+    logger.info(config.http, 'Aspire Discord bot HTTP service started.');
+    await waitForIndexReadiness(qdrant, logger, shutdownController.signal);
+    throwIfShuttingDown(shutdownController.signal);
     await copilot.start();
     throwIfShuttingDown(shutdownController.signal);
     await discord.start();
     throwIfShuttingDown(shutdownController.signal);
-    await server.listen(config.http);
     logger.info(config.http, 'Aspire Discord bot service started.');
   })();
 
@@ -82,6 +87,38 @@ export async function main(telemetry: TelemetryHandle): Promise<void> {
       });
     }
     throw error;
+  }
+}
+
+interface IndexReadiness {
+  isReady(): Promise<boolean>;
+}
+
+export async function waitForIndexReadiness(
+  qdrant: IndexReadiness,
+  logger: Logger,
+  signal: AbortSignal,
+  retryMilliseconds = 5_000,
+): Promise<void> {
+  let attempts = 0;
+  for (;;) {
+    signal.throwIfAborted();
+    attempts++;
+    try {
+      if (await qdrant.isReady()) {
+        logger.info('Compatible Qdrant indexes are ready.');
+        return;
+      }
+    } catch (error) {
+      if (attempts === 1 || attempts % 12 === 0) {
+        logger.warn({ err: error }, 'Qdrant indexes are not reachable yet.');
+      }
+    }
+
+    if (attempts === 1 || attempts % 12 === 0) {
+      logger.info('Waiting for the ingestion service to publish both Qdrant indexes.');
+    }
+    await delay(retryMilliseconds, undefined, { signal });
   }
 }
 

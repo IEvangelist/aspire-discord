@@ -231,6 +231,42 @@ aspire run
 Local mode switches both chat and embeddings to AppHost-managed Ollama. It uses `llama3.1` for chat
 and `nomic-embed-text` with 768 dimensions for embeddings.
 
+## Deploy to Azure
+
+The `infra` deployment targets Azure Container Apps in Central US. It provisions:
+
+- GPT-5.6 Sol and `text-embedding-3-small` in Microsoft Foundry
+- a user-assigned managed identity for Foundry and Azure Container Registry
+- one multi-container app containing the bot, ingestion worker, and private Qdrant sidecar
+- a VNet-restricted 100 GiB Premium NFS share for Qdrant, plus Log Analytics and a Basic container
+  registry
+
+Foundry local authentication is disabled. The bot and ingestion worker use managed identity in
+Azure, so the deployment does not use a personal GitHub Copilot login or an AI API key.
+
+The NFS storage account disables shared-key authentication and accepts NFS traffic only from the
+dedicated Container Apps subnet. Azure Container Apps does not support NFS encryption in transit,
+so the deployment explicitly disables that NFS-only setting as required by the platform. Azure
+still encrypts the files at rest and protects datacenter traffic at the network layer.
+
+The deployment script reads `DiscordToken`, `GitHubMcpToken`, and the optional Discord user allow
+list from the local Aspire secret store. It also accepts `DISCORD_TOKEN`, `GITHUB_MCP_TOKEN`, and
+`DISCORD_ALLOWED_USER_IDS` environment variables for CI.
+
+Build and deploy the immutable images, stopping the local bot immediately before cloud cutover:
+
+```powershell
+.\infra\deploy.ps1 -StopLocalAppHost
+```
+
+The cloud bot starts its HTTP health endpoint immediately but does not connect to Discord until both
+Qdrant indexes are published. Future deployments deactivate the previous revision before starting
+the replacement so two Qdrant processes never mount the same data.
+
+The defaults deploy to resource group `aspire-discord-prod` in subscription
+`11aa9ca6-306a-4ea9-b614-2d413efd04a8`. Override the script parameters to target another
+subscription, resource group, region, or globally unique resource suffix.
+
 Other cloud providers remain available through AppHost configuration:
 
 ```text

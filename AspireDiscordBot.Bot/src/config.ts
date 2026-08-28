@@ -181,7 +181,12 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): AppCon
     ]);
   }
 
-  if (env.AI_PROVIDER !== 'copilot' && env.AI_PROVIDER !== 'ollama' && !env.AI_API_KEY) {
+  if (
+    env.AI_PROVIDER !== 'copilot' &&
+    env.AI_PROVIDER !== 'ollama' &&
+    env.AI_PROVIDER !== 'azureaifoundry' &&
+    !env.AI_API_KEY
+  ) {
     throw new ConfigurationError([
       {
         code: 'custom',

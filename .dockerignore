@@ -1,0 +1,16 @@
+.git
+.github
+.idea
+.vs
+.vscode
+**/.aspire
+**/appsettings.*.local.json
+**/bin
+**/coverage
+**/dist
+**/node_modules
+**/obj
+*.secrets.json
+.env
+aspire-output
+infra/.deployment

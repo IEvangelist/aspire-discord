@@ -11,7 +11,7 @@ import { homedir, tmpdir } from 'node:os';
 import type { Logger } from 'pino';
 import type { AppConfig } from '../config.js';
 import { AGENT_SYSTEM_PROMPT } from '../prompts.js';
-import { ensureV1Endpoint } from './embeddings.js';
+import { ensureFoundryV1Endpoint, ensureV1Endpoint, getFoundryBearerToken } from './embeddings.js';
 
 export class CopilotRuntime {
   readonly #client: CopilotClient;
@@ -47,7 +47,7 @@ export class CopilotRuntime {
             },
           }
         : {}),
-      useLoggedInUser: !config.copilot.token,
+      useLoggedInUser: config.ai.provider === 'copilot' && !config.copilot.token,
       workingDirectory: tmpdir(),
     });
     void mkdir(baseDirectory, { recursive: true });
@@ -205,8 +205,8 @@ export function buildProvider(config: AppConfig['ai']): ProviderConfig | undefin
       };
     case 'azureaifoundry':
       return {
-        apiKey: requireApiKey(config),
-        baseUrl: config.endpoint ?? '',
+        bearerTokenProvider: getFoundryBearerToken,
+        baseUrl: ensureFoundryV1Endpoint(requireEndpoint(config)),
         maxOutputTokens: config.maxOutputTokens,
         modelId: config.chatModel,
         type: 'openai',
