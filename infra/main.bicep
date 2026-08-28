@@ -259,6 +259,9 @@ resource embeddingDeployment 'Microsoft.CognitiveServices/accounts/deployments@2
     }
     versionUpgradeOption: 'OnceNewDefaultVersionAvailable'
   }
+  dependsOn: [
+    chatDeployment
+  ]
 }
 
 output registryName string = registry.name
