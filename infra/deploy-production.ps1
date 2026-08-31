@@ -246,10 +246,8 @@ function Wait-Application {
                 return $status
             }
         }
-        catch [OperationCanceledException] {
-            throw
-        }
         catch {
+            Assert-DeploymentNotCancelled
             Write-Host "Waiting for $ApplicationUrl ..."
         }
         Start-Sleep -Seconds 20

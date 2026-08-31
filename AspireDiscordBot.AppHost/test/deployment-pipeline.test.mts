@@ -165,4 +165,31 @@ await describe("production deployment pipeline", async () => {
         .includes("Assert-DeploymentNotCancelled"),
     );
   });
+
+  await it("retries HTTP readiness timeouts unless deployment was cancelled", async () => {
+    const script = await readFile(
+      resolve(
+        import.meta.dirname,
+        "..",
+        "..",
+        "infra",
+        "deploy-production.ps1",
+      ),
+      "utf8",
+    );
+    const waitStart = script.indexOf("function Wait-Application");
+    const waitEnd = script.indexOf("function Get-ActiveRevision", waitStart);
+    const waitFunction = script.slice(waitStart, waitEnd);
+
+    assert.ok(waitStart >= 0);
+    assert.ok(waitEnd > waitStart);
+    assert.doesNotMatch(
+      waitFunction,
+      /catch\s+\[OperationCanceledException\]/u,
+    );
+    assert.match(
+      waitFunction,
+      /catch\s*\{\s*Assert-DeploymentNotCancelled\s+Write-Host/su,
+    );
+  });
 });
