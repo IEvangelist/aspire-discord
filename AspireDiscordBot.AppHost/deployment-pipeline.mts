@@ -1,8 +1,8 @@
 import { spawn } from "node:child_process";
 import { writeFileSync } from "node:fs";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { access, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import type {
   CancellationToken,
@@ -51,6 +51,11 @@ interface RunOptions {
   readonly onAbort?: () => Promise<void> | void;
   readonly signal?: AbortSignal;
   readonly terminateOnAbort?: boolean;
+}
+
+interface CommandInvocation {
+  readonly args: readonly string[];
+  readonly command: string;
 }
 
 export async function configureProductionDeployment(
@@ -349,9 +354,14 @@ async function runPreflight(
       terminateOnAbort: true,
     });
   }
+  const azureCli = await resolveAzureCliInvocation(
+    options.repositoryRoot,
+    signal,
+  );
   await runCommand(
-    "az",
+    azureCli.command,
     [
+      ...azureCli.args,
       "account",
       "show",
       "--subscription",
@@ -364,8 +374,9 @@ async function runPreflight(
   );
   for (const template of ["infra/main.bicep", "infra/app.bicep"]) {
     await runCommand(
-      "az",
+      azureCli.command,
       [
+        ...azureCli.args,
         "bicep",
         "build",
         "--file",
@@ -376,6 +387,31 @@ async function runPreflight(
       { discardOutput: true, signal, terminateOnAbort: true },
     );
   }
+}
+
+export async function resolveAzureCliInvocation(
+  cwd: string,
+  signal?: AbortSignal,
+): Promise<CommandInvocation> {
+  if (process.platform !== "win32") {
+    return { args: [], command: "az" };
+  }
+  const output = await runCommand("where.exe", ["az.cmd"], cwd, {
+    captureOutput: true,
+    discardOutput: true,
+    ...(signal ? { signal } : {}),
+    terminateOnAbort: true,
+  });
+  const commandShim = output
+    .split(/\r?\n/gu)
+    .map((line) => line.trim())
+    .find(Boolean);
+  if (!commandShim) {
+    throw new Error("Azure CLI was not found on PATH.");
+  }
+  const python = resolve(dirname(commandShim), "..", "python.exe");
+  await access(python);
+  return { args: ["-IBm", "azure.cli"], command: python };
 }
 
 async function runDeployment(

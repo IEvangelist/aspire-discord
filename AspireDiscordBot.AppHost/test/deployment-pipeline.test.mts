@@ -5,6 +5,7 @@ import { describe, it } from "node:test";
 import {
   buildDeploymentArguments,
   parseDeploymentResult,
+  resolveAzureCliInvocation,
   runCommand,
   validateDeploymentOptions,
   type ProductionDeploymentOptions,
@@ -101,6 +102,20 @@ await describe("production deployment pipeline", async () => {
 
     await assert.rejects(operation, /test cancellation/u);
     assert.equal(cancellationObserved, true);
+  });
+
+  await it("resolves Azure CLI to a directly spawnable command", async () => {
+    const invocation = await resolveAzureCliInvocation(
+      resolve(import.meta.dirname, "..", ".."),
+    );
+    const version = await runCommand(
+      invocation.command,
+      [...invocation.args, "version", "--output", "json"],
+      import.meta.dirname,
+      { captureOutput: true, discardOutput: true },
+    );
+
+    assert.match(version, /"azure-cli"/u);
   });
 
   await it("gates source restoration on confirmed target shutdown", async () => {
