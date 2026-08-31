@@ -279,12 +279,10 @@ if (isPublishMode) {
     allowedUserIds:
       process.env.DISCORD_ALLOWED_USER_IDS ??
       (await config("Parameters:DiscordAllowedUserIds")),
-    discordToken:
-      process.env.DISCORD_TOKEN ?? (await config("Parameters:DiscordToken")),
+    appHostPath: resolve(import.meta.dirname, "apphost.mts"),
+    discordToken: process.env.DISCORD_TOKEN ?? "",
     environmentName,
-    githubToken:
-      process.env.GITHUB_MCP_TOKEN ??
-      (await config("Parameters:GitHubMcpToken")),
+    githubToken: process.env.GITHUB_MCP_TOKEN ?? "",
     location: await config("Azure:Location", "centralus"),
     repositoryRoot: resolve(import.meta.dirname, ".."),
     resourceGroup: await config("Azure:ResourceGroup", "aspire-discord-prod"),

@@ -12,6 +12,7 @@ import {
 
 const validOptions: ProductionDeploymentOptions = {
   allowedUserIds: "",
+  appHostPath: "D:\\repo\\AspireDiscordBot.AppHost\\apphost.mts",
   discordToken: "discord-secret",
   environmentName: "Production",
   githubToken: "github-secret",
@@ -30,7 +31,7 @@ await describe("production deployment pipeline", async () => {
     });
   });
 
-  await it("rejects non-production environments and missing secrets", () => {
+  await it("rejects non-production environments and missing AppHost paths", () => {
     assert.throws(() => {
       validateDeploymentOptions({
         ...validOptions,
@@ -40,9 +41,9 @@ await describe("production deployment pipeline", async () => {
     assert.throws(() => {
       validateDeploymentOptions({
         ...validOptions,
-        discordToken: "",
+        appHostPath: "",
       });
-    }, /DiscordToken/u);
+    }, /AppHost path/u);
   });
 
   await it("builds PowerShell arguments without putting secrets on the command line", () => {

@@ -16,6 +16,7 @@ const deploymentStep = "production-blue-green";
 
 export interface ProductionDeploymentOptions {
   readonly allowedUserIds: string;
+  readonly appHostPath: string;
   readonly discordToken: string;
   readonly environmentName: string;
   readonly githubToken: string;
@@ -37,6 +38,12 @@ interface DeploymentResult {
   readonly Url: string;
 }
 
+interface DeploymentSecrets {
+  readonly allowedUserIds: string;
+  readonly discordToken: string;
+  readonly githubToken: string;
+}
+
 interface RunOptions {
   readonly captureOutput?: boolean;
   readonly discardOutput?: boolean;
@@ -51,8 +58,10 @@ export async function configureProductionDeployment(
   options: ProductionDeploymentOptions,
 ): Promise<void> {
   const pipeline = await builder.pipeline();
+  let deploymentSecrets: DeploymentSecrets | undefined;
   await pipeline.addStep(preflightStep, async (context) => {
     await withPipelineCancellation(context, async (signal) => {
+      deploymentSecrets = await resolveDeploymentSecrets(options, signal);
       await runPreflight(context, options, signal);
     });
   });
@@ -60,7 +69,8 @@ export async function configureProductionDeployment(
     deploymentStep,
     async (context) => {
       await withPipelineCancellation(context, async (signal) => {
-        await runDeployment(context, options, signal);
+        deploymentSecrets ??= await resolveDeploymentSecrets(options, signal);
+        await runDeployment(context, options, deploymentSecrets, signal);
       });
     },
     {
@@ -106,15 +116,8 @@ export function validateDeploymentOptions(
       `The Aspire Discord deployment pipeline only targets Production, not '${options.environmentName}'.`,
     );
   }
-  if (!options.discordToken.trim()) {
-    throw new Error(
-      "Parameters:DiscordToken is required for production deployment.",
-    );
-  }
-  if (!options.githubToken.trim()) {
-    throw new Error(
-      "Parameters:GitHubMcpToken is required for production deployment.",
-    );
+  if (!options.appHostPath.trim()) {
+    throw new Error("The production AppHost path is required.");
   }
   if (
     !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu.test(
@@ -131,6 +134,95 @@ export function validateDeploymentOptions(
       "Parameters:DeploymentResourceSuffix must contain 6-10 lowercase letters or digits.",
     );
   }
+}
+
+async function resolveDeploymentSecrets(
+  options: ProductionDeploymentOptions,
+  signal: AbortSignal,
+): Promise<DeploymentSecrets> {
+  return {
+    allowedUserIds: await resolveSecret(
+      options.allowedUserIds,
+      "Parameters:DiscordAllowedUserIds",
+      false,
+      options,
+      signal,
+    ),
+    discordToken: await resolveSecret(
+      options.discordToken,
+      "Parameters:DiscordToken",
+      true,
+      options,
+      signal,
+    ),
+    githubToken: await resolveSecret(
+      options.githubToken,
+      "Parameters:GitHubMcpToken",
+      true,
+      options,
+      signal,
+    ),
+  };
+}
+
+async function resolveSecret(
+  configuredValue: string,
+  key: string,
+  required: boolean,
+  options: ProductionDeploymentOptions,
+  signal: AbortSignal,
+): Promise<string> {
+  if (configuredValue.trim()) {
+    return configuredValue;
+  }
+  try {
+    const output = await runCommand(
+      "aspire",
+      [
+        "secret",
+        "get",
+        key,
+        "--apphost",
+        options.appHostPath,
+        "--non-interactive",
+        "--nologo",
+      ],
+      options.repositoryRoot,
+      {
+        captureOutput: true,
+        discardOutput: true,
+        signal,
+        terminateOnAbort: true,
+      },
+    );
+    const value = output
+      .split(/\r?\n/gu)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .at(-1);
+    if (value) {
+      return value;
+    }
+  } catch (error) {
+    if (signal.aborted) {
+      throw error;
+    }
+    if (required) {
+      throw new Error(
+        `Aspire secret '${key}' is required for production deployment.`,
+        {
+          cause: error,
+        },
+      );
+    }
+    return "";
+  }
+  if (required) {
+    throw new Error(
+      `Aspire secret '${key}' is required for production deployment.`,
+    );
+  }
+  return "";
 }
 
 async function withPipelineCancellation<T>(
@@ -289,6 +381,7 @@ async function runPreflight(
 async function runDeployment(
   context: PipelineStepContext,
   options: ProductionDeploymentOptions,
+  secrets: DeploymentSecrets,
   signal: AbortSignal,
 ): Promise<void> {
   validateDeploymentOptions(options);
@@ -320,7 +413,7 @@ async function runDeployment(
       ],
       options.repositoryRoot,
       {
-        env: deploymentEnvironment(options),
+        env: deploymentEnvironment(secrets),
         onAbort: () => {
           writeFileSync(cancellationPath, "", { flag: "a" });
         },
@@ -341,15 +434,13 @@ async function runDeployment(
   }
 }
 
-function deploymentEnvironment(
-  options: ProductionDeploymentOptions,
-): NodeJS.ProcessEnv {
+function deploymentEnvironment(secrets: DeploymentSecrets): NodeJS.ProcessEnv {
   return {
     ...process.env,
     ASPIRE_DEPLOYMENT_PIPELINE: "1",
-    DISCORD_ALLOWED_USER_IDS: options.allowedUserIds,
-    DISCORD_TOKEN: options.discordToken,
-    GITHUB_MCP_TOKEN: options.githubToken,
+    DISCORD_ALLOWED_USER_IDS: secrets.allowedUserIds,
+    DISCORD_TOKEN: secrets.discordToken,
+    GITHUB_MCP_TOKEN: secrets.githubToken,
   };
 }
 
