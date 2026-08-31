@@ -1,6 +1,7 @@
 import {
   CopilotClient,
   RuntimeConnection,
+  type ModelInfo,
   type ProviderConfig,
   type TelemetryConfig,
   type Tool,
@@ -11,8 +12,10 @@ import { join } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 import type { Logger } from 'pino';
 import type { AppConfig } from '../config.js';
+import type { AnswerImage, AnswerProgressHandler } from '../domain.js';
 import { AGENT_SYSTEM_PROMPT } from '../prompts.js';
 import { ensureFoundryV1Endpoint, ensureV1Endpoint, getFoundryBearerToken } from './embeddings.js';
+import { ImageCapabilityError } from './image-capability.js';
 
 export class CopilotRuntime {
   readonly #client: CopilotClient;
@@ -88,11 +91,14 @@ export class CopilotRuntime {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     tools: readonly Tool<any>[],
     signal?: AbortSignal,
+    onProgress?: AnswerProgressHandler,
+    images?: readonly AnswerImage[],
   ): Promise<string> {
     if (signal?.aborted) {
       throw abortReason(signal);
     }
     await this.start();
+    await this.#assertImageSupport(images ?? []);
     const provider = buildProvider(this.config.ai);
     const session = await this.#client.createSession({
       availableTools: ['custom:*'],
@@ -115,10 +121,23 @@ export class CopilotRuntime {
       sessionId: `discord-${crypto.randomUUID()}`,
       skipCustomInstructions: true,
       skipEmbeddingRetrieval: true,
+      streaming: true,
       systemMessage: { mode: 'append', content: AGENT_SYSTEM_PROMPT },
       toolSearch: { enabled: false },
       tools: [...tools],
     });
+    let writingReported = false;
+    const unsubscribe = [
+      session.on('tool.execution_start', () => {
+        notifyProgress(onProgress, 'researching', this.logger);
+      }),
+      session.on('assistant.message_delta', (event) => {
+        if (!writingReported && event.data.deltaContent.trim()) {
+          writingReported = true;
+          notifyProgress(onProgress, 'writing', this.logger);
+        }
+      }),
+    ];
 
     const abort = async () => {
       await session.abort().catch((error: unknown) => {
@@ -140,7 +159,22 @@ export class CopilotRuntime {
       : undefined;
 
     try {
-      const completion = session.sendAndWait({ prompt }, this.config.agent.timeoutMs);
+      const completion = session.sendAndWait(
+        {
+          prompt,
+          ...(images && images.length > 0
+            ? {
+                attachments: images.map((image) => ({
+                  data: image.data,
+                  displayName: image.displayName,
+                  mimeType: image.mimeType,
+                  type: 'blob' as const,
+                })),
+              }
+            : {}),
+        },
+        this.config.agent.timeoutMs,
+      );
       const response = abortPromise
         ? await Promise.race([completion, abortPromise])
         : await completion;
@@ -149,6 +183,9 @@ export class CopilotRuntime {
       await abort();
       throw error;
     } finally {
+      for (const stopListening of unsubscribe) {
+        stopListening();
+      }
       if (signal && abortListener) {
         signal.removeEventListener('abort', abortListener);
       }
@@ -180,6 +217,65 @@ export class CopilotRuntime {
       this.#startAttempted = false;
     }
   }
+
+  async #assertImageSupport(images: readonly AnswerImage[]): Promise<void> {
+    if (images.length === 0) {
+      return;
+    }
+    if (!this.config.imageContext.enabled) {
+      throw new ImageCapabilityError(
+        'Image analysis is not enabled for the configured chat model.',
+      );
+    }
+    if (this.config.ai.provider !== 'copilot') {
+      return;
+    }
+
+    let model: ModelInfo | undefined;
+    try {
+      model = (await this.#client.listModels()).find(
+        (candidate) => candidate.id === this.config.ai.chatModel,
+      );
+    } catch (error) {
+      this.logger.warn(
+        { errorType: error instanceof Error ? error.name : 'Error' },
+        'Could not verify image support for the configured Copilot model.',
+      );
+      throw new ImageCapabilityError(
+        'I could not verify that the configured chat model supports images.',
+      );
+    }
+    validateImageModel(model, images);
+  }
+}
+
+export function validateImageModel(
+  model: ModelInfo | undefined,
+  images: readonly AnswerImage[],
+): void {
+  if (!model?.capabilities.supports.vision) {
+    throw new ImageCapabilityError('The configured chat model does not support image analysis.');
+  }
+  const limits = model.capabilities.limits.vision;
+  if (!limits) {
+    throw new ImageCapabilityError(
+      'The configured chat model did not report safe image input limits.',
+    );
+  }
+  if (images.length > limits.max_prompt_images) {
+    throw new ImageCapabilityError('Too many images were provided for the configured chat model.');
+  }
+  for (const image of images) {
+    if (
+      (!limits.supported_media_types.includes(image.mimeType) &&
+        !limits.supported_media_types.includes('image/*')) ||
+      Buffer.byteLength(image.data, 'base64') > limits.max_prompt_image_size
+    ) {
+      throw new ImageCapabilityError(
+        'An attached image exceeds the configured chat model input limits.',
+      );
+    }
+  }
 }
 
 export function buildCopilotTelemetry(config: AppConfig): TelemetryConfig | undefined {
@@ -187,7 +283,7 @@ export function buildCopilotTelemetry(config: AppConfig): TelemetryConfig | unde
     return undefined;
   }
   return {
-    captureContent: config.nodeEnvironment === 'development',
+    captureContent: config.nodeEnvironment === 'development' && !config.imageContext.enabled,
     otlpEndpoint: config.otlpEndpoint,
     otlpProtocol: 'http/protobuf',
     sourceName: 'AspireDiscordBot.GenAI',
@@ -257,4 +353,20 @@ function requireEndpoint(config: AppConfig['ai']): string {
     throw new Error(`AI_ENDPOINT is required for ${config.provider}.`);
   }
   return config.endpoint.replace(/\/+$/u, '');
+}
+
+function notifyProgress(
+  handler: AnswerProgressHandler | undefined,
+  phase: Parameters<AnswerProgressHandler>[0]['phase'],
+  logger: Logger,
+): void {
+  if (!handler) {
+    return;
+  }
+  void Promise.resolve(handler({ phase })).catch((error: unknown) => {
+    logger.debug(
+      { errorType: error instanceof Error ? error.name : 'Error', phase },
+      'Could not publish Copilot progress.',
+    );
+  });
 }

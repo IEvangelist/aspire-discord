@@ -175,6 +175,34 @@ resource application 'Microsoft.App/containerApps@2025-07-01' = {
                 value: 'true'
               }
               {
+                name: 'SAFETY_MAX_QUESTION_LENGTH'
+                value: '2000'
+              }
+              {
+                name: 'IMAGE_CONTEXT_ENABLED'
+                value: 'true'
+              }
+              {
+                name: 'IMAGE_CONTEXT_MAX_IMAGES'
+                value: '1'
+              }
+              {
+                name: 'IMAGE_CONTEXT_MAX_BYTES'
+                value: '3145728'
+              }
+              {
+                name: 'IMAGE_CONTEXT_MAX_PIXELS'
+                value: '16000000'
+              }
+              {
+                name: 'LINK_CONTEXT_ALLOWED_HOSTS'
+                value: 'aspire.dev,learn.microsoft.com,devblogs.microsoft.com,dotnet.microsoft.com,azure.microsoft.com'
+              }
+              {
+                name: 'LINK_CONTEXT_MAX_URLS'
+                value: '3'
+              }
+              {
                 name: 'GITHUB_MCP_TOKEN'
                 secretRef: 'github-token'
               }

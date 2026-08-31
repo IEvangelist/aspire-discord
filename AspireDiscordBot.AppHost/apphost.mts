@@ -1,7 +1,12 @@
 import { createBuilder } from "./.aspire/modules/aspire.mjs";
+import { resolve } from "node:path";
+import { configureProductionDeployment } from "./deployment-pipeline.mjs";
 
 const builder = await createBuilder();
 const configuration = builder.getConfiguration();
+const isPublishMode = await builder.executionContext().isPublishMode();
+const environment = await builder.environment();
+const environmentName = await environment.environmentName.get();
 
 const config = async (key: string, fallback = ""): Promise<string> =>
   (await configuration.getConfigValue(key)) || fallback;
@@ -23,6 +28,11 @@ const aiApiKey = await optionalSecret("AiApiKey");
 const embeddingApiKey = await optionalSecret("AiEmbeddingApiKey");
 
 const useLocalAi = await configBool("Ollama:Enabled", false);
+const deploymentResourceSuffix = await config(
+  "Parameters:DeploymentResourceSuffix",
+  "ffccd7",
+);
+const productionFoundryEndpoint = `https://aspire-discord-ai-${deploymentResourceSuffix}.openai.azure.com`;
 const configuredChatProvider = await config("Parameters:AiProvider", "copilot");
 const chatProvider = useLocalAi ? "ollama" : configuredChatProvider;
 const configuredEmbeddingProvider = await config(
@@ -60,6 +70,10 @@ const chatModel =
   chatProvider === "ollama"
     ? ollamaChatModel
     : await config("Parameters:AiChatModel", "gpt-5.6-sol");
+const imageContextEnabled = await configBool(
+  "Parameters:ImageContextEnabled",
+  chatModel === "gpt-5.6-sol",
+);
 const embeddingModel =
   (await config("Parameters:AiEmbeddingModel")) ||
   (embeddingProvider === "ollama"
@@ -69,10 +83,14 @@ const embeddingDimensions =
   (await config("Parameters:AiEmbeddingDimensions")) ||
   (embeddingProvider === "ollama" ? ollamaEmbeddingDimensions : "1536");
 const providersMatch = chatProvider === embeddingProvider;
-const configuredAiEndpoint = await config("Parameters:AiEndpoint");
+const configuredAiEndpoint = await config(
+  "Parameters:AiEndpoint",
+  isPublishMode ? productionFoundryEndpoint : "",
+);
 const configuredEmbeddingEndpoint = (
   (await config("Parameters:AiEmbeddingEndpoint")) ||
-  (providersMatch ? configuredAiEndpoint : "")
+  (providersMatch ? configuredAiEndpoint : "") ||
+  (isPublishMode ? productionFoundryEndpoint : "")
 ).trim();
 if (embeddingProvider !== "ollama" && !configuredEmbeddingEndpoint) {
   throw new Error(
@@ -180,6 +198,34 @@ await bot.withEnvironment(
   "DISCORD_ALLOWED_USER_IDS",
   await config("Parameters:DiscordAllowedUserIds"),
 );
+await bot.withEnvironment(
+  "SAFETY_MAX_QUESTION_LENGTH",
+  await config("Parameters:SafetyMaxQuestionLength", "2000"),
+);
+await bot.withEnvironment("IMAGE_CONTEXT_ENABLED", String(imageContextEnabled));
+await bot.withEnvironment(
+  "IMAGE_CONTEXT_MAX_IMAGES",
+  await config("Parameters:ImageContextMaxImages", "1"),
+);
+await bot.withEnvironment(
+  "IMAGE_CONTEXT_MAX_BYTES",
+  await config("Parameters:ImageContextMaxBytes", "3145728"),
+);
+await bot.withEnvironment(
+  "IMAGE_CONTEXT_MAX_PIXELS",
+  await config("Parameters:ImageContextMaxPixels", "16000000"),
+);
+await bot.withEnvironment(
+  "LINK_CONTEXT_ALLOWED_HOSTS",
+  await config(
+    "Parameters:LinkContextAllowedHosts",
+    "aspire.dev,learn.microsoft.com,devblogs.microsoft.com,dotnet.microsoft.com,azure.microsoft.com",
+  ),
+);
+await bot.withEnvironment(
+  "LINK_CONTEXT_MAX_URLS",
+  await config("Parameters:LinkContextMaxUrls", "3"),
+);
 await bot.withEnvironment("AI_PROVIDER", chatProvider);
 await bot.withEnvironment("AI_CHAT_MODEL", chatModel);
 await bot.withEnvironment(
@@ -227,5 +273,28 @@ if (githubMcpToken) {
 
 await bot.withUrl("/scalar", { displayText: "API Reference (Scalar)" });
 await bot.publishAsPackageScript({ scriptName: "start" });
+
+if (isPublishMode) {
+  await configureProductionDeployment(builder, {
+    allowedUserIds:
+      process.env.DISCORD_ALLOWED_USER_IDS ??
+      (await config("Parameters:DiscordAllowedUserIds")),
+    discordToken:
+      process.env.DISCORD_TOKEN ?? (await config("Parameters:DiscordToken")),
+    environmentName,
+    githubToken:
+      process.env.GITHUB_MCP_TOKEN ??
+      (await config("Parameters:GitHubMcpToken")),
+    location: await config("Azure:Location", "centralus"),
+    repositoryRoot: resolve(import.meta.dirname, ".."),
+    resourceGroup: await config("Azure:ResourceGroup", "aspire-discord-prod"),
+    resourceSuffix: deploymentResourceSuffix,
+    skipBuild: await configBool("Parameters:DeploymentSkipBuild", false),
+    subscriptionId: await config(
+      "Azure:SubscriptionId",
+      "11aa9ca6-306a-4ea9-b614-2d413efd04a8",
+    ),
+  });
+}
 
 await builder.build().run();

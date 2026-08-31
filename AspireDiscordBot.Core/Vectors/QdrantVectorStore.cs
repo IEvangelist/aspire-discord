@@ -298,7 +298,7 @@ public sealed partial class QdrantVectorStore(
                    Payload(point, "embedding_model"),
                    _ai.EmbeddingModel,
                    StringComparison.Ordinal)
-               && Payload(point, "extractor_version") == "2";
+               && Payload(point, "extractor_version") == "3";
     }
 
     public async Task<string?> GetPublicationGroupAsync(
@@ -355,7 +355,7 @@ public sealed partial class QdrantVectorStore(
             point.Payload.Add("revision", chunk.Source.Revision ?? string.Empty);
             point.Payload.Add("chunk_index", chunk.Index);
             point.Payload.Add("content_hash", ContentHash(chunk.Content));
-            point.Payload.Add("extractor_version", "2");
+            point.Payload.Add("extractor_version", "3");
             point.Payload.Add("embedding_provider", EffectiveEmbeddingProvider);
             point.Payload.Add("embedding_model", _ai.EmbeddingModel);
             point.Payload.Add("embedding_dimensions", _ai.EmbeddingDimensions);

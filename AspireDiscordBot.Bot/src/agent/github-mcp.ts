@@ -37,6 +37,13 @@ interface CachedResult {
   readonly result: CallToolResult;
 }
 
+export interface LinkedGitHubContext {
+  readonly context: string;
+  readonly releaseCitationNumber?: number;
+  readonly releaseVersion?: string;
+  readonly searchText: string;
+}
+
 export class GitHubMcpClient {
   readonly #cache = new Map<string, CachedResult>();
   readonly #policy: GitHubRepositoryPolicy;
@@ -59,6 +66,133 @@ export class GitHubMcpClient {
   public async close(): Promise<void> {
     this.#closed = true;
     await this.#disposeConnection();
+  }
+
+  public async readLatestReleaseContext(
+    registry: CitationRegistry,
+    budget: ToolBudget,
+    signal?: AbortSignal,
+  ): Promise<LinkedGitHubContext | undefined> {
+    if (!this.enabled) {
+      return undefined;
+    }
+    const repository = 'microsoft/aspire';
+    const resolved = await budget.invoke('get_latest_release', async () => {
+      const { owner, repo } = this.#policy.split(repository);
+      const result = await this.#call('get_latest_release', { owner, repo }, signal);
+      return this.#latestReleaseContext(result, registry, repository);
+    });
+    return typeof resolved === 'string' ? { context: resolved, searchText: '' } : resolved;
+  }
+
+  public async readLinkedContext(
+    value: string,
+    registry: CitationRegistry,
+    budget: ToolBudget,
+    signal?: AbortSignal,
+  ): Promise<LinkedGitHubContext | undefined> {
+    if (!this.enabled) {
+      return undefined;
+    }
+    const resource = this.#policy.parseLinkedResource(value);
+    if (!resource) {
+      return undefined;
+    }
+
+    const resolved = await budget.invoke(`read_linked_${resource.kind}`, async () => {
+      const { owner, repo } = this.#policy.split(resource.repository);
+      switch (resource.kind) {
+        case 'issue': {
+          const detail = await this.#call(
+            'issue_read',
+            {
+              issue_number: resource.issueNumber,
+              method: 'get',
+              owner,
+              repo,
+            },
+            signal,
+          );
+          const comments = await this.#call(
+            'issue_read',
+            {
+              issue_number: resource.issueNumber,
+              method: 'get_comments',
+              owner,
+              perPage: 20,
+              repo,
+            },
+            signal,
+          );
+          return this.#linkedContext(mergeResults(detail, comments), registry, {
+            fallbackUrl: `https://github.com/${resource.repository}/issues/${String(resource.issueNumber)}`,
+          });
+        }
+        case 'pull-request': {
+          const detail = await this.#call(
+            'pull_request_read',
+            {
+              method: 'get',
+              owner,
+              perPage: 20,
+              pullNumber: resource.pullNumber,
+              repo,
+            },
+            signal,
+          );
+          const comments = await this.#call(
+            'pull_request_read',
+            {
+              method: 'get_comments',
+              owner,
+              perPage: 20,
+              pullNumber: resource.pullNumber,
+              repo,
+            },
+            signal,
+          );
+          return this.#linkedContext(mergeResults(detail, comments), registry, {
+            fallbackUrl: `https://github.com/${resource.repository}/pull/${String(resource.pullNumber)}`,
+          });
+        }
+        case 'commit': {
+          const result = await this.#call(
+            'get_commit',
+            {
+              detail: 'stats',
+              owner,
+              repo,
+              sha: resource.sha,
+            },
+            signal,
+          );
+          return this.#linkedContext(result, registry, {
+            fallbackUrl: `https://github.com/${resource.repository}/commit/${encodeURIComponent(resource.sha)}`,
+          });
+        }
+        case 'file': {
+          const result = await this.#call(
+            'get_file_contents',
+            {
+              fields: ['type', 'name', 'path', 'size', 'sha', 'html_url'],
+              owner,
+              path: resource.path,
+              ref: resource.ref,
+              repo,
+            },
+            signal,
+          );
+          return this.#linkedContext(result, registry, {
+            fallbackUrl: `https://github.com/${resource.repository}/blob/${encodeURIComponent(resource.ref)}/${resource.path}`,
+          });
+        }
+        case 'latest-release': {
+          const result = await this.#call('get_latest_release', { owner, repo }, signal);
+          return this.#latestReleaseContext(result, registry, resource.repository);
+        }
+      }
+    });
+    return typeof resolved === 'string' ? { context: resolved, searchText: '' } : resolved;
   }
 
   // The SDK models heterogeneous tool collections as Tool<any>[].
@@ -313,7 +447,6 @@ export class GitHubMcpClient {
         onInsufficientScope: 'throw',
         requestInit: {
           headers: {
-            'X-MCP-Lockdown': 'true',
             'X-MCP-Readonly': 'true',
             'X-MCP-Tools': allowedToolNames.join(','),
           },
@@ -371,7 +504,12 @@ export class GitHubMcpClient {
     }
   }
 
-  async #call(name: (typeof allowedToolNames)[number], args: Record<string, unknown>) {
+  async #call(
+    name: (typeof allowedToolNames)[number],
+    args: Record<string, unknown>,
+    signal?: AbortSignal,
+  ) {
+    signal?.throwIfAborted();
     const cacheKey = `${name}:${JSON.stringify(args)}`;
     const cached = this.#cache.get(cacheKey);
     if (cached && cached.expiresAt > Date.now()) {
@@ -379,12 +517,14 @@ export class GitHubMcpClient {
     }
 
     const client = await this.#connect();
+    signal?.throwIfAborted();
     try {
+      const timeout = AbortSignal.timeout(30_000);
       const result = await client.callTool(
         { arguments: args, name },
         {
           maxTotalTimeout: 30_000,
-          signal: AbortSignal.timeout(30_000),
+          signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
           timeout: 30_000,
         },
       );
@@ -410,13 +550,17 @@ export class GitHubMcpClient {
     }
 
     const text = extractText(result);
-    const urls = new Set(
-      [...extractUrls(text), ...extractUrls(JSON.stringify(result.structuredContent ?? ''))].filter(
-        (url) => this.#policy.isAllowedUrl(url),
-      ),
-    );
-    if (urls.size === 0 && options.fallbackUrl && this.#policy.isAllowedUrl(options.fallbackUrl)) {
+    const urls = new Set<string>();
+    if (options.fallbackUrl && this.#policy.isAllowedUrl(options.fallbackUrl)) {
       urls.add(options.fallbackUrl);
+    }
+    for (const url of [
+      ...extractUrls(text),
+      ...extractUrls(JSON.stringify(result.structuredContent ?? '')),
+    ]) {
+      if (this.#policy.isAllowedUrl(url)) {
+        urls.add(url);
+      }
     }
 
     const citations = [...urls]
@@ -440,6 +584,39 @@ export class GitHubMcpClient {
     ]
       .filter(Boolean)
       .join('\n\n');
+  }
+
+  #linkedContext(
+    result: CallToolResult,
+    registry: CitationRegistry,
+    options: { fallbackUrl?: string } = {},
+  ): LinkedGitHubContext {
+    return {
+      context: this.#format(result, registry, options),
+      searchText: sanitizeForAgent(extractText(result)).slice(0, 2_000),
+    };
+  }
+
+  #latestReleaseContext(
+    result: CallToolResult,
+    registry: CitationRegistry,
+    repository: string,
+  ): LinkedGitHubContext {
+    const releaseVersion = extractReleaseVersion(extractText(result));
+    if (!releaseVersion) {
+      throw new Error('GitHub latest-release result did not include a semantic version.');
+    }
+    const releaseUrl = `https://github.com/${repository}/releases/latest`;
+    const releaseCitationNumber = registry.register(
+      `Aspire ${releaseVersion}`,
+      releaseUrl,
+      repository,
+    );
+    return {
+      ...this.#linkedContext(result, registry, { fallbackUrl: releaseUrl }),
+      releaseCitationNumber,
+      releaseVersion,
+    };
   }
 
   #trimCache(): void {
@@ -519,4 +696,19 @@ function mergeResults(primary: CallToolResult, secondary?: CallToolResult): Call
         }
       : {}),
   };
+}
+
+function extractReleaseVersion(value: string): string | undefined {
+  const patterns = [
+    /["']?tag[_ ]?name["']?\s*[:=]\s*["']v?(?<version>\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)/iu,
+    /\/releases\/tag\/v?(?<version>\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)/iu,
+    /\bAspire\s+v?(?<version>\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)\b/iu,
+  ];
+  for (const pattern of patterns) {
+    const version = pattern.exec(value)?.groups?.version;
+    if (version) {
+      return version;
+    }
+  }
+  return undefined;
 }

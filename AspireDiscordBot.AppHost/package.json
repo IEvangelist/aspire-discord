@@ -9,9 +9,10 @@
   "scripts": {
     "build": "tsc -p tsconfig.apphost.json",
     "dev": "aspire run",
-    "format": "prettier --write \"*.{json,mjs,mts}\"",
-    "format:check": "prettier --check \"*.{json,mjs,mts}\"",
-    "lint": "eslint apphost.mts",
+    "format": "prettier --write \"*.{json,mjs,mts}\" \"test/**/*.mts\"",
+    "format:check": "prettier --check \"*.{json,mjs,mts}\" \"test/**/*.mts\"",
+    "lint": "eslint apphost.mts deployment-pipeline.mts test/**/*.mts",
+    "test": "node --import tsx --test test/*.test.mts",
     "typecheck": "tsc --noEmit -p tsconfig.apphost.json"
   },
   "dependencies": {

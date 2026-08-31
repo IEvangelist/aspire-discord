@@ -15,7 +15,42 @@ describe('loadConfig', () => {
     expect(config.ai.embeddingModel).toBe('text-embedding-3-small');
     expect(config.ai.embeddingDimensions).toBe(1_536);
     expect(config.discord.mentionEnabled).toBe(true);
+    expect(config.imageContext).toEqual({
+      enabled: false,
+      maxBytes: 3 * 1_024 * 1_024,
+      maxImages: 1,
+      maxPixels: 16_000_000,
+    });
+    expect(config.safety.maxQuestionLength).toBe(2_000);
+    expect(config.linkContext.allowedHosts.has('aspire.dev')).toBe(true);
+    expect(config.linkContext.maxUrls).toBe(3);
     expect(config.qdrant.url).toBe('http://localhost:6333');
+  });
+
+  it('enables bounded image context only when explicitly configured', () => {
+    const config = loadConfig({
+      ...validEnvironment,
+      IMAGE_CONTEXT_ENABLED: 'true',
+      IMAGE_CONTEXT_MAX_BYTES: '1048576',
+      IMAGE_CONTEXT_MAX_IMAGES: '1',
+      IMAGE_CONTEXT_MAX_PIXELS: '2000000',
+    });
+
+    expect(config.imageContext).toEqual({
+      enabled: true,
+      maxBytes: 1_048_576,
+      maxImages: 1,
+      maxPixels: 2_000_000,
+    });
+  });
+
+  it('requires exact hostnames for linked context', () => {
+    expect(() =>
+      loadConfig({
+        ...validEnvironment,
+        LINK_CONTEXT_ALLOWED_HOSTS: '*.microsoft.com',
+      }),
+    ).toThrow();
   });
 
   it('uses Ollama defaults only when explicitly selected', () => {

@@ -38,7 +38,7 @@ export class CitationRegistry {
     return results
       .map((result) => {
         const number = this.register(result.title, result.url, result.repo);
-        const heading = result.heading ? ` — ${sanitizeForAgent(result.heading)}` : '';
+        const heading = result.heading ? ` - ${sanitizeForAgent(result.heading)}` : '';
         const content =
           result.content.length > maxCharactersPerResult
             ? `${result.content.slice(0, maxCharactersPerResult)}…`
@@ -60,7 +60,7 @@ export class CitationRegistry {
     return `[${String(number)}] ${sanitizeForAgent(title)} (${url})\n${sanitizeForAgent(body)}`;
   }
 
-  public citedBy(answer: string): readonly Citation[] {
+  public citedBy(answer: string, fallbackToAll = true): readonly Citation[] {
     const selected: Citation[] = [];
     const seen = new Set<number>();
     for (const match of answer.matchAll(/\[(\d+)\]/gu)) {
@@ -74,6 +74,6 @@ export class CitationRegistry {
         selected.push(citation);
       }
     }
-    return selected.length > 0 ? selected : [...this.#ordered];
+    return selected.length > 0 || !fallbackToAll ? selected : [...this.#ordered];
   }
 }

@@ -138,7 +138,10 @@ public sealed class AspireCliDocSourceReader(
 
         // Drop the synthetic 404 page and any empty slugs.
         return items
-            .Where(i => !string.IsNullOrWhiteSpace(i.Slug) && !string.Equals(i.Slug, "404", StringComparison.OrdinalIgnoreCase))
+            .Where(i =>
+                !string.IsNullOrWhiteSpace(i.Slug)
+                && !string.Equals(i.Slug, "404", StringComparison.OrdinalIgnoreCase)
+                && !DocSourceCatalog.IsVersionedWhatsNewPath(i.Slug))
             .ToList();
     }
 

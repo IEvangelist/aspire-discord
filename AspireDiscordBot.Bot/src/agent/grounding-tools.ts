@@ -4,6 +4,7 @@ import type { AppConfig } from '../config.js';
 import type { CitationRegistry } from '../citations.js';
 import type { EmbeddingModel } from './embeddings.js';
 import type { RetrievalStore } from './answer-service.js';
+import { prioritizeCurrentDocumentation } from './retrieval-freshness.js';
 import type { ToolBudget } from './tool-budget.js';
 
 const queryParameters = z.object({
@@ -33,7 +34,8 @@ export function createGroundingTools(
       handler: async ({ query }) =>
         await budget.invoke('search_docs', async () => {
           const vector = await embeddings.embed(query);
-          const results = await qdrant.searchDocs(vector, config.resultsPerTool);
+          const candidates = await qdrant.searchDocs(vector, config.resultsPerTool * 3);
+          const results = prioritizeCurrentDocumentation(candidates, query, config.resultsPerTool);
           return citations.formatResults(results);
         }),
     }),

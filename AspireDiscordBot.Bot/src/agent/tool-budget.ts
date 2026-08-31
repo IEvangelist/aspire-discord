@@ -1,12 +1,18 @@
 export class ToolBudget {
   #remaining: number;
+  readonly #maximum: number;
 
   public constructor(maximumCalls: number) {
+    this.#maximum = maximumCalls;
     this.#remaining = maximumCalls;
   }
 
   public get remaining(): number {
     return this.#remaining;
+  }
+
+  public get used(): number {
+    return this.#maximum - this.#remaining;
   }
 
   public async invoke<T>(name: string, execute: () => Promise<T>): Promise<T | string> {

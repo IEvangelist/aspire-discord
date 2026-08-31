@@ -29,6 +29,26 @@ const rawEnvironmentSchema = z.object({
   GITHUB_MCP_ENDPOINT: z.url().default('https://api.githubcopilot.com/mcp/'),
   GITHUB_MCP_TOKEN: z.string().min(1).optional(),
   HOST: z.string().min(1).default('0.0.0.0'),
+  IMAGE_CONTEXT_ENABLED: z.string().default('false'),
+  IMAGE_CONTEXT_MAX_BYTES: z.coerce
+    .number()
+    .int()
+    .min(64 * 1_024)
+    .max(10 * 1_024 * 1_024)
+    .default(3 * 1_024 * 1_024),
+  IMAGE_CONTEXT_MAX_IMAGES: z.coerce.number().int().min(1).max(2).default(1),
+  IMAGE_CONTEXT_MAX_PIXELS: z.coerce
+    .number()
+    .int()
+    .min(1_000_000)
+    .max(40_000_000)
+    .default(16_000_000),
+  LINK_CONTEXT_ALLOWED_HOSTS: z
+    .string()
+    .default(
+      'aspire.dev,learn.microsoft.com,devblogs.microsoft.com,dotnet.microsoft.com,azure.microsoft.com',
+    ),
+  LINK_CONTEXT_MAX_URLS: z.coerce.number().int().min(0).max(5).default(3),
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).default('info'),
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   OTEL_EXPORTER_OTLP_ENDPOINT: z.url().optional(),
@@ -40,7 +60,7 @@ const rawEnvironmentSchema = z.object({
   RETRIEVAL_MIN_SCORE: z.coerce.number().min(0).max(1).default(0.35),
   RETRIEVAL_RESULTS_PER_TOOL: z.coerce.number().int().min(1).max(20).default(6),
   RETRIEVAL_TOP_K: z.coerce.number().int().min(1).max(20).default(6),
-  SAFETY_MAX_QUESTION_LENGTH: z.coerce.number().int().min(100).max(4_000).default(600),
+  SAFETY_MAX_QUESTION_LENGTH: z.coerce.number().int().min(100).max(4_000).default(2_000),
   SAFETY_MIN_TOPIC_SCORE: z.coerce.number().min(0).max(1).default(0.35),
   VECTOR_STORE_API_INDEX: z.string().min(1).default('aspire-api'),
   VECTOR_STORE_DOCS_INDEX: z.string().min(1).default('aspire-docs'),
@@ -89,6 +109,16 @@ export interface AppConfig {
   readonly http: {
     readonly host: string;
     readonly port: number;
+  };
+  readonly imageContext: {
+    readonly enabled: boolean;
+    readonly maxBytes: number;
+    readonly maxImages: number;
+    readonly maxPixels: number;
+  };
+  readonly linkContext: {
+    readonly allowedHosts: ReadonlySet<string>;
+    readonly maxUrls: number;
   };
   readonly logLevel: z.infer<typeof rawEnvironmentSchema>['LOG_LEVEL'];
   readonly nodeEnvironment: z.infer<typeof rawEnvironmentSchema>['NODE_ENV'];
@@ -162,6 +192,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): AppCon
   const allowedUserIds = parseIdentifierSet(env.DISCORD_ALLOWED_USER_IDS);
   const discordGuildId = env.DISCORD_GUILD_ID ? env.DISCORD_GUILD_ID : undefined;
   const mentionEnabled = parseBoolean(env.DISCORD_MENTION_ENABLED, 'DISCORD_MENTION_ENABLED');
+  const imageContextEnabled = parseBoolean(env.IMAGE_CONTEXT_ENABLED, 'IMAGE_CONTEXT_ENABLED');
   const embeddingModel =
     env.AI_EMBEDDING_MODEL ??
     (env.AI_EMBEDDING_PROVIDER === 'ollama' ? 'nomic-embed-text' : 'text-embedding-3-small');
@@ -175,6 +206,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): AppCon
       normalizeEndpoint(env.AI_EMBEDDING_ENDPOINT);
   const embeddingApiKey = env.AI_EMBEDDING_API_KEY ?? (endpointsMatch ? env.AI_API_KEY : undefined);
   const qdrantApiKey = env.QDRANT_API_KEY ?? env.QDRANT_APIKEY;
+  const linkContextHosts = parseHostnameSet(env.LINK_CONTEXT_ALLOWED_HOSTS);
 
   if (
     env.AI_EMBEDDING_PROVIDER === 'azureaifoundry' &&
@@ -261,6 +293,16 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): AppCon
       host: env.HOST,
       port: env.PORT,
     },
+    imageContext: {
+      enabled: imageContextEnabled,
+      maxBytes: env.IMAGE_CONTEXT_MAX_BYTES,
+      maxImages: env.IMAGE_CONTEXT_MAX_IMAGES,
+      maxPixels: env.IMAGE_CONTEXT_MAX_PIXELS,
+    },
+    linkContext: {
+      allowedHosts: linkContextHosts,
+      maxUrls: env.LINK_CONTEXT_MAX_URLS,
+    },
     logLevel: env.LOG_LEVEL,
     nodeEnvironment: env.NODE_ENV,
     ...(env.OTEL_EXPORTER_OTLP_ENDPOINT ? { otlpEndpoint: env.OTEL_EXPORTER_OTLP_ENDPOINT } : {}),
@@ -315,6 +357,19 @@ function parseIdentifierSet(value: string): ReadonlySet<string> {
     ? JSON.parse(trimmed)
     : trimmed.split(',').map((item) => item.trim());
   const parsed = z.array(z.string().regex(/^\d+$/)).parse(values);
+  return new Set(parsed);
+}
+
+function parseHostnameSet(value: string): ReadonlySet<string> {
+  const hosts = value
+    .split(',')
+    .map((item) => item.trim().toLocaleLowerCase('en-US'))
+    .filter(Boolean);
+  const parsed = z
+    .array(
+      z.string().regex(/^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/u),
+    )
+    .parse(hosts);
   return new Set(parsed);
 }
 

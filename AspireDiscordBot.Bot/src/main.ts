@@ -5,6 +5,7 @@ import { AzureSearchStore } from './agent/azure-search-store.js';
 import { CopilotRuntime } from './agent/copilot-runtime.js';
 import { OpenAiEmbeddingModel } from './agent/embeddings.js';
 import { GitHubMcpClient } from './agent/github-mcp.js';
+import { QuestionContextResolver } from './agent/question-context.js';
 import { QdrantStore } from './agent/qdrant-store.js';
 import { loadConfig } from './config.js';
 import { DiscordGateway } from './discord/gateway.js';
@@ -24,6 +25,7 @@ export async function main(telemetry: TelemetryHandle): Promise<void> {
       : new QdrantStore(config.qdrant, logger);
   const copilot = new CopilotRuntime(config, logger);
   const githubMcp = new GitHubMcpClient(config.githubMcp, logger);
+  const questionContext = new QuestionContextResolver(config.linkContext, githubMcp, logger);
   const answers = new GroundedAnswerService(
     config,
     embeddings,
@@ -31,6 +33,7 @@ export async function main(telemetry: TelemetryHandle): Promise<void> {
     copilot,
     githubMcp,
     logger,
+    questionContext,
   );
   const discord = new DiscordGateway(config, answers, logger, undefined, shutdownController.signal);
   const server = await buildServer({ config, discord, logger, vectorStore });

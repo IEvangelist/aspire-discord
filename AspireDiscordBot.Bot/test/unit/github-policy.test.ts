@@ -39,4 +39,28 @@ describe('GitHubRepositoryPolicy', () => {
     expect(policy.isAllowedUrl('https://github.com/microsoft/aspire/issues/1')).toBe(true);
     expect(policy.isAllowedUrl('https://github.com/other/repo/issues/1')).toBe(false);
   });
+
+  it('parses only bounded read-only resources from allowed GitHub URLs', () => {
+    expect(
+      policy.parseLinkedResource('https://github.com/microsoft/aspire/issues/123#issuecomment-1'),
+    ).toEqual({
+      issueNumber: 123,
+      kind: 'issue',
+      repository: 'microsoft/aspire',
+    });
+    expect(
+      policy.parseLinkedResource(
+        'https://github.com/microsoft/aspire/blob/main/src/Aspire.Hosting/README.md',
+      ),
+    ).toEqual({
+      kind: 'file',
+      path: 'src/Aspire.Hosting/README.md',
+      ref: 'main',
+      repository: 'microsoft/aspire',
+    });
+    expect(policy.parseLinkedResource('https://github.com/other/repo/issues/123')).toBeUndefined();
+    expect(
+      policy.parseLinkedResource('https://github.com/microsoft/aspire/settings'),
+    ).toBeUndefined();
+  });
 });

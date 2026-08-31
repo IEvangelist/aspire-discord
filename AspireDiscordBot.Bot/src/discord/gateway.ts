@@ -11,15 +11,33 @@ import {
 } from 'discord.js';
 import type { Logger } from 'pino';
 import type { AppConfig } from '../config.js';
-import type { AnswerService } from '../domain.js';
+import type { AnswerService, ConversationContext } from '../domain.js';
 import { WorkLimiter, WorkQueueFullError } from '../work-limiter.js';
 import { resolveQuestion, referencesThread } from './ask-resolver.js';
 import { isUserAllowed } from './authorizer.js';
-import { readOriginalPost, type OriginalPostResult } from './context-reader.js';
+import {
+  readThreadContext,
+  type ThreadContextReadOptions,
+  type ThreadContextResult,
+} from './context-reader.js';
 import { buildAnswerMessages } from './formatter.js';
+import {
+  ImageAttachmentError,
+  SafeDiscordImageLoader,
+  isPotentialImageAttachment,
+  type DiscordImageCandidate,
+} from './image-context.js';
+import { DiscordProgressController, progressMessage } from './progress.js';
 
 const askCommandName = 'ask';
 const interactionDeadlineMilliseconds = 14 * 60_000;
+
+interface ResolveQuestionOptions extends Pick<
+  ThreadContextReadOptions,
+  'beforeMessageId' | 'beforeTimestamp'
+> {
+  readonly directImages?: readonly DiscordImageCandidate[];
+}
 
 export interface DiscordStatus {
   readonly botUser?: string;
@@ -35,6 +53,7 @@ export interface DiscordStatus {
 
 export class DiscordGateway {
   readonly #client: Client;
+  readonly #imageLoader: SafeDiscordImageLoader;
   readonly #limiter: WorkLimiter;
   #commandsRegistered = false;
   #started = false;
@@ -47,6 +66,7 @@ export class DiscordGateway {
     private readonly shutdownSignal?: AbortSignal,
   ) {
     this.#client = client ?? new Client(createClientOptions(config.discord.mentionEnabled));
+    this.#imageLoader = new SafeDiscordImageLoader(config.imageContext, logger);
     this.#limiter = new WorkLimiter(config.discord.maxConcurrency, config.discord.maxQueue);
   }
 
@@ -150,8 +170,14 @@ export class DiscordGateway {
       .addStringOption((option) =>
         option
           .setName('question')
-          .setDescription("Optional in a forum thread; I'll answer the original post.")
+          .setDescription("Optional in a thread; I'll use its conversation and latest question.")
           .setMaxLength(this.config.safety.maxQuestionLength)
+          .setRequired(false),
+      )
+      .addAttachmentOption((option) =>
+        option
+          .setName('image')
+          .setDescription('Optional PNG or JPEG screenshot to inspect with the question.')
           .setRequired(false),
       )
       .toJSON();
@@ -172,45 +198,89 @@ export class DiscordGateway {
     }
     if (!isUserAllowed(interaction.user.id, this.config.discord.allowedUserIds)) {
       await interaction.reply({
-        content: 'Sorry — this bot is currently restricted to specific users.',
+        content: 'Sorry - this bot is currently restricted to specific users.',
         flags: MessageFlags.Ephemeral,
       });
       return;
     }
 
     await interaction.deferReply();
+    const sendTyping = typingAction(interaction.channel);
+    const progress = new DiscordProgressController({
+      logger: this.logger,
+      seed: interaction.id,
+      ...(sendTyping ? { sendTyping } : {}),
+      update: async (content) => await interaction.editReply(answerPayload(content)),
+    });
+    await progress.start();
     try {
       const requestSignal = this.#requestSignal(
         AbortSignal.timeout(interactionDeadlineMilliseconds),
       );
       const typed = interaction.options.getString('question') ?? '';
-      const resolved = await this.#resolveQuestion(interaction.channel, typed);
+      const explicitImage = interaction.options.getAttachment('image');
+      const resolved = await this.#resolveQuestion(interaction.channel, typed, {
+        beforeTimestamp: interaction.createdTimestamp,
+        ...(explicitImage
+          ? {
+              directImages: [
+                {
+                  attachment: explicitImage,
+                  explicit: true,
+                  source: 'current question',
+                },
+              ],
+            }
+          : {}),
+      });
       if (!resolved.question) {
+        await progress.stop();
         await interaction.editReply(resolved.problem);
         return;
       }
 
-      this.logger.info(
-        { questionLength: resolved.question.length },
-        'Handling Discord slash command.',
-      );
       const question = resolved.question;
-      const answer = await this.#limiter.run(
-        async () => await this.answers.answer(question, requestSignal),
-        requestSignal,
-      );
+      const answer = await this.#limiter.run(async () => {
+        const conversation = await this.#loadConversation(
+          resolved.context,
+          resolved.imageCandidates ?? [],
+          requestSignal,
+        );
+        this.logger.info(
+          {
+            imageCount: conversation?.images?.length ?? 0,
+            questionLength: question.length,
+            threadContextLength: resolved.context?.length ?? 0,
+          },
+          'Handling Discord slash command.',
+        );
+        return await this.answers.answer(
+          question,
+          requestSignal,
+          async (update) => {
+            await progress.report(update);
+          },
+          conversation,
+        );
+      }, requestSignal);
       const [first, ...rest] = buildAnswerMessages(question, answer);
+      await progress.stop();
       await interaction.editReply(answerPayload(first));
       for (const content of rest) {
         await interaction.followUp(answerPayload(content));
       }
     } catch (error) {
+      await progress.stop();
       if (error instanceof WorkQueueFullError) {
         await interaction.editReply('The bot is busy right now. Please retry shortly.');
         return;
       }
+      if (error instanceof ImageAttachmentError) {
+        await interaction.editReply(error.userMessage);
+        return;
+      }
       this.logger.error({ err: error }, 'Discord slash command failed.');
-      await interaction.editReply('Sorry — something went wrong answering that. Please try again.');
+      await interaction.editReply('Sorry - something went wrong answering that. Please try again.');
     }
   }
 
@@ -225,24 +295,68 @@ export class DiscordGateway {
     const typed = message.content
       .replace(new RegExp(`<@!?${this.#client.user.id}>`, 'gu'), '')
       .trim();
-    const resolved = await this.#resolveQuestion(message.channel, typed);
+    const requestSignal = this.#requestSignal();
+    const directImages = [...message.attachments.values()].filter(isPotentialImageAttachment).map(
+      (attachment) =>
+        ({
+          attachment,
+          explicit: false,
+          source: 'current question',
+        }) satisfies DiscordImageCandidate,
+    );
+    const resolved = await this.#resolveQuestion(message.channel, typed, {
+      beforeMessageId: message.id,
+      beforeTimestamp: message.createdTimestamp,
+      ...(directImages.length > 0 ? { directImages } : {}),
+    });
     if (!resolved.question) {
       await message.reply(resolved.problem);
       return;
     }
 
+    let progress: DiscordProgressController | undefined;
+    let progressReply: Message | undefined;
     try {
       if ('sendTyping' in message.channel) {
         await message.channel.sendTyping();
       }
       const question = resolved.question;
-      const requestSignal = this.#requestSignal();
-      const answer = await this.#limiter.run(
-        async () => await this.answers.answer(question, requestSignal),
-        requestSignal,
-      );
+      const reply = await message.reply(answerPayload(progressMessage('reading', message.id)));
+      progressReply = reply;
+      const sendTyping = typingAction(message.channel);
+      progress = new DiscordProgressController({
+        logger: this.logger,
+        seed: message.id,
+        ...(sendTyping ? { sendTyping } : {}),
+        update: async (content) => await reply.edit(answerPayload(content)),
+      });
+      await progress.start(true);
+      const answer = await this.#limiter.run(async () => {
+        const conversation = await this.#loadConversation(
+          resolved.context,
+          resolved.imageCandidates ?? [],
+          requestSignal,
+        );
+        this.logger.info(
+          {
+            imageCount: conversation?.images?.length ?? 0,
+            questionLength: question.length,
+            threadContextLength: resolved.context?.length ?? 0,
+          },
+          'Handling Discord mention.',
+        );
+        return await this.answers.answer(
+          question,
+          requestSignal,
+          async (update) => {
+            await progress?.report(update);
+          },
+          conversation,
+        );
+      }, requestSignal);
       const [first, ...rest] = buildAnswerMessages(question, answer);
-      await message.reply(answerPayload(first));
+      await progress.stop();
+      await reply.edit(answerPayload(first));
       for (const content of rest) {
         if (message.channel.isSendable()) {
           await message.channel.send(answerPayload(content));
@@ -251,25 +365,59 @@ export class DiscordGateway {
         }
       }
     } catch (error) {
-      if (error instanceof WorkQueueFullError) {
-        await message.reply('The bot is busy right now. Please retry shortly.');
-        return;
+      await progress?.stop();
+      const content =
+        error instanceof WorkQueueFullError
+          ? 'The bot is busy right now. Please retry shortly.'
+          : error instanceof ImageAttachmentError
+            ? error.userMessage
+            : 'Sorry - something went wrong answering that. Please try again.';
+      if (!(error instanceof WorkQueueFullError) && !(error instanceof ImageAttachmentError)) {
+        this.logger.error({ err: error }, 'Discord mention failed.');
       }
-      this.logger.error({ err: error }, 'Discord mention failed.');
-      await message.reply('Sorry — something went wrong answering that. Please try again.');
+      if (progressReply) {
+        await progressReply.edit(answerPayload(content));
+      } else {
+        await message.reply(answerPayload(content));
+      }
     }
   }
 
   async #resolveQuestion(
     channel: TextBasedChannel | null,
     typed: string,
-  ): Promise<{ problem: string; question?: string }> {
-    const original = channel
-      ? await readOriginalPost(channel, this.config.safety.maxQuestionLength, this.logger)
-      : ({ status: 'not-a-thread' } satisfies OriginalPostResult);
-    const question = resolveQuestion(typed, original.question);
-    if (question) {
-      return { problem: '', question };
+    options: ResolveQuestionOptions = {},
+  ): Promise<{
+    context?: string;
+    imageCandidates?: readonly DiscordImageCandidate[];
+    problem: string;
+    question?: string;
+  }> {
+    const { directImages = [], ...boundary } = options;
+    const thread = channel
+      ? await readThreadContext(
+          channel,
+          {
+            ...boundary,
+            ...(this.#client.user ? { botUserId: this.#client.user.id } : {}),
+            maxQuestionLength: this.config.safety.maxQuestionLength,
+          },
+          this.logger,
+        )
+      : ({ status: 'not-a-thread' } satisfies ThreadContextResult);
+    const question =
+      resolveQuestion(typed, thread.question) ??
+      (directImages.length > 0
+        ? 'What does the attached image show about this issue in the Aspire application?'
+        : undefined);
+    if (question && (!referencesThread(typed) || thread.context || directImages.length > 0)) {
+      const imageCandidates = [...directImages, ...(thread.images ?? [])];
+      return {
+        ...(thread.context ? { context: thread.context } : {}),
+        ...(imageCandidates.length > 0 ? { imageCandidates } : {}),
+        problem: '',
+        question,
+      };
     }
 
     if (typed.trim() && !referencesThread(typed)) {
@@ -277,7 +425,21 @@ export class DiscordGateway {
         problem: "Please include an Aspire question and I'll answer from official sources.",
       };
     }
-    return { problem: originalPostProblem(original.status) };
+    return { problem: threadContextProblem(thread.status) };
+  }
+
+  async #loadConversation(
+    history: string | undefined,
+    imageCandidates: readonly DiscordImageCandidate[],
+    signal?: AbortSignal,
+  ): Promise<ConversationContext | undefined> {
+    const images = await this.#imageLoader.load(imageCandidates, signal);
+    return history || images.length > 0
+      ? {
+          ...(history ? { history } : {}),
+          ...(images.length > 0 ? { images } : {}),
+        }
+      : undefined;
   }
 
   #requestSignal(deadline?: AbortSignal): AbortSignal | undefined {
@@ -286,6 +448,14 @@ export class DiscordGateway {
     }
     return deadline ?? this.shutdownSignal;
   }
+}
+
+function typingAction(channel: TextBasedChannel | null): (() => Promise<unknown>) | undefined {
+  return channel && 'sendTyping' in channel
+    ? async () => {
+        await channel.sendTyping();
+      }
+    : undefined;
 }
 
 function createClientOptions(mentionEnabled: boolean): ClientOptions {
@@ -300,19 +470,19 @@ function createClientOptions(mentionEnabled: boolean): ClientOptions {
   };
 }
 
-function originalPostProblem(status: OriginalPostResult['status']): string {
+function threadContextProblem(status: ThreadContextResult['status']): string {
   switch (status) {
     case 'forbidden':
       return (
-        "I couldn't read the original post because I'm missing **Read Message History**. " +
+        "I couldn't read the thread history because I'm missing **Read Message History**. " +
         'Grant that permission or paste the question here.'
       );
     case 'empty':
-      return "The original post doesn't contain readable text. Paste the question here.";
+      return "The thread doesn't contain a readable user question. Paste the question here.";
     case 'not-a-thread':
       return 'Run `/ask` inside a forum post/thread or include a question directly.';
     case 'error':
-      return "I couldn't read the original post. Paste the question here.";
+      return "I couldn't read the thread history. Paste the question here.";
     case 'found':
       return 'Please include a question.';
   }

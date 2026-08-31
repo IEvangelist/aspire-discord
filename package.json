@@ -22,7 +22,7 @@
     "test:unit": "npm run test:unit --workspace @aspire-discord/bot",
     "test:integration": "npm run test:integration --workspace @aspire-discord/bot",
     "test:e2e": "npm run test:e2e --workspace @aspire-discord/bot",
-    "test:node": "npm run test --workspace @aspire-discord/bot",
+    "test:node": "npm run test --workspaces --if-present",
     "typecheck": "npm run typecheck --workspaces --if-present"
   }
 }

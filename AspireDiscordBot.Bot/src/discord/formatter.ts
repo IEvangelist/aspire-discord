@@ -26,7 +26,7 @@ export function buildAnswerMessages(
       : '-# No matching coverage found in microsoft/aspire or aspire.dev',
   );
 
-  const [first = 'Sorry — I could not format that answer.', ...rest] = splitMarkdown(
+  const [first = 'Sorry - I could not format that answer.', ...rest] = splitMarkdown(
     sections.filter(Boolean).join('\n\n'),
   );
   return [first, ...rest];

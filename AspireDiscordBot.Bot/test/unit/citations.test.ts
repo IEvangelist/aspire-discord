@@ -40,6 +40,7 @@ describe('CitationRegistry', () => {
 
     expect(registry.formatResults([])).toContain('No matching documentation');
     expect(registry.citedBy('Answer without a marker')).toEqual(registry.all);
+    expect(registry.citedBy('Answer without a marker', false)).toEqual([]);
   });
 
   it('bounds oversized tool evidence', () => {

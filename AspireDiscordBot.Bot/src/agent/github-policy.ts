@@ -3,6 +3,34 @@ const booleanBranchPattern = /\b(?:OR|NOT)\b|\|/u;
 const disallowedScopePattern = /(?:^|\s)(?:org|user|owner):/iu;
 const repositoryQualifierPattern =
   /(?:^|\s)repo:(?<repo>["']?[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+["']?)/giu;
+const safeRefPattern = /^(?:main|v?\d+(?:\.\d+){1,3}|[0-9a-f]{7,64})$/iu;
+
+export type GitHubLinkedResource =
+  | {
+      readonly issueNumber: number;
+      readonly kind: 'issue';
+      readonly repository: string;
+    }
+  | {
+      readonly kind: 'pull-request';
+      readonly pullNumber: number;
+      readonly repository: string;
+    }
+  | {
+      readonly kind: 'commit';
+      readonly repository: string;
+      readonly sha: string;
+    }
+  | {
+      readonly kind: 'file';
+      readonly path: string;
+      readonly ref: string;
+      readonly repository: string;
+    }
+  | {
+      readonly kind: 'latest-release';
+      readonly repository: string;
+    };
 
 export class GitHubRepositoryPolicy {
   readonly #allowed: ReadonlySet<string>;
@@ -85,4 +113,63 @@ export class GitHubRepositoryPolicy {
       owner && repo && this.#allowed.has(`${owner}/${repo}`.toLocaleLowerCase('en-US')),
     );
   }
+
+  public parseLinkedResource(value: string): GitHubLinkedResource | undefined {
+    let url: URL;
+    try {
+      url = new URL(value);
+    } catch {
+      return undefined;
+    }
+    if (url.protocol !== 'https:' || url.hostname !== 'github.com') {
+      return undefined;
+    }
+
+    let parts: string[];
+    try {
+      parts = url.pathname
+        .split('/')
+        .filter(Boolean)
+        .map((part) => decodeURIComponent(part));
+    } catch {
+      return undefined;
+    }
+    const [owner, repo, resource, identifier, ...rest] = parts;
+    if (!owner || !repo || !resource) {
+      return undefined;
+    }
+    const repository = `${owner}/${repo}`;
+    if (!this.#allowed.has(repository.toLocaleLowerCase('en-US'))) {
+      return undefined;
+    }
+
+    if (resource === 'issues') {
+      const issueNumber = positiveInteger(identifier);
+      return issueNumber ? { issueNumber, kind: 'issue', repository } : undefined;
+    }
+    if (resource === 'pull') {
+      const pullNumber = positiveInteger(identifier);
+      return pullNumber ? { kind: 'pull-request', pullNumber, repository } : undefined;
+    }
+    if (resource === 'commit' && identifier && /^[0-9a-f]{7,64}$/iu.test(identifier)) {
+      return { kind: 'commit', repository, sha: identifier };
+    }
+    if (resource === 'blob' && identifier && safeRefPattern.test(identifier) && rest.length > 0) {
+      return {
+        kind: 'file',
+        path: rest.join('/'),
+        ref: identifier,
+        repository,
+      };
+    }
+    if (resource === 'releases' && identifier === 'latest') {
+      return { kind: 'latest-release', repository };
+    }
+    return undefined;
+  }
+}
+
+function positiveInteger(value: string | undefined): number | undefined {
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : undefined;
 }

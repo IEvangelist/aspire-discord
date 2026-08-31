@@ -28,6 +28,9 @@ public class DocSourceCatalogTests
     [InlineData("src/frontend/src/content/docs/app-host/configuration.mdx", true)]
     [InlineData("src/frontend/src/content/docs/de/index.mdx", false)]      // German translation
     [InlineData("src/frontend/src/content/docs/404.mdx", false)]           // 404 page
+    [InlineData("src/frontend/src/content/docs/whats-new/aspire-9.mdx", false)]
+    [InlineData("src/frontend/src/content/docs/whats-new/aspire-13-5.mdx", false)]
+    [InlineData("src/frontend/src/content/docs/whats-new/upgrade-aspire.mdx", true)]
     [InlineData("src/frontend/src/components/HeroSection.astro", false)]   // not docs
     [InlineData("src/frontend/src/content/docs/readme.txt", false)]        // wrong extension
     public void ShouldInclude_AspireDev(string path, bool expected)
@@ -47,6 +50,9 @@ public class DocSourceCatalogTests
     [Theory]
     [InlineData("src/frontend/src/content/docs/dashboard/overview.mdx", "https://aspire.dev/dashboard/overview/")]
     [InlineData("src/frontend/src/content/docs/deployment/azure/index.mdx", "https://aspire.dev/deployment/azure/")]
+    [InlineData(
+        "src/frontend/src/content/docs/integrations/caching/redis/redis-host.mdx",
+        "https://aspire.dev/integrations/caching/redis/redis-host/")]
     [InlineData("src/frontend/src/content/docs/index.mdx", "https://aspire.dev/")]
     public void BuildUrl_AspireDev_MapsToSiteUrl(string path, string expected)
     {

@@ -80,8 +80,11 @@ public static partial class DocSourceCatalog
             var slug = path[AspireDevDocsPrefix.Length..];
             var firstSegment = slug.Split('/', 2)[0];
 
-            // Skip translations and the 404 page.
-            if (LocaleSegments.Contains(firstSegment) || slug.StartsWith("404", StringComparison.OrdinalIgnoreCase))
+            // Current release facts come from the live release API. Versioned release notes
+            // are historical snapshots and otherwise dominate semantically similar guidance.
+            if (LocaleSegments.Contains(firstSegment)
+                || slug.StartsWith("404", StringComparison.OrdinalIgnoreCase)
+                || IsVersionedWhatsNewPath(slug))
             {
                 return false;
             }
@@ -89,6 +92,9 @@ public static partial class DocSourceCatalog
 
         return true;
     }
+
+    public static bool IsVersionedWhatsNewPath(string path) =>
+        VersionedWhatsNewRegex().IsMatch(path.Replace('\\', '/'));
 
     /// <summary>Builds a citation URL for a document.</summary>
     public static string BuildUrl(string repo, string branch, string path, string urlStyle)
@@ -131,4 +137,9 @@ public static partial class DocSourceCatalog
 
     [GeneratedRegex(@"\.(md|mdx)$", RegexOptions.IgnoreCase)]
     private static partial Regex ExtensionRegex();
+
+    [GeneratedRegex(
+        @"(?:^|/)whats-new/aspire-\d+(?:-\d+)*(?:\.(?:md|mdx))?$",
+        RegexOptions.IgnoreCase)]
+    private static partial Regex VersionedWhatsNewRegex();
 }

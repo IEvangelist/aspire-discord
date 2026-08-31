@@ -9,5 +9,6 @@ describe('ToolBudget', () => {
     await expect(budget.invoke('one', execute)).resolves.toBe('ok');
     await expect(budget.invoke('two', execute)).resolves.toContain('budget exhausted');
     expect(execute).toHaveBeenCalledTimes(1);
+    expect(budget.used).toBe(1);
   });
 });

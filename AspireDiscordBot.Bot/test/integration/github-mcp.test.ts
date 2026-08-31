@@ -37,4 +37,49 @@ suite('GitHub MCP integration', () => {
       await client.close();
     }
   });
+
+  it('reads authoritative latest-release context', async () => {
+    const config = createTestConfig({
+      githubMcp: {
+        allowedRepositories: ['microsoft/aspire', 'microsoft/aspire.dev'],
+        endpoint: 'https://api.githubcopilot.com/mcp/',
+        token: token!,
+      },
+    });
+    const client = new GitHubMcpClient(config.githubMcp, testLogger);
+    const citations = new CitationRegistry();
+    try {
+      const result = await client.readLatestReleaseContext(citations, new ToolBudget(1));
+
+      expect(result?.context).toMatch(/Aspire \d+\.\d+\.\d+/u);
+      expect(result?.releaseVersion).toMatch(/^\d+\.\d+\.\d+/u);
+      expect(citations.all[0]?.url).toBe('https://github.com/microsoft/aspire/releases/latest');
+    } finally {
+      await client.close();
+    }
+  });
+
+  it('routes a linked issue through the bounded read-only issue tools', async () => {
+    const config = createTestConfig({
+      githubMcp: {
+        allowedRepositories: ['microsoft/aspire', 'microsoft/aspire.dev'],
+        endpoint: 'https://api.githubcopilot.com/mcp/',
+        token: token!,
+      },
+    });
+    const client = new GitHubMcpClient(config.githubMcp, testLogger);
+    const citations = new CitationRegistry();
+    try {
+      const result = await client.readLinkedContext(
+        'https://github.com/microsoft/aspire/issues/19815',
+        citations,
+        new ToolBudget(1),
+      );
+
+      expect(result?.context).toContain('WithTerminal');
+      expect(citations.all[0]?.url).toBe('https://github.com/microsoft/aspire/issues/19815');
+    } finally {
+      await client.close();
+    }
+  });
 });

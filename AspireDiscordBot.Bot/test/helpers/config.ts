@@ -8,6 +8,8 @@ type ConfigOverrides = Omit<
   | 'discord'
   | 'githubMcp'
   | 'http'
+  | 'imageContext'
+  | 'linkContext'
   | 'qdrant'
   | 'retrieval'
   | 'safety'
@@ -19,6 +21,8 @@ type ConfigOverrides = Omit<
   discord?: Partial<AppConfig['discord']>;
   githubMcp?: Partial<AppConfig['githubMcp']>;
   http?: Partial<AppConfig['http']>;
+  imageContext?: Partial<AppConfig['imageContext']>;
+  linkContext?: Partial<AppConfig['linkContext']>;
   qdrant?: Partial<AppConfig['qdrant']>;
   retrieval?: Partial<AppConfig['retrieval']>;
   safety?: Partial<AppConfig['safety']>;
@@ -57,6 +61,22 @@ export function createTestConfig(overrides: ConfigOverrides = {}): AppConfig {
       host: '127.0.0.1',
       port: 3_000,
     },
+    imageContext: {
+      enabled: false,
+      maxBytes: 3 * 1_024 * 1_024,
+      maxImages: 1,
+      maxPixels: 16_000_000,
+    },
+    linkContext: {
+      allowedHosts: new Set([
+        'aspire.dev',
+        'learn.microsoft.com',
+        'devblogs.microsoft.com',
+        'dotnet.microsoft.com',
+        'azure.microsoft.com',
+      ]),
+      maxUrls: 3,
+    },
     logLevel: 'silent',
     nodeEnvironment: 'test',
     qdrant: {
@@ -70,7 +90,7 @@ export function createTestConfig(overrides: ConfigOverrides = {}): AppConfig {
       topK: 6,
     },
     safety: {
-      maxQuestionLength: 600,
+      maxQuestionLength: 2_000,
       minTopicScore: 0.35,
     },
     vectorStore: {
@@ -88,6 +108,8 @@ export function createTestConfig(overrides: ConfigOverrides = {}): AppConfig {
     discord: { ...base.discord, ...overrides.discord },
     githubMcp: { ...base.githubMcp, ...overrides.githubMcp },
     http: { ...base.http, ...overrides.http },
+    imageContext: { ...base.imageContext, ...overrides.imageContext },
+    linkContext: { ...base.linkContext, ...overrides.linkContext },
     qdrant: { ...base.qdrant, ...overrides.qdrant },
     retrieval: { ...base.retrieval, ...overrides.retrieval },
     safety: { ...base.safety, ...overrides.safety },

@@ -4,11 +4,7 @@
     "language": "typescript/nodejs"
   },
   "sdk": {
-    "version": "13.5.0"
-  },
-  "packages": {
-    "Aspire.Hosting.JavaScript": "13.5.0",
-    "Aspire.Hosting.Qdrant": "13.5.0"
+    "version": "13.5.3"
   },
   "profiles": {
     "https": {
@@ -25,5 +21,9 @@
         "ASPIRE_RESOURCE_SERVICE_ENDPOINT_URL": "http://localhost:20295"
       }
     }
+  },
+  "packages": {
+    "Aspire.Hosting.JavaScript": "13.5.3",
+    "Aspire.Hosting.Qdrant": "13.5.3"
   }
 }

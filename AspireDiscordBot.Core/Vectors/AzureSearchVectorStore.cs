@@ -20,7 +20,7 @@ public sealed class AzureSearchVectorStore : IVectorStore
     private const string VectorFieldName = "contentVector";
     private const string VectorAlgorithmName = "hnsw";
     private const string VectorProfileName = "vector-profile";
-    private const string ExtractorVersion = "2";
+    private const string ExtractorVersion = "3";
 
     private readonly AiOptions _ai;
     private readonly IngestionOptions _ingestion;
