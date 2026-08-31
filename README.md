@@ -121,9 +121,11 @@ Use `/ask <question>` for a direct slash-command question. Inside a forum post/t
 includes a bounded snapshot of the starter, recent participant replies, and prior bot answers.
 Invoking `/ask` without text answers the latest readable user turn, so follow-up questions retain
 the conversation that led to them. Thread history is context only; factual claims are still
-re-grounded in official sources. A PNG or JPEG can be supplied through the optional `/ask image`
-input; in threads, the latest human turn and starter images are also considered. Images are fetched
-only from Discord's CDN, decoded and normalized in memory, and never treated as source evidence.
+re-grounded in official sources. A static PNG, JPEG, WebP, or GIF can be supplied through the
+optional `/ask image` input; in threads, attachments and true inline image embeds from the latest
+human turn and starter are also considered. Article/link-preview thumbnails are ignored. Images are
+fetched only from Discord's CDN or image proxy, decoded and normalized in memory, and never treated
+as source evidence.
 Answers use standard Discord messages rather than fixed-width embeds, and long answers continue
 across messages. While an answer is running, the bot edits one status message through link checking,
 documentation search, research, and writing phases while refreshing Discord's typing indicator.

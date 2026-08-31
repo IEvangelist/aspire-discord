@@ -41,8 +41,24 @@ export interface ThreadMessageSnapshot {
   readonly cleanContent: string;
   readonly content: string;
   readonly createdTimestamp: number;
+  readonly embeds?: readonly DiscordEmbedSnapshot[];
   readonly id: string;
   readonly system?: boolean;
+}
+
+export interface DiscordEmbedSnapshot {
+  readonly data: {
+    readonly type?: string;
+  };
+  readonly image: DiscordEmbedImageSnapshot | null;
+  readonly thumbnail: DiscordEmbedImageSnapshot | null;
+}
+
+interface DiscordEmbedImageSnapshot {
+  readonly height?: number;
+  readonly proxyURL?: string;
+  readonly url: string;
+  readonly width?: number;
 }
 
 interface ThreadTurn {
@@ -153,9 +169,7 @@ function toTurn(
     return undefined;
   }
   const question = (message.cleanContent.trim() || message.content.trim()).trim();
-  const images = message.attachments
-    ? [...message.attachments.values()].filter(isPotentialImageAttachment)
-    : [];
+  const images = extractMessageImages(message);
   if (!question && images.length === 0) {
     return undefined;
   }
@@ -186,6 +200,33 @@ function toTurn(
     question,
     timestamp: message.createdTimestamp,
   };
+}
+
+export function extractMessageImages(
+  message: ThreadMessageSnapshot,
+): readonly DiscordAttachmentSnapshot[] {
+  const attachments = message.attachments
+    ? [...message.attachments.values()].filter(isPotentialImageAttachment)
+    : [];
+  const inlineImages = (message.embeds ?? []).flatMap((embed, index) => {
+    const image = embed.thumbnail ?? embed.image;
+    if (embed.data.type !== 'image' || !image?.proxyURL) {
+      return [];
+    }
+    return [
+      {
+        contentType: null,
+        height: image.height ?? null,
+        id: `embed-${message.id}-${String(index)}`,
+        inline: true,
+        name: 'inline-image',
+        size: 0,
+        url: image.proxyURL,
+        width: image.width ?? null,
+      },
+    ];
+  });
+  return [...attachments, ...inlineImages];
 }
 
 function createParticipantLabels(

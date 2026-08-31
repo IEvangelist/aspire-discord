@@ -134,4 +134,43 @@ describe('thread context reader', () => {
       'thread starter',
     ]);
   });
+
+  it('uses true inline image embeds and ignores article previews', () => {
+    const starter = message('1', 'op', 'Why does this Aspire app fail?', 100);
+    const result = buildThreadConversation(
+      starter,
+      [
+        {
+          ...message('2', 'op', 'Here is the inline screenshot.', 400),
+          embeds: [
+            {
+              data: { type: 'article' },
+              image: null,
+              thumbnail: {
+                proxyURL:
+                  'https://images-ext-1.discordapp.net/external/article-token-1234567890/https/example.com/preview.png',
+                url: 'https://example.com/preview.png',
+              },
+            },
+            {
+              data: { type: 'image' },
+              image: null,
+              thumbnail: {
+                height: 720,
+                proxyURL:
+                  'https://images-ext-1.discordapp.net/external/image-token-123456789012/https/example.com/screenshot.webp',
+                url: 'https://example.com/screenshot.webp',
+                width: 1_280,
+              },
+            },
+          ],
+        },
+      ],
+      options,
+    );
+
+    expect(result.images).toHaveLength(1);
+    expect(result.images?.[0]?.attachment.url).toContain('screenshot.webp');
+    expect(result.context).toContain('[1 image attached]');
+  });
 });

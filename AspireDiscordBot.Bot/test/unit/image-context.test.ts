@@ -98,8 +98,43 @@ describe('SafeDiscordImageLoader', () => {
           url: 'https://127.0.0.1/attachments/123/456/screenshot.png',
         }),
       ]),
-    ).rejects.toThrow(/Discord CDN/u);
+    ).rejects.toThrow(/Discord or its image proxy/u);
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('accepts a static WebP from Discord inline-image proxy and normalizes it', async () => {
+    const source = await sharp({
+      create: {
+        background: { b: 50, g: 100, r: 200 },
+        channels: 3,
+        height: 10,
+        width: 10,
+      },
+    })
+      .webp()
+      .toBuffer();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(source, {
+            headers: { 'content-type': 'image/webp' },
+          }),
+      ),
+    );
+
+    const [image] = await loader().load([
+      candidate(source, {
+        contentType: null,
+        inline: true,
+        name: 'inline-image',
+        size: 0,
+        url: 'https://images-ext-1.discordapp.net/external/abcdefghijABCDEFGHIJ1234/https/example.com/screenshot.webp',
+      }),
+    ]);
+
+    expect(image?.mimeType).toBe('image/jpeg');
+    expect((await sharp(Buffer.from(image?.data ?? '', 'base64')).metadata()).format).toBe('jpeg');
   });
 
   it('does not follow redirects', async () => {
@@ -171,11 +206,11 @@ describe('SafeDiscordImageLoader', () => {
     await expect(
       loader().load([
         candidate(source, {
-          contentType: 'image/gif',
-          name: 'animation.gif',
+          contentType: 'image/svg+xml',
+          name: 'vector.svg',
         }),
       ]),
-    ).rejects.toThrow(/static PNG or JPEG/u);
+    ).rejects.toThrow(/static PNG, JPEG, WebP, or GIF/u);
 
     vi.stubGlobal(
       'fetch',

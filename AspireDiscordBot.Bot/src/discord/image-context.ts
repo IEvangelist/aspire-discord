@@ -4,9 +4,11 @@ import type { AppConfig } from '../config.js';
 import type { AnswerImage } from '../domain.js';
 import { BodySizeLimitError, readBoundedBody } from '../agent/bounded-body.js';
 
-const allowedHosts = new Set(['cdn.discordapp.com', 'media.discordapp.net']);
-const allowedMimeTypes = new Set(['image/jpeg', 'image/png']);
+const attachmentHosts = new Set(['cdn.discordapp.com', 'media.discordapp.net']);
+const allowedMimeTypes = new Set(['image/gif', 'image/jpeg', 'image/png', 'image/webp']);
 const attachmentPathPattern = /^\/attachments\/\d+\/\d+\/[^/]+$/u;
+const externalProxyHostPattern = /^images-ext-\d+\.discordapp\.net$/u;
+const externalProxyPathPattern = /^\/external\/[A-Za-z0-9_-]{20,}\/https?\/[^/]+\/.+$/u;
 const maximumOutputDimension = 2_048;
 const requestTimeoutMilliseconds = 10_000;
 
@@ -19,6 +21,7 @@ export interface DiscordAttachmentSnapshot {
   readonly contentType: string | null;
   readonly height: number | null;
   readonly id: string;
+  readonly inline?: boolean;
   readonly name: string;
   readonly size: number;
   readonly url: string;
@@ -81,7 +84,7 @@ export class SafeDiscordImageLoader {
           'Rejected a Discord image attachment.',
         );
         throw new ImageAttachmentError(
-          'I could not safely read an attached image. Please use a valid PNG or JPEG and retry.',
+          'I could not safely read the image. Please use a valid static PNG, JPEG, WebP, or GIF and retry.',
           { cause: error },
         );
       }
@@ -101,7 +104,7 @@ export class SafeDiscordImageLoader {
     const response = await fetch(url, {
       cache: 'no-store',
       headers: {
-        Accept: 'image/png, image/jpeg',
+        Accept: 'image/png, image/jpeg, image/webp, image/gif',
         'User-Agent': 'AspireDiscordBot/1.0 (+https://github.com/IEvangelist/aspire-discord)',
       },
       redirect: 'manual',
@@ -172,6 +175,7 @@ export class SafeDiscordImageLoader {
 
 export function isPotentialImageAttachment(attachment: DiscordAttachmentSnapshot): boolean {
   return (
+    attachment.inline === true ||
     attachment.contentType?.toLocaleLowerCase('en-US').startsWith('image/') === true ||
     /\.(?:gif|jpe?g|png|svg|webp)$/iu.test(attachment.name)
   );
@@ -226,16 +230,19 @@ function validateAttachmentUrl(value: string): URL {
   } catch {
     throw new ImageAttachmentError('The Discord image URL was invalid.');
   }
+  const hostname = url.hostname.toLocaleLowerCase('en-US');
+  const allowedPath =
+    (attachmentHosts.has(hostname) && attachmentPathPattern.test(url.pathname)) ||
+    (externalProxyHostPattern.test(hostname) && externalProxyPathPattern.test(url.pathname));
   if (
     url.protocol !== 'https:' ||
     url.username ||
     url.password ||
     (url.port && url.port !== '443') ||
     url.href.length > 2_048 ||
-    !allowedHosts.has(url.hostname.toLocaleLowerCase('en-US')) ||
-    !attachmentPathPattern.test(url.pathname)
+    !allowedPath
   ) {
-    throw new ImageAttachmentError('The attached image was not hosted on the Discord CDN.');
+    throw new ImageAttachmentError('The image was not hosted by Discord or its image proxy.');
   }
   return url;
 }
@@ -245,7 +252,9 @@ function normalizeMimeType(value: string | null): string | undefined {
   return mimeType || undefined;
 }
 
-function detectMimeType(bytes: Uint8Array): 'image/jpeg' | 'image/png' | undefined {
+function detectMimeType(
+  bytes: Uint8Array,
+): 'image/gif' | 'image/jpeg' | 'image/png' | 'image/webp' | undefined {
   if (
     bytes.length >= 8 &&
     bytes[0] === 0x89 &&
@@ -262,7 +271,17 @@ function detectMimeType(bytes: Uint8Array): 'image/jpeg' | 'image/png' | undefin
   if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
     return 'image/jpeg';
   }
+  if (bytes.length >= 12 && ascii(bytes, 0, 4) === 'RIFF' && ascii(bytes, 8, 12) === 'WEBP') {
+    return 'image/webp';
+  }
+  if (bytes.length >= 6 && (ascii(bytes, 0, 6) === 'GIF87a' || ascii(bytes, 0, 6) === 'GIF89a')) {
+    return 'image/gif';
+  }
   return undefined;
+}
+
+function ascii(bytes: Uint8Array, start: number, end: number): string {
+  return String.fromCharCode(...bytes.slice(start, end));
 }
 
 async function normalizeImage(bytes: Uint8Array, maximumPixels: number): Promise<Buffer> {
@@ -273,14 +292,11 @@ async function normalizeImage(bytes: Uint8Array, maximumPixels: number): Promise
     limitInputPixels: maximumPixels,
     sequentialRead: true,
   }).metadata();
-  if (
-    !metadata.width ||
-    !metadata.height ||
-    metadata.width * metadata.height > maximumPixels ||
-    (metadata.pages ?? 1) !== 1 ||
-    (metadata.format !== 'jpeg' && metadata.format !== 'png')
-  ) {
+  if (!metadata.width || !metadata.height || metadata.width * metadata.height > maximumPixels) {
     throw imagePixelError();
+  }
+  if ((metadata.pages ?? 1) !== 1 || !['gif', 'jpeg', 'png', 'webp'].includes(metadata.format)) {
+    throw unsupportedImageError();
   }
 
   return await sharp(input, {
@@ -303,7 +319,7 @@ async function normalizeImage(bytes: Uint8Array, maximumPixels: number): Promise
 
 function unsupportedImageError(): ImageAttachmentError {
   return new ImageAttachmentError(
-    'I can only inspect static PNG or JPEG images. Please convert the attachment and retry.',
+    'I can only inspect static PNG, JPEG, WebP, or GIF images. Please convert the image and retry.',
   );
 }
 

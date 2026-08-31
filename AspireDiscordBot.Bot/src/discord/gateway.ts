@@ -16,6 +16,7 @@ import { WorkLimiter, WorkQueueFullError } from '../work-limiter.js';
 import { resolveQuestion, referencesThread } from './ask-resolver.js';
 import { isUserAllowed } from './authorizer.js';
 import {
+  extractMessageImages,
   readThreadContext,
   type ThreadContextReadOptions,
   type ThreadContextResult,
@@ -24,7 +25,6 @@ import { buildAnswerMessages } from './formatter.js';
 import {
   ImageAttachmentError,
   SafeDiscordImageLoader,
-  isPotentialImageAttachment,
   type DiscordImageCandidate,
 } from './image-context.js';
 import { DiscordProgressController, progressMessage } from './progress.js';
@@ -296,7 +296,7 @@ export class DiscordGateway {
       .replace(new RegExp(`<@!?${this.#client.user.id}>`, 'gu'), '')
       .trim();
     const requestSignal = this.#requestSignal();
-    const directImages = [...message.attachments.values()].filter(isPotentialImageAttachment).map(
+    const directImages = extractMessageImages(message).map(
       (attachment) =>
         ({
           attachment,
