@@ -276,6 +276,9 @@ function Get-ActiveRevision {
         Assert-DeploymentNotCancelled
     }
     if ($exitCode -eq 0) {
+        if ($null -eq $revision) {
+            return ''
+        }
         return ([string]$revision).Trim()
     }
     throw "Unable to inspect active revisions for Container App '$ApplicationName'."

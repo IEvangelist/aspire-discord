@@ -192,4 +192,32 @@ await describe("production deployment pipeline", async () => {
       /catch\s*\{\s*Assert-DeploymentNotCancelled\s+Write-Host/su,
     );
   });
+
+  await it("handles inactive applications with no active revision output", async () => {
+    const script = await readFile(
+      resolve(
+        import.meta.dirname,
+        "..",
+        "..",
+        "infra",
+        "deploy-production.ps1",
+      ),
+      "utf8",
+    );
+    const revisionStart = script.indexOf("function Get-ActiveRevision");
+    const revisionEnd = script.indexOf(
+      "function Set-RevisionActive",
+      revisionStart,
+    );
+    const revisionFunction = script.slice(revisionStart, revisionEnd);
+
+    assert.match(
+      revisionFunction,
+      /if \(\$null -eq \$revision\)\s*\{\s*return ''\s*\}/su,
+    );
+    assert.ok(
+      revisionFunction.indexOf("$null -eq $revision") <
+        revisionFunction.indexOf(".Trim()"),
+    );
+  });
 });
