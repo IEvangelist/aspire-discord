@@ -2,6 +2,7 @@ import { AppConfigurationClient } from '@azure/app-configuration';
 import { DefaultAzureCredential } from '@azure/identity';
 import { metrics } from '@opentelemetry/api';
 import { createHash } from 'node:crypto';
+import { Agent as HttpsAgent } from 'node:https';
 import type { Logger } from 'pino';
 import {
   groundingDetailsModeSchema,
@@ -48,6 +49,7 @@ interface RuntimeSetting {
 
 interface RuntimeConfigClient {
   listSettings(signal: AbortSignal): AsyncIterable<RuntimeSetting>;
+  stop?(): void;
 }
 
 export async function startRuntimeConfig(
@@ -139,6 +141,7 @@ class RefreshingRuntimeConfig implements RuntimeConfig {
       clearInterval(this.#timer);
       this.#timer = undefined;
     }
+    this.client.stop?.();
   }
 
   async #refresh(): Promise<void> {
@@ -196,10 +199,13 @@ class RefreshingRuntimeConfig implements RuntimeConfig {
 }
 
 class AzureRuntimeConfigClient implements RuntimeConfigClient {
+  readonly #agent = new HttpsAgent({ keepAlive: false });
   readonly #client: AppConfigurationClient;
 
   public constructor(endpoint: string, credential: DefaultAzureCredential) {
-    this.#client = new AppConfigurationClient(endpoint, credential);
+    this.#client = new AppConfigurationClient(endpoint, credential, {
+      agent: this.#agent,
+    });
   }
 
   public listSettings(signal: AbortSignal): AsyncIterable<RuntimeSetting> {
@@ -209,6 +215,10 @@ class AzureRuntimeConfigClient implements RuntimeConfigClient {
       keyFilter: `${runtimeConfigPrefix}*`,
       labelFilter: '\0',
     });
+  }
+
+  public stop(): void {
+    this.#agent.destroy();
   }
 }
 
