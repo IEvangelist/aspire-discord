@@ -25,7 +25,7 @@ RUN apt-get update \
 WORKDIR /app
 COPY --from=build /app/publish .
 
-ENV ASPNETCORE_URLS=http://+:8080
+ENV ASPNETCORE_HTTP_PORTS=8080
 EXPOSE 8080
 USER $APP_UID
 ENTRYPOINT ["dotnet", "AspireDiscordBot.Ingestion.dll"]

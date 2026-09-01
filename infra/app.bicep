@@ -176,6 +176,10 @@ resource application 'Microsoft.App/containerApps@2025-07-01' = {
                 value: 'ManagedIdentityCredential'
               }
               {
+                name: 'AZURE_LOG_LEVEL'
+                value: 'error'
+              }
+              {
                 name: 'APPLICATIONINSIGHTS_AUTHENTICATION_STRING'
                 value: 'Authorization=AAD;ClientId=${identity.properties.clientId}'
               }
@@ -333,10 +337,6 @@ resource application 'Microsoft.App/containerApps@2025-07-01' = {
               value: 'Production'
             }
             {
-              name: 'ASPNETCORE_URLS'
-              value: 'http://+:8080'
-            }
-            {
               name: 'Ai__Provider'
               value: 'azureaifoundry'
             }
@@ -367,6 +367,10 @@ resource application 'Microsoft.App/containerApps@2025-07-01' = {
             {
               name: 'AZURE_TOKEN_CREDENTIALS'
               value: 'ManagedIdentityCredential'
+            }
+            {
+              name: 'Logging__LogLevel__Azure'
+              value: 'Warning'
             }
             {
               name: 'APPLICATIONINSIGHTS_AUTHENTICATION_STRING'

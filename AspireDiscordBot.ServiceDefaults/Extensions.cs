@@ -7,6 +7,7 @@ using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Logging;
 using OpenTelemetry;
 using OpenTelemetry.Metrics;
+using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
 
 namespace Microsoft.Extensions.Hosting;
@@ -107,10 +108,16 @@ public static class Extensions
             }
 
             builder.Services.AddOpenTelemetry().UseAzureMonitor(options =>
-            {
-                options.ConnectionString = applicationInsightsConnectionString;
-                options.Credential = new DefaultAzureCredential(credentialOptions);
-            });
+                {
+                    options.ConnectionString = applicationInsightsConnectionString;
+                    options.Credential = new DefaultAzureCredential(credentialOptions);
+                })
+                .ConfigureResource(resource => resource.AddAttributes(new Dictionary<string, object>
+                {
+                    ["service.name"] =
+                        builder.Configuration["OTEL_SERVICE_NAME"] ?? builder.Environment.ApplicationName,
+                    ["service.namespace"] = "aspire-discord",
+                }));
         }
         else if (useOtlpExporter)
         {
