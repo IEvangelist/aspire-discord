@@ -124,7 +124,7 @@ resource runtimeConfig 'Microsoft.AppConfiguration/configurationStores@2024-06-0
     disableLocalAuth: true
     enablePurgeProtection: true
     publicNetworkAccess: 'Enabled'
-    softDeleteRetentionInDays: 30
+    softDeleteRetentionInDays: 7
   }
 }
 
