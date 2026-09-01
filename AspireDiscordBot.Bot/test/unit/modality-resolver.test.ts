@@ -36,21 +36,8 @@ describe('modality resolver scenario matrix', () => {
       value: {
         forwarded: observation('Forwarded question', 'Forwarded'),
         reply: observation('Reply question', 'Reply'),
-        selected: observation('Selected question', 'Selected'),
         thread: { question: 'Thread question', status: 'found' },
         typed: 'Current question',
-      },
-    },
-    {
-      expected: 'Selected question',
-      source: 'selected',
-      title: 'message context-menu selection outranks other fallbacks',
-      value: {
-        forwarded: observation('Forwarded question', 'Forwarded'),
-        reply: observation('Reply question', 'Reply'),
-        selected: observation('Selected question', 'Selected'),
-        thread: { question: 'Thread question', status: 'found' },
-        typed: '',
       },
     },
     {
@@ -77,7 +64,7 @@ describe('modality resolver scenario matrix', () => {
     {
       expected: 'Thread question',
       source: 'thread',
-      title: 'bare slash command resolves to latest thread question',
+      title: 'bare mention resolves to latest thread question',
       value: {
         thread: { context: 'Thread context', question: 'Thread question', status: 'found' },
         typed: '',
@@ -175,31 +162,15 @@ describe('modality resolver scenario matrix', () => {
     expect(result.requiresProcessedAttachment).toBe(true);
   });
 
-  it('uses a forwarded snapshot when its selected wrapper is empty', () => {
+  it('uses a forwarded snapshot before thread history', () => {
     const result = resolveModalities({
       forwarded: observation('Forwarded question', 'Forwarded'),
-      selected: { ...emptyObservation(), status: 'empty' },
       thread: { context: 'Old context', question: 'Old question', status: 'found' },
       typed: '',
     });
 
     expect(result.question).toBe('Forwarded question');
     expect(result.questionSource).toBe('forwarded');
-  });
-
-  it('does not fall back to thread history for an unsupported selected message', () => {
-    const result = resolveModalities({
-      selected: {
-        ...emptyObservation(),
-        notices: ['Audio attachments are not transcribed.'],
-        status: 'found',
-      },
-      thread: { context: 'Old context', question: 'Old question', status: 'found' },
-      typed: '',
-    });
-
-    expect(result.question).toBeUndefined();
-    expect(result.problem).toContain('Audio attachments');
   });
 
   it('deduplicates reply text already present in thread history', () => {
@@ -277,17 +248,6 @@ describe('modality resolver scenario matrix', () => {
     expect(result.notices).toEqual(['Reply note', 'Thread note']);
   });
 
-  it('uses selected non-question content as a synthetic selected-message question', () => {
-    const result = resolveModalities({
-      selected: observation(undefined, 'Selected assistant answer'),
-      thread: { status: 'not-a-thread' },
-      typed: '',
-    });
-
-    expect(result.questionSource).toBe('selected');
-    expect(result.question).toContain('provided context');
-  });
-
   it('continues with current text and visibly degrades unavailable thread history', () => {
     const result = resolveModalities({
       thread: { status: 'forbidden' },
@@ -302,7 +262,7 @@ describe('modality resolver scenario matrix', () => {
     ['empty', "doesn't contain a readable"],
     ['error', 'could not be read'],
     ['forbidden', 'Read Message History'],
-    ['not-a-thread', 'inside a forum post'],
+    ['not-a-thread', 'Reply to a message'],
     ['found', 'include a question'],
   ] as const)('maps unresolved %s thread state to actionable guidance', (status, expected) => {
     const result = resolveModalities({

@@ -1,11 +1,5 @@
 import { EventEmitter } from 'node:events';
-import {
-  Events,
-  MessageReferenceType,
-  type Client,
-  type Message,
-  type MessageContextMenuCommandInteraction,
-} from 'discord.js';
+import { Events, MessageReferenceType, type Client, type Message } from 'discord.js';
 import { describe, expect, it, vi } from 'vitest';
 import type { AnswerService } from '../../src/domain.js';
 import { DiscordGateway } from '../../src/discord/gateway.js';
@@ -36,13 +30,18 @@ function createAnswers() {
   };
 }
 
-function responseMessage() {
+function responseMessage(): Message {
   return {
     edit: vi.fn(async () => undefined),
-  };
+    reply: vi.fn(async () => responseMessage()),
+  } as unknown as Message;
 }
 
-describe('Discord gateway input adapters', () => {
+function emit(client: Client, message: Message): void {
+  (client as unknown as EventEmitter).emit(Events.MessageCreate, message);
+}
+
+describe('Discord gateway mention context adapters', () => {
   it('routes a real-shaped forward snapshot without trying to fetch it as a reply', async () => {
     const client = createClient();
     const answers = createAnswers();
@@ -61,17 +60,12 @@ describe('Discord gateway input adapters', () => {
       attachments: new Map(),
       author: { bot: false, id: 'user' },
       channel: {
-        isSendable: () => true,
         isThread: () => false,
-        send: vi.fn(async () => undefined),
         sendTyping: vi.fn(async () => undefined),
       },
       content: '<@bot>',
       createdTimestamp: 100,
       embeds: [],
-      fetch: vi.fn(async function (this: Message) {
-        return this;
-      }),
       fetchReference,
       id: 'forward-message',
       mentions: { has: () => true },
@@ -91,113 +85,13 @@ describe('Discord gateway input adapters', () => {
       system: false,
     } as unknown as Message;
 
-    (client as unknown as EventEmitter).emit(Events.MessageCreate, message);
+    emit(client, message);
 
     await vi.waitFor(() => {
       expect(answers.answer).toHaveBeenCalled();
     });
     expect(answers.answer.mock.calls[0]?.[0]).toBe(
       'Why does this forwarded Aspire deployment fail?',
-    );
-    expect(fetchReference).not.toHaveBeenCalled();
-    await gateway.stop();
-  });
-
-  it('routes a message-context interaction through the selected-message modality', async () => {
-    const client = createClient();
-    const answers = createAnswers();
-    const gateway = new DiscordGateway(createTestConfig(), answers.service, testLogger, client);
-    await gateway.start();
-    const targetMessage = {
-      attachments: new Map(),
-      author: { bot: false, id: 'author' },
-      cleanContent: 'How do I configure Aspire health checks?',
-      content: 'How do I configure Aspire health checks?',
-      createdTimestamp: 50,
-      embeds: [],
-      id: 'target',
-      system: false,
-    } as unknown as Message;
-    const interaction = {
-      channel: null,
-      commandName: 'Ask Aspirey',
-      createdTimestamp: 100,
-      deferReply: vi.fn(async () => undefined),
-      editReply: vi.fn(async () => undefined),
-      followUp: vi.fn(async () => undefined),
-      id: 'interaction',
-      isChatInputCommand: () => false,
-      isMessageContextMenuCommand: () => true,
-      reply: vi.fn(async () => undefined),
-      targetMessage,
-      user: { id: 'user' },
-    } as unknown as MessageContextMenuCommandInteraction;
-
-    (client as unknown as EventEmitter).emit(Events.InteractionCreate, interaction);
-
-    await vi.waitFor(() => {
-      expect(answers.answer).toHaveBeenCalled();
-    });
-    expect(answers.answer.mock.calls[0]?.[0]).toBe('How do I configure Aspire health checks?');
-    expect(answers.answer.mock.calls[0]?.[3]).toMatchObject({
-      questionSource: 'selected',
-    });
-    await gateway.stop();
-  });
-
-  it('unwraps a forwarded snapshot selected through the message-context command', async () => {
-    const client = createClient();
-    const answers = createAnswers();
-    const gateway = new DiscordGateway(createTestConfig(), answers.service, testLogger, client);
-    await gateway.start();
-    const fetchReference = vi.fn(async () => {
-      throw new Error('forward source is intentionally inaccessible');
-    });
-    const targetMessage = {
-      attachments: new Map(),
-      author: { bot: false, id: 'author' },
-      cleanContent: '',
-      content: '',
-      createdTimestamp: 50,
-      embeds: [],
-      fetchReference,
-      id: 'target',
-      messageSnapshots: new Map([
-        [
-          'source',
-          {
-            attachments: new Map(),
-            content: 'Why did this forwarded Aspire deployment fail?',
-            createdTimestamp: 40,
-            embeds: [],
-          },
-        ],
-      ]),
-      reference: { messageId: 'source', type: MessageReferenceType.Forward },
-      system: false,
-    } as unknown as Message;
-    const interaction = {
-      channel: null,
-      commandName: 'Ask Aspirey',
-      createdTimestamp: 100,
-      deferReply: vi.fn(async () => undefined),
-      editReply: vi.fn(async () => undefined),
-      followUp: vi.fn(async () => undefined),
-      id: 'forward-interaction',
-      isChatInputCommand: () => false,
-      isMessageContextMenuCommand: () => true,
-      reply: vi.fn(async () => undefined),
-      targetMessage,
-      user: { id: 'user' },
-    } as unknown as MessageContextMenuCommandInteraction;
-
-    (client as unknown as EventEmitter).emit(Events.InteractionCreate, interaction);
-
-    await vi.waitFor(() => {
-      expect(answers.answer).toHaveBeenCalled();
-    });
-    expect(answers.answer.mock.calls[0]?.[0]).toBe(
-      'Why did this forwarded Aspire deployment fail?',
     );
     expect(answers.answer.mock.calls[0]?.[3]).toMatchObject({
       questionSource: 'forwarded',
@@ -206,58 +100,54 @@ describe('Discord gateway input adapters', () => {
     await gateway.stop();
   });
 
-  it('includes a selected reply target when handling the message-context command', async () => {
+  it('uses a replied-to user message when the mention delegates to its context', async () => {
     const client = createClient();
     const answers = createAnswers();
-    const gateway = new DiscordGateway(createTestConfig(), answers.service, testLogger, client);
+    const gateway = new DiscordGateway(
+      createTestConfig({ discord: { mentionEnabled: true } }),
+      answers.service,
+      testLogger,
+      client,
+    );
     await gateway.start();
-    const targetMessage = {
+    const fetchReference = vi.fn(async () => ({
       attachments: new Map(),
       author: { bot: false, id: 'author' },
-      cleanContent: 'Does that Aspire health-check guidance still apply?',
-      content: 'Does that Aspire health-check guidance still apply?',
+      cleanContent: 'How do I configure Aspire health checks?',
+      content: 'How do I configure Aspire health checks?',
       createdTimestamp: 50,
       embeds: [],
-      fetchReference: vi.fn(async () => ({
-        attachments: new Map(),
-        author: { bot: true, id: 'bot' },
-        cleanContent: 'Use AddRedis and configure a health check.',
-        content: 'Use AddRedis and configure a health check.',
-        createdTimestamp: 40,
-        embeds: [],
-        id: 'referenced',
-      })),
-      id: 'target',
-      reference: { messageId: 'referenced', type: MessageReferenceType.Default },
+      id: 'source',
+    }));
+    const message = {
+      attachments: new Map(),
+      author: { bot: false, id: 'user' },
+      channel: {
+        isThread: () => false,
+        sendTyping: vi.fn(async () => undefined),
+      },
+      content: '<@bot> answer the message above',
+      createdTimestamp: 100,
+      embeds: [],
+      fetchReference,
+      id: 'reply-message',
+      mentions: { has: () => true },
+      reference: { messageId: 'source', type: MessageReferenceType.Default },
+      reply: vi.fn(async () => responseMessage()),
       system: false,
     } as unknown as Message;
-    const interaction = {
-      channel: null,
-      commandName: 'Ask Aspirey',
-      createdTimestamp: 100,
-      deferReply: vi.fn(async () => undefined),
-      editReply: vi.fn(async () => undefined),
-      followUp: vi.fn(async () => undefined),
-      id: 'reply-interaction',
-      isChatInputCommand: () => false,
-      isMessageContextMenuCommand: () => true,
-      reply: vi.fn(async () => undefined),
-      targetMessage,
-      user: { id: 'user' },
-    } as unknown as MessageContextMenuCommandInteraction;
 
-    (client as unknown as EventEmitter).emit(Events.InteractionCreate, interaction);
+    emit(client, message);
 
     await vi.waitFor(() => {
       expect(answers.answer).toHaveBeenCalled();
     });
-    expect(answers.answer.mock.calls[0]?.[0]).toBe(
-      'Does that Aspire health-check guidance still apply?',
-    );
+    expect(answers.answer.mock.calls[0]?.[0]).toBe('How do I configure Aspire health checks?');
     expect(answers.answer.mock.calls[0]?.[3]).toMatchObject({
-      history: expect.stringContaining('Use AddRedis'),
-      questionSource: 'selected',
+      history: expect.stringContaining('How do I configure Aspire health checks?'),
+      questionSource: 'reply',
     });
+    expect(fetchReference).toHaveBeenCalledOnce();
     await gateway.stop();
   });
 });

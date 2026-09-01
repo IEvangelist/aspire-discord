@@ -1,10 +1,10 @@
-import { isThreadOnlyReference, referencesThread } from './ask-resolver.js';
+import { isThreadOnlyReference, referencesThread } from './context-reference.js';
 import type { ThreadContextResult } from './context-reader.js';
 import type { DiscordImageCandidate } from './image-context.js';
 import type { MessageObservation } from './reply-context.js';
 import type { DiscordTextCandidate } from './text-context.js';
 
-export type QuestionSource = 'current' | 'forwarded' | 'none' | 'reply' | 'selected' | 'thread';
+export type QuestionSource = 'current' | 'forwarded' | 'none' | 'reply' | 'thread';
 
 export interface ModalityResolutionInput {
   readonly directFiles?: readonly DiscordTextCandidate[];
@@ -12,7 +12,6 @@ export interface ModalityResolutionInput {
   readonly directNotices?: readonly string[];
   readonly forwarded?: MessageObservation;
   readonly reply?: MessageObservation;
-  readonly selected?: MessageObservation;
   readonly thread: ThreadContextResult;
   readonly typed: string;
 }
@@ -35,57 +34,48 @@ export function resolveModalities(input: ModalityResolutionInput): ResolvedModal
   const directNotices = input.directNotices ?? [];
   const forwarded = input.forwarded ?? emptyObservation();
   const reply = input.reply ?? emptyObservation();
-  const selected = input.selected ?? emptyObservation();
   const typed = input.typed.trim();
 
   const replyContext =
     reply.context && (!reply.messageId || !input.thread.messageIds?.has(reply.messageId))
       ? reply.context
       : '';
-  const selectedContext =
-    selected.context && (!selected.messageId || !input.thread.messageIds?.has(selected.messageId))
-      ? selected.context
-      : '';
-  const context = [input.thread.context, replyContext, forwarded.context, selectedContext]
+  const context = [input.thread.context, replyContext, forwarded.context]
     .filter(Boolean)
     .join('\n\n');
   const imageCandidates = [
     ...directImages,
-    ...selected.images,
     ...forwarded.images,
     ...reply.images,
     ...(input.thread.images ?? []),
   ];
   const fileCandidates = [
     ...directFiles,
-    ...selected.files,
     ...forwarded.files,
     ...reply.files,
     ...(input.thread.files ?? []),
   ];
   const notices = [
     ...directNotices,
-    ...selected.notices,
     ...forwarded.notices,
     ...reply.notices,
     ...(input.thread.notices ?? []),
     ...threadReadNotices(input.thread.status),
   ];
 
-  const selectedQuestion = selectQuestion(
+  const selection = selectQuestion(
     typed,
     directFiles,
     directImages,
     directNotices,
-    selected,
     forwarded,
     reply,
     input.thread,
   );
-  if (selectedQuestion.problem) {
-    return unresolved(selectedQuestion.problem);
+  if (selection.problem) {
+    return unresolved(selection.problem);
   }
-  const { question, questionSource } = selectedQuestion;
+  const { question, questionSource } = selection;
   if (
     question &&
     (!referencesThread(typed) || context || imageCandidates.length > 0 || fileCandidates.length > 0)
@@ -99,16 +89,12 @@ export function resolveModalities(input: ModalityResolutionInput): ResolvedModal
       problem: '',
       question,
       questionSource,
-      ...(selectedQuestion.requiresProcessedAttachment
-        ? { requiresProcessedAttachment: true }
-        : {}),
+      ...(selection.requiresProcessedAttachment ? { requiresProcessedAttachment: true } : {}),
     };
   }
 
   function displayQuestion(question: string, source: QuestionSource): string {
     switch (source) {
-      case 'selected':
-        return 'Question from selected message';
       case 'forwarded':
         return 'Question from forwarded message';
       case 'reply':
@@ -141,7 +127,6 @@ function selectQuestion(
   directFiles: readonly DiscordTextCandidate[],
   directImages: readonly DiscordImageCandidate[],
   directNotices: readonly string[],
-  selected: MessageObservation,
   forwarded: MessageObservation,
   reply: MessageObservation,
   thread: ThreadContextResult,
@@ -165,7 +150,6 @@ function selectQuestion(
   }
   let problem: string | undefined;
   for (const [observation, source] of [
-    [selected, 'selected'],
     [forwarded, 'forwarded'],
     [reply, 'reply'],
   ] as const) {
@@ -194,7 +178,7 @@ function selectQuestion(
 
 function observationProblem(
   observation: MessageObservation,
-  source: 'forwarded' | 'reply' | 'selected',
+  source: 'forwarded' | 'reply',
 ): string | undefined {
   if (observation.status === 'none') {
     return undefined;
@@ -203,8 +187,6 @@ function observationProblem(
     return observation.notices[0];
   }
   switch (source) {
-    case 'selected':
-      return 'The selected message did not contain readable text or a supported attachment.';
     case 'forwarded':
       return 'The forwarded message did not contain readable text or a supported attachment.';
     case 'reply':
@@ -259,7 +241,7 @@ function threadContextProblem(status: ThreadContextResult['status']): string {
     case 'empty':
       return "The thread doesn't contain a readable user question. Paste the question here.";
     case 'not-a-thread':
-      return 'Run `/ask` inside a forum post/thread or include a question directly.';
+      return 'Reply to a message, mention me inside a forum post/thread, or include a question with the mention.';
     case 'error':
       return "I couldn't read the thread history. Paste the question here.";
     case 'found':

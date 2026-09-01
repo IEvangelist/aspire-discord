@@ -1,10 +1,6 @@
 import { MessageReferenceType } from 'discord.js';
 import { describe, expect, it, vi } from 'vitest';
-import {
-  readForwardedContext,
-  readReplyContext,
-  readSelectedMessageContext,
-} from '../../src/discord/reply-context.js';
+import { readForwardedContext, readReplyContext } from '../../src/discord/reply-context.js';
 import type { ThreadMessageSnapshot } from '../../src/discord/context-reader.js';
 import type { DiscordAttachmentSnapshot } from '../../src/discord/image-context.js';
 import { testLogger } from '../helpers/logger.js';
@@ -137,23 +133,5 @@ describe('reply and forwarded context', () => {
 
     expect(result.status).toBe('none');
     expect(fetchReference).not.toHaveBeenCalled();
-  });
-
-  it('marks media-only selected messages as requiring their attachment', () => {
-    const result = readSelectedMessageContext(
-      message('', false, [attachment('456', 'error.png', 'image/png')]),
-      'aspirey',
-    );
-
-    expect(result.question).toBeUndefined();
-    expect(result.requiresAttachment).toBe(true);
-    expect(result.images[0]?.source).toBe('current question');
-  });
-
-  it('labels selected bot output without treating it as the question', () => {
-    const result = readSelectedMessageContext(message('CI bot output', true), 'different-bot');
-
-    expect(result.context).toContain('[Selected bot message]');
-    expect(result.question).toBeUndefined();
   });
 });

@@ -1,16 +1,10 @@
 import {
-  ApplicationCommandType,
   Client,
-  ContextMenuCommandBuilder,
   Events,
   GatewayIntentBits,
-  MessageFlags,
   PermissionFlagsBits,
-  SlashCommandBuilder,
-  type ChatInputCommandInteraction,
   type ClientOptions,
   type Message,
-  type MessageContextMenuCommandInteraction,
   type TextBasedChannel,
 } from 'discord.js';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -27,7 +21,7 @@ import {
   type ThreadContextReadOptions,
   type ThreadContextResult,
 } from './context-reader.js';
-import { buildAnswerMessages } from './formatter.js';
+import { buildAnswerThread } from './formatter.js';
 import {
   ImageAttachmentError,
   SafeDiscordImageLoader,
@@ -39,7 +33,6 @@ import { RequestDeduplicator } from './request-deduplicator.js';
 import {
   readForwardedContext,
   readReplyContext,
-  readSelectedMessageContext,
   type MessageObservation,
 } from './reply-context.js';
 import {
@@ -49,9 +42,6 @@ import {
 } from './text-context.js';
 import { UserRateLimiter } from './user-rate-limiter.js';
 
-const askCommandName = 'ask';
-const askMessageCommandName = 'Ask Aspirey';
-const interactionDeadlineMilliseconds = 14 * 60_000;
 const inlineEmbedRefreshMilliseconds = 750;
 
 interface ResolveQuestionOptions extends Pick<
@@ -63,10 +53,7 @@ interface ResolveQuestionOptions extends Pick<
   readonly directNotices?: readonly string[];
   readonly forwarded?: MessageObservation;
   readonly reply?: MessageObservation;
-  readonly selected?: MessageObservation;
 }
-
-type AnswerInteraction = ChatInputCommandInteraction | MessageContextMenuCommandInteraction;
 
 export interface DiscordStatus {
   readonly botUser?: string;
@@ -80,35 +67,6 @@ export interface DiscordStatus {
   };
 }
 
-export function buildDiscordCommands(maxQuestionLength: number) {
-  const ask = new SlashCommandBuilder()
-    .setName(askCommandName)
-    .setDescription('Ask an Aspire question grounded in official sources.')
-    .addStringOption((option) =>
-      option
-        .setName('question')
-        .setDescription("Optional in a thread; I'll use its conversation and latest question.")
-        .setMaxLength(maxQuestionLength)
-        .setRequired(false),
-    )
-    .addAttachmentOption((option) =>
-      option
-        .setName('image')
-        .setDescription('Optional static image to inspect with the question.')
-        .setRequired(false),
-    )
-    .addAttachmentOption((option) =>
-      option
-        .setName('file')
-        .setDescription('Optional UTF-8 code, configuration, Markdown, JSON, or log file.')
-        .setRequired(false),
-    );
-  const askMessage = new ContextMenuCommandBuilder()
-    .setName(askMessageCommandName)
-    .setType(ApplicationCommandType.Message);
-  return [ask.toJSON(), askMessage.toJSON()];
-}
-
 export class DiscordGateway {
   readonly #client: Client;
   readonly #imageLoader: SafeDiscordImageLoader;
@@ -116,7 +74,7 @@ export class DiscordGateway {
   readonly #requests = new RequestDeduplicator();
   readonly #textLoader: SafeDiscordTextLoader;
   readonly #users: UserRateLimiter;
-  #commandsRegistered = false;
+  #commandsCleared = false;
   #started = false;
 
   public constructor(
@@ -134,7 +92,7 @@ export class DiscordGateway {
   }
 
   public get ready(): boolean {
-    return !this.config.discord.token || (this.#client.isReady() && this.#commandsRegistered);
+    return !this.config.discord.token || (this.#client.isReady() && this.#commandsCleared);
   }
 
   public status(): DiscordStatus {
@@ -164,22 +122,15 @@ export class DiscordGateway {
     this.#started = true;
     const ready = Promise.withResolvers<undefined>();
     this.#client.once(Events.ClientReady, (client) => {
-      void this.#registerCommands(client).then(
+      void this.#clearCommands(client).then(
         () => {
-          this.#commandsRegistered = true;
+          this.#commandsCleared = true;
           ready.resolve(undefined);
         },
         (error: unknown) => {
           ready.reject(error);
         },
       );
-    });
-    this.#client.on(Events.InteractionCreate, (interaction) => {
-      if (interaction.isChatInputCommand() || interaction.isMessageContextMenuCommand()) {
-        void this.#handleInteraction(interaction).catch((error: unknown) => {
-          this.logger.error({ err: error }, 'Unhandled Discord interaction failure.');
-        });
-      }
     });
     if (this.config.discord.mentionEnabled) {
       this.#client.on(Events.MessageCreate, (message) => {
@@ -204,7 +155,7 @@ export class DiscordGateway {
 
     try {
       await this.#client.login(this.config.discord.token);
-      await withTimeout(ready.promise, 30_000, 'Discord command registration timed out.');
+      await withTimeout(ready.promise, 30_000, 'Discord command cleanup timed out.');
       this.logger.info(
         { mentionEnabled: this.config.discord.mentionEnabled },
         'Discord gateway login completed.',
@@ -226,175 +177,14 @@ export class DiscordGateway {
     await this.#client.destroy();
   }
 
-  async #registerCommands(readyClient: Client<true>): Promise<void> {
-    const commands = buildDiscordCommands(this.config.safety.maxQuestionLength);
-
+  async #clearCommands(readyClient: Client<true>): Promise<void> {
+    await readyClient.application.commands.set([]);
     if (this.config.discord.guildId) {
       const guild = await readyClient.guilds.fetch(this.config.discord.guildId);
-      await guild.commands.set(commands);
-      this.logger.info({ guildId: guild.id }, 'Registered guild Discord commands.');
-      return;
+      await guild.commands.set([]);
+      this.logger.info({ guildId: guild.id }, 'Cleared legacy guild Discord commands.');
     }
-    await readyClient.application.commands.set(commands);
-    this.logger.info('Registered global Discord commands.');
-  }
-
-  async #handleInteraction(interaction: AnswerInteraction): Promise<void> {
-    let typed = '';
-    let input: ResolveQuestionOptions = {
-      beforeTimestamp: interaction.createdTimestamp,
-    };
-    let interactionKind: 'message-context' | 'slash';
-    let selectedTarget: Message | undefined;
-    if (interaction.isChatInputCommand()) {
-      if (interaction.commandName !== askCommandName) {
-        return;
-      }
-      interactionKind = 'slash';
-      typed = interaction.options.getString('question') ?? '';
-      const explicitImage = interaction.options.getAttachment('image');
-      const explicitFile = interaction.options.getAttachment('file');
-      input = {
-        ...input,
-        ...(explicitFile
-          ? {
-              directFiles: [
-                {
-                  attachment: explicitFile,
-                  explicit: true,
-                  source: 'current question',
-                },
-              ],
-            }
-          : {}),
-        ...(explicitImage
-          ? {
-              directImages: [
-                {
-                  attachment: explicitImage,
-                  explicit: true,
-                  source: 'current question',
-                },
-              ],
-            }
-          : {}),
-      };
-    } else {
-      if (interaction.commandName !== askMessageCommandName) {
-        return;
-      }
-      interactionKind = 'message-context';
-      selectedTarget = interaction.targetMessage;
-    }
-
-    if (!isUserAllowed(interaction.user.id, this.config.discord.allowedUserIds)) {
-      await interaction.reply({
-        content: 'Sorry - this bot is currently restricted to specific users.',
-        flags: MessageFlags.Ephemeral,
-      });
-      return;
-    }
-    if (!this.#requests.claim(`interaction:${interaction.id}`)) {
-      this.logger.debug('Ignored a duplicate Discord interaction delivery.');
-      return;
-    }
-    const rateLimit = this.#users.acquire(interaction.user.id);
-    if (!rateLimit.allowed) {
-      await interaction.reply({
-        content: rateLimitMessage(rateLimit.retryAfterSeconds),
-        flags: MessageFlags.Ephemeral,
-      });
-      return;
-    }
-
-    await interaction.deferReply();
-    const sendTyping = typingAction(interaction.channel);
-    const progress = new DiscordProgressController({
-      logger: this.logger,
-      seed: interaction.id,
-      ...(sendTyping ? { sendTyping } : {}),
-      update: async (content) => await interaction.editReply(answerPayload(content)),
-    });
-    await progress.start();
-    try {
-      const requestSignal = this.#requestSignal(
-        AbortSignal.timeout(interactionDeadlineMilliseconds),
-      );
-      if (selectedTarget) {
-        const reply = await readReplyContext(
-          selectedTarget,
-          this.#client.user?.id ?? '',
-          this.logger,
-        );
-        input = {
-          ...input,
-          forwarded: readForwardedContext(selectedTarget),
-          reply,
-          selected: readSelectedMessageContext(selectedTarget, this.#client.user?.id ?? ''),
-        };
-      }
-      const resolved = await this.#resolveQuestion(interaction.channel, typed, input);
-      if (!resolved.question) {
-        await progress.stop();
-        await interaction.editReply(resolved.problem);
-        return;
-      }
-
-      const question = resolved.question;
-      const answer = await this.#limiter.run(async () => {
-        const conversation = await this.#loadConversation(
-          resolved.context,
-          resolved.imageCandidates ?? [],
-          resolved.fileCandidates ?? [],
-          resolved.notices ?? [],
-          resolved.requiresProcessedAttachment ?? false,
-          resolved.questionSource,
-          requestSignal,
-        );
-        this.logger.info(
-          {
-            documentCount: conversation?.documents?.length ?? 0,
-            imageCount: conversation?.images?.length ?? 0,
-            interactionKind,
-            noticeCount: conversation?.notices?.length ?? 0,
-            questionLength: question.length,
-            questionSource: resolved.questionSource,
-            threadContextLength: resolved.context?.length ?? 0,
-          },
-          'Handling Discord interaction.',
-        );
-        return await this.answers.answer(
-          question,
-          requestSignal,
-          async (update) => {
-            await progress.report(update);
-          },
-          conversation,
-        );
-      }, requestSignal);
-      const [first, ...rest] = buildAnswerMessages(resolved.displayQuestion ?? question, answer);
-      await progress.stop();
-      await interaction.editReply(answerPayload(first));
-      for (const content of rest) {
-        await interaction.followUp(answerPayload(content));
-      }
-    } catch (error) {
-      await progress.stop();
-      if (error instanceof WorkQueueFullError) {
-        await interaction.editReply('The bot is busy right now. Please retry shortly.');
-        return;
-      }
-      if (error instanceof ImageAttachmentError) {
-        await interaction.editReply(error.userMessage);
-        return;
-      }
-      if (error instanceof TextAttachmentError) {
-        await interaction.editReply(error.userMessage);
-        return;
-      }
-      this.logger.error({ err: error }, 'Discord interaction failed.');
-      await interaction.editReply('Sorry - something went wrong answering that. Please try again.');
-    }
+    this.logger.info('Cleared legacy global Discord commands.');
   }
 
   async #handleMessage(message: Message): Promise<void> {
@@ -449,7 +239,7 @@ export class DiscordGateway {
       reply,
     });
     if (!resolved.question) {
-      await received.reply(resolved.problem);
+      await received.reply(answerPayload(resolved.problem));
       return;
     }
 
@@ -500,16 +290,13 @@ export class DiscordGateway {
           conversation,
         );
       }, requestSignal);
-      const [first, ...rest] = buildAnswerMessages(resolved.displayQuestion ?? question, answer);
+      const formatted = buildAnswerThread(resolved.displayQuestion ?? question, answer);
       await progress.stop();
-      await response.edit(answerPayload(first));
-      for (const content of rest) {
-        if (received.channel.isSendable()) {
-          await received.channel.send(answerPayload(content));
-        } else {
-          await received.reply(answerPayload(content));
-        }
-      }
+      await response.edit(answerPayload(formatted.answerMessages[0]));
+      await replyInChain(response, [
+        ...formatted.answerMessages.slice(1),
+        ...formatted.detailMessages,
+      ]);
     } catch (error) {
       await progress?.stop();
       const content =
@@ -540,8 +327,7 @@ export class DiscordGateway {
     typed: string,
     options: ResolveQuestionOptions = {},
   ): Promise<ResolvedModalityRequest> {
-    const { directFiles, directImages, directNotices, forwarded, reply, selected, ...boundary } =
-      options;
+    const { directFiles, directImages, directNotices, forwarded, reply, ...boundary } = options;
     const thread =
       channel?.isThread() &&
       this.#client.user &&
@@ -565,7 +351,6 @@ export class DiscordGateway {
       ...(directNotices ? { directNotices } : {}),
       ...(forwarded ? { forwarded } : {}),
       ...(reply ? { reply } : {}),
-      ...(selected ? { selected } : {}),
       thread,
       typed,
     });
@@ -614,6 +399,13 @@ export class DiscordGateway {
       return AbortSignal.any([deadline, this.shutdownSignal]);
     }
     return deadline ?? this.shutdownSignal;
+  }
+}
+
+async function replyInChain(root: Message, contents: readonly string[]): Promise<void> {
+  let parent = root;
+  for (const content of contents) {
+    parent = await parent.reply(answerPayload(content));
   }
 }
 

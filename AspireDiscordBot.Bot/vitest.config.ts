@@ -14,7 +14,7 @@ export default defineConfig({
         'src/agent/bounded-body.ts',
         'src/agent/github-policy.ts',
         'src/agent/tool-budget.ts',
-        'src/discord/ask-resolver.ts',
+        'src/discord/context-reference.ts',
         'src/discord/authorizer.ts',
         'src/discord/context-reader.ts',
         'src/discord/discord-media.ts',

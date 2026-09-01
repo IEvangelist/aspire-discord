@@ -81,23 +81,6 @@ export async function readReplyContext(
   }
 }
 
-export function readSelectedMessageContext(
-  message: ThreadMessageSnapshot,
-  botUserId: string,
-): MessageObservation {
-  return buildMessageObservation(
-    message,
-    message.author.id === botUserId
-      ? 'Selected assistant answer'
-      : message.author.bot
-        ? 'Selected bot message'
-        : 'Selected user message',
-    'current question',
-    maximumForwardCharacters,
-    !message.author.bot,
-  );
-}
-
 export function readForwardedContext(source: DiscordForwardSource): MessageObservation {
   const snapshots = [...(source.messageSnapshots?.values() ?? [])].slice(0, 1);
   if (snapshots.length === 0) {

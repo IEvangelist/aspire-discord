@@ -5,14 +5,17 @@ import { redactSensitiveText } from '../safety.js';
 const maximumMessageLength = 2_000;
 const closingFence = '```';
 
-export function buildAnswerMessages(
-  question: string,
-  answer: GroundedAnswer,
-): readonly [string, ...string[]] {
-  const sections = [
+export interface AnswerThread {
+  readonly answerMessages: readonly [string, ...string[]];
+  readonly detailMessages: readonly [string, ...string[]];
+}
+
+export function buildAnswerThread(question: string, answer: GroundedAnswer): AnswerThread {
+  const answerSections = [
     `### ❓ ${truncate(escapeMarkdown(singleLine(redactSensitiveText(question))), 256)}`,
     answer.answer.trim(),
   ];
+  const detailSections: string[] = [];
 
   if (answer.isGrounded && answer.citations.length > 0) {
     const sources = answer.citations
@@ -22,37 +25,43 @@ export function buildAnswerMessages(
           `[${String(citation.number)}] [${truncate(sanitizeTitle(citation.title), 100)}](${citation.url})`,
       )
       .join('\n');
-    sections.push(`**Sources**\n${sources}`);
+    detailSections.push(`**Grounded sources**\n${sources}`);
   }
 
   if (answer.notices?.length) {
-    sections.push(formatNotices(answer.notices));
+    detailSections.push(formatNotices(answer.notices));
   }
 
-  function formatNotices(notices: readonly string[]): string {
-    const unique = [...new Set(notices)];
-    const displayed = unique
-      .slice(0, 5)
-      .map((notice) => `-# Context note: ${truncate(singleLine(notice), 240)}`);
-    const omitted = unique.length - displayed.length;
-    if (omitted > 0) {
-      displayed.push(
-        `-# Context note: ${String(omitted)} additional context limitation${omitted === 1 ? ' was' : 's were'} also applied.`,
-      );
-    }
-    return displayed.join('\n');
-  }
-
-  sections.push(
+  detailSections.push(
     answer.isGrounded
       ? '-# Grounded in microsoft/aspire & aspire.dev'
       : '-# No matching coverage found in microsoft/aspire or aspire.dev',
   );
 
-  const [first = 'Sorry - I could not format that answer.', ...rest] = splitMarkdown(
-    sections.filter(Boolean).join('\n\n'),
+  const [firstAnswer = 'Sorry - I could not format that answer.', ...answerRest] = splitMarkdown(
+    answerSections.filter(Boolean).join('\n\n'),
   );
-  return [first, ...rest];
+  const [firstDetail = '-# Grounding details were unavailable.', ...detailRest] = splitMarkdown(
+    detailSections.filter(Boolean).join('\n\n'),
+  );
+  return {
+    answerMessages: [firstAnswer, ...answerRest],
+    detailMessages: [firstDetail, ...detailRest],
+  };
+}
+
+function formatNotices(notices: readonly string[]): string {
+  const unique = [...new Set(notices)];
+  const displayed = unique
+    .slice(0, 5)
+    .map((notice) => `-# Context note: ${truncate(singleLine(notice), 240)}`);
+  const omitted = unique.length - displayed.length;
+  if (omitted > 0) {
+    displayed.push(
+      `-# Context note: ${String(omitted)} additional context limitation${omitted === 1 ? ' was' : 's were'} also applied.`,
+    );
+  }
+  return displayed.join('\n');
 }
 
 function sanitizeTitle(value: string): string {
