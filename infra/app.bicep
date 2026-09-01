@@ -373,6 +373,10 @@ resource application 'Microsoft.App/containerApps@2025-07-01' = {
               value: 'Warning'
             }
             {
+              name: 'Logging__LogLevel__Microsoft.AspNetCore'
+              value: 'Warning'
+            }
+            {
               name: 'APPLICATIONINSIGHTS_AUTHENTICATION_STRING'
               value: 'Authorization=AAD;ClientId=${identity.properties.clientId}'
             }

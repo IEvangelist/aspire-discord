@@ -2,10 +2,12 @@ using Azure.Identity;
 using Azure.Monitor.OpenTelemetry.AspNetCore;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
+using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Logging;
 using OpenTelemetry;
+using OpenTelemetry.Instrumentation.AspNetCore;
 using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
@@ -19,6 +21,7 @@ public static class Extensions
 {
     private const string HealthEndpointPath = "/health";
     private const string AlivenessEndpointPath = "/alive";
+    private const string ReadinessEndpointPath = "/ready";
 
     public static TBuilder AddServiceDefaults<TBuilder>(this TBuilder builder) where TBuilder : IHostApplicationBuilder
     {
@@ -50,6 +53,11 @@ public static class Extensions
     {
         var useAzureMonitor =
             !string.IsNullOrWhiteSpace(builder.Configuration["APPLICATIONINSIGHTS_CONNECTION_STRING"]);
+        if (useAzureMonitor)
+        {
+            builder.Services.Configure<AspNetCoreTraceInstrumentationOptions>(instrumentation =>
+                instrumentation.Filter = ShouldTraceRequest);
+        }
         builder.Logging.AddOpenTelemetry(logging =>
         {
             logging.IncludeFormattedMessage = true;
@@ -78,11 +86,8 @@ public static class Extensions
                 if (!useAzureMonitor)
                 {
                     tracing
-                        .AddAspNetCoreInstrumentation(tracing =>
-                            tracing.Filter = context =>
-                                !context.Request.Path.StartsWithSegments(HealthEndpointPath)
-                                && !context.Request.Path.StartsWithSegments(AlivenessEndpointPath)
-                        )
+                        .AddAspNetCoreInstrumentation(instrumentation =>
+                            instrumentation.Filter = ShouldTraceRequest)
                         .AddHttpClientInstrumentation();
                 }
             });
@@ -126,6 +131,11 @@ public static class Extensions
 
         return builder;
     }
+
+    private static bool ShouldTraceRequest(HttpContext context) =>
+        !context.Request.Path.StartsWithSegments(HealthEndpointPath)
+        && !context.Request.Path.StartsWithSegments(AlivenessEndpointPath)
+        && !context.Request.Path.StartsWithSegments(ReadinessEndpointPath);
 
     public static TBuilder AddDefaultHealthChecks<TBuilder>(this TBuilder builder) where TBuilder : IHostApplicationBuilder
     {
