@@ -2,6 +2,7 @@ import type { Logger } from 'pino';
 import type { AppConfig } from '../config.js';
 import { CitationRegistry } from '../citations.js';
 import type {
+  AnswerDocument,
   AnswerImage,
   AnswerProgressHandler,
   AnswerService,
@@ -11,7 +12,7 @@ import type {
 } from '../domain.js';
 import { withAgentSpan } from '../genai-telemetry.js';
 import { buildAgentPrompt, NOT_COVERED_MESSAGE } from '../prompts.js';
-import { evaluateQuestion, isAnswerSafe } from '../safety.js';
+import { evaluateQuestion, isAnswerSafe, sanitizeForAgent, truncateAtGrapheme } from '../safety.js';
 import type { Tool } from '@github/copilot-sdk';
 import type { EmbeddingModel } from './embeddings.js';
 import { createGroundingTools } from './grounding-tools.js';
@@ -94,9 +95,29 @@ export class GroundedAnswerService implements AnswerService {
             );
           }
 
-          const conversationHistory = conversation?.history?.trim().slice(0, 8_000) ?? '';
+          const agentQuestion = sanitizeForAgent(trimmed);
+          const conversationHistory = truncateAtGrapheme(
+            sanitizeForAgent(conversation?.history?.trim() ?? ''),
+            8_000,
+          );
+          const documents = boundDocuments(
+            conversation?.documents ?? [],
+            this.config.textContext.maxFiles,
+            this.config.textContext.maxCharacters,
+          );
+          const documentContext = truncateAtGrapheme(
+            documents
+              .map((document) => `${document.displayName}\n${document.content}`)
+              .join('\n\n'),
+            this.config.textContext.maxCharacters,
+          );
           const images = (conversation?.images ?? []).slice(0, this.config.imageContext.maxImages);
+          span.setAttribute('gen_ai.agent.document_count', documents.length);
           span.setAttribute('gen_ai.agent.image_count', images.length);
+          span.setAttribute('gen_ai.agent.notice_count', conversation?.notices?.length ?? 0);
+          if (conversation?.questionSource) {
+            span.setAttribute('gen_ai.agent.question_source', conversation.questionSource);
+          }
           const citations = new CitationRegistry();
           const budget = new ToolBudget(this.config.agent.maxToolCalls);
           let linked: QuestionContextResult = {
@@ -106,9 +127,18 @@ export class GroundedAnswerService implements AnswerService {
             searchText: '',
             topicEvidenceCount: 0,
           };
-          if (this.questionContext?.shouldResolve(trimmed)) {
+          const observationContext = [conversationHistory, documentContext]
+            .filter(Boolean)
+            .join('\n\n');
+          if (this.questionContext?.shouldResolve(trimmed, observationContext)) {
             await reportProgress(onProgress, 'checking-links', this.logger);
-            linked = await this.questionContext.resolve(trimmed, citations, budget, signal);
+            linked = await this.questionContext.resolve(
+              trimmed,
+              citations,
+              budget,
+              signal,
+              observationContext,
+            );
             span.setAttribute('gen_ai.agent.link_context_count', linked.resolvedCount);
             span.setAttribute('gen_ai.agent.link_topic_evidence_count', linked.topicEvidenceCount);
             if (linked.liveRelease === 'unavailable') {
@@ -120,8 +150,8 @@ export class GroundedAnswerService implements AnswerService {
           }
 
           await reportProgress(onProgress, 'searching-docs', this.logger);
-          const retrievalHistory = conversationHistory.slice(-3_000);
-          const retrievalQuery = [trimmed, linked.searchText, retrievalHistory]
+          const retrievalHistory = observationContext.slice(-6_000);
+          const retrievalQuery = [agentQuestion, linked.searchText, retrievalHistory]
             .filter(Boolean)
             .join('\n')
             .slice(0, 4_000);
@@ -138,7 +168,7 @@ export class GroundedAnswerService implements AnswerService {
           );
           const seed = prioritizeCurrentDocumentation(
             candidates,
-            [trimmed, retrievalHistory].filter(Boolean).join('\n'),
+            [agentQuestion, retrievalHistory].filter(Boolean).join('\n'),
             this.config.retrieval.topK,
           );
           const topScore = seed[0]?.score ?? 0;
@@ -170,6 +200,7 @@ export class GroundedAnswerService implements AnswerService {
             toolNames,
             conversationHistory,
             images.length,
+            documents,
           );
           await reportProgress(onProgress, 'researching', this.logger);
           let answer;
@@ -235,7 +266,8 @@ export class GroundedAnswerService implements AnswerService {
         },
         'Answer pipeline completed.',
       );
-      return result;
+      const notices = [...new Set(conversation?.notices ?? [])];
+      return notices.length > 0 ? { ...result, notices } : result;
     } catch (error) {
       this.logger.warn(
         {
@@ -263,6 +295,31 @@ function exactLatestReleaseAnswer(release: {
   readonly version: string;
 }): string {
   return `The latest stable Aspire release is **${release.version}**. [${String(release.citationNumber)}]`;
+}
+
+function boundDocuments(
+  documents: readonly AnswerDocument[],
+  maximumFiles: number,
+  maximumCharacters: number,
+): readonly AnswerDocument[] {
+  const selected: AnswerDocument[] = [];
+  let remaining = maximumCharacters;
+  for (const document of documents.slice(0, maximumFiles)) {
+    if (remaining <= 0) {
+      break;
+    }
+    const content = truncateAtGrapheme(sanitizeForAgent(document.content), remaining);
+    if (!content) {
+      continue;
+    }
+    selected.push({
+      content,
+      displayName: truncateAtGrapheme(sanitizeForAgent(document.displayName), 100),
+      source: sanitizeForAgent(document.source),
+    });
+    remaining -= content.length;
+  }
+  return selected;
 }
 
 async function reportProgress(

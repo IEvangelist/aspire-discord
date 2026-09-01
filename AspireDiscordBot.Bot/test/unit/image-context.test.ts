@@ -15,6 +15,7 @@ afterEach(() => {
 function candidate(
   bytes: Uint8Array,
   overrides: Partial<DiscordAttachmentSnapshot> = {},
+  explicit = false,
 ): DiscordImageCandidate {
   return {
     attachment: {
@@ -27,7 +28,7 @@ function candidate(
       width: 10,
       ...overrides,
     },
-    explicit: false,
+    explicit,
     source: 'latest thread turn',
   };
 }
@@ -73,7 +74,7 @@ describe('SafeDiscordImageLoader', () => {
     );
     vi.stubGlobal('fetch', fetchMock);
 
-    const [image] = await loader().load([candidate(source)]);
+    const [image] = (await loader().load([candidate(source)])).images;
     const metadata = await sharp(Buffer.from(image?.data ?? '', 'base64')).metadata();
 
     expect(image).toMatchObject({
@@ -94,11 +95,15 @@ describe('SafeDiscordImageLoader', () => {
 
     await expect(
       loader().load([
-        candidate(source, {
-          url: 'https://127.0.0.1/attachments/123/456/screenshot.png',
-        }),
+        candidate(
+          source,
+          {
+            url: 'https://127.0.0.1/attachments/123/456/screenshot.png',
+          },
+          true,
+        ),
       ]),
-    ).rejects.toThrow(/Discord or its image proxy/u);
+    ).rejects.toThrow(/Discord or its approved image proxy/u);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -123,15 +128,17 @@ describe('SafeDiscordImageLoader', () => {
       ),
     );
 
-    const [image] = await loader().load([
-      candidate(source, {
-        contentType: null,
-        inline: true,
-        name: 'inline-image',
-        size: 0,
-        url: 'https://images-ext-1.discordapp.net/external/abcdefghijABCDEFGHIJ1234/https/example.com/screenshot.webp',
-      }),
-    ]);
+    const [image] = (
+      await loader().load([
+        candidate(source, {
+          contentType: null,
+          inline: true,
+          name: 'inline-image',
+          size: 0,
+          url: 'https://images-ext-1.discordapp.net/external/abcdefghijABCDEFGHIJ1234/https/example.com/screenshot.webp',
+        }),
+      ])
+    ).images;
 
     expect(image?.mimeType).toBe('image/jpeg');
     expect((await sharp(Buffer.from(image?.data ?? '', 'base64')).metadata()).format).toBe('jpeg');
@@ -150,7 +157,7 @@ describe('SafeDiscordImageLoader', () => {
       ),
     );
 
-    await expect(loader().load([candidate(source)])).rejects.toThrow(/redirected/u);
+    await expect(loader().load([candidate(source, {}, true)])).rejects.toThrow(/redirected/u);
   });
 
   it('enforces the streamed body limit when content-length is absent', async () => {
@@ -166,9 +173,9 @@ describe('SafeDiscordImageLoader', () => {
       ),
     );
 
-    await expect(loader({ maxBytes: 64 * 1_024 }).load([candidate(source)])).rejects.toThrow(
-      /too large/u,
-    );
+    await expect(
+      loader({ maxBytes: 64 * 1_024 }).load([candidate(source, {}, true)]),
+    ).rejects.toThrow(/too large/u);
   });
 
   it('processes no more than the configured image count', async () => {
@@ -187,7 +194,7 @@ describe('SafeDiscordImageLoader', () => {
       }),
     );
 
-    const images = await loader().load(candidates);
+    const images = (await loader().load(candidates)).images;
 
     expect(images).toHaveLength(1);
     expect(fetchMock).toHaveBeenCalledOnce();
@@ -198,17 +205,25 @@ describe('SafeDiscordImageLoader', () => {
 
     await expect(
       loader({ maxBytes: 64 * 1_024 }).load([
-        candidate(source, {
-          size: 65 * 1_024,
-        }),
+        candidate(
+          source,
+          {
+            size: 65 * 1_024,
+          },
+          true,
+        ),
       ]),
     ).rejects.toThrow(/too large/u);
     await expect(
       loader().load([
-        candidate(source, {
-          contentType: 'image/svg+xml',
-          name: 'vector.svg',
-        }),
+        candidate(
+          source,
+          {
+            contentType: 'image/svg+xml',
+            name: 'vector.svg',
+          },
+          true,
+        ),
       ]),
     ).rejects.toThrow(/static PNG, JPEG, WebP, or GIF/u);
 
@@ -221,7 +236,7 @@ describe('SafeDiscordImageLoader', () => {
           }),
       ),
     );
-    await expect(loader().load([candidate(source)])).rejects.toThrow(/did not match/u);
+    await expect(loader().load([candidate(source, {}, true)])).rejects.toThrow(/did not match/u);
   });
 
   it('rejects decoded dimensions above the configured pixel bound', async () => {
@@ -229,11 +244,61 @@ describe('SafeDiscordImageLoader', () => {
 
     await expect(
       loader().load([
-        candidate(source, {
-          height: 2_000,
-          width: 2_000,
-        }),
+        candidate(
+          source,
+          {
+            height: 2_000,
+            width: 2_000,
+          },
+          true,
+        ),
       ]),
     ).rejects.toThrow(/too many pixels/u);
+  });
+
+  it('skips invalid automatic images and falls back to the next candidate', async () => {
+    const source = await png();
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(source, {
+          headers: { 'content-type': 'image/png' },
+        }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await loader().load([
+      candidate(source, {
+        contentType: 'image/svg+xml',
+        id: 'invalid',
+        name: 'vector.svg',
+      }),
+      candidate(source, {
+        id: '457',
+        url: 'https://cdn.discordapp.com/attachments/123/457/screenshot.png',
+      }),
+    ]);
+
+    expect(result.images).toHaveLength(1);
+    expect(result.notices).toContain('An optional image could not be read safely and was omitted.');
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it('normalizes the same captured image deterministically', async () => {
+    const source = await png();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(source, {
+            headers: { 'content-type': 'image/png' },
+          }),
+      ),
+    );
+
+    const first = (await loader().load([candidate(source)])).images[0]?.data;
+    const second = (await loader().load([candidate(source)])).images[0]?.data;
+
+    expect(first).toBeTruthy();
+    expect(second).toBe(first);
   });
 });

@@ -40,6 +40,15 @@ const answerLeakPatterns = [
 
 const fencePattern = /===+\s*(?:BEGIN|END)\s+(?:CONTEXT|QUESTION)[^=]*===+/giu;
 const roleMarkerPattern = /^\s*(?:system|assistant|developer)\s*:/gimu;
+const privateKeyBeginPattern = /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/giu;
+const privateKeyEndPattern = /-----END [A-Z0-9 ]*PRIVATE KEY-----/giu;
+const bearerTokenPattern = /\bBearer\s+[A-Za-z0-9._~+/=-]{16,}/giu;
+const knownTokenPattern =
+  /\b(?:AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{35}|github_pat_[A-Za-z0-9_]{20,}|gh[pousr]_[A-Za-z0-9]{20,}|npm_[A-Za-z0-9]{20,}|sk-[A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}|eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}|[MN][A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{20,})\b/gu;
+const sensitiveAssignmentPattern =
+  /(^|[\s,{])(?<key>["']?(?:account[-_ ]?key|api[-_ ]?key|access[-_ ]?token|authorization|aws[-_ ]?access[-_ ]?key[-_ ]?id|aws[-_ ]?secret[-_ ]?access[-_ ]?key|client[-_ ]?secret|connection[-_ ]?string|password|passwd|pwd|secret|shared[-_ ]?access[-_ ]?(?:key|signature)|token)["']?\s*[:=]\s*)(?<value>["']?[^,\s}\r\n][^,}\r\n]*)/gimu;
+const sensitiveQueryParameterPattern =
+  /(?<prefix>[?&](?:access_token|api[-_]?key|client_secret|code|key|password|sig|signature|token)=)[^&#\s]+/giu;
 
 export function evaluateQuestion(question: string, maxLength: number): SafetyVerdict {
   if (!question.trim()) {
@@ -84,7 +93,61 @@ export function isAnswerSafe(answer: string): boolean {
 }
 
 export function sanitizeForAgent(value: string): string {
-  return value.replace(fencePattern, ' ').replace(roleMarkerPattern, ' ');
+  return redactSensitiveText(value)
+    .replace(/<@!?\d+>/gu, '@user')
+    .replace(/<@&\d+>/gu, '@role')
+    .replace(/<#\d+>/gu, '#channel')
+    .replace(/<a?:[A-Za-z0-9_]+:\d+>/gu, '[emoji]')
+    .replace(/\[(\d{1,4})\]/gu, '(untrusted reference $1)')
+    .replace(fencePattern, ' ')
+    .replace(roleMarkerPattern, ' ');
+}
+
+export function redactSensitiveText(value: string): string {
+  return redactPrivateKeys(value)
+    .replace(bearerTokenPattern, 'Bearer [REDACTED]')
+    .replace(knownTokenPattern, '[REDACTED TOKEN]')
+    .replace(
+      sensitiveAssignmentPattern,
+      (_match, prefix: string, key: string) => `${prefix}${key}[REDACTED]`,
+    )
+    .replace(sensitiveQueryParameterPattern, (_match, prefix: string) => `${prefix}[REDACTED]`);
+}
+
+function redactPrivateKeys(value: string): string {
+  let cursor = 0;
+  let result = '';
+  while (cursor < value.length) {
+    privateKeyBeginPattern.lastIndex = cursor;
+    const begin = privateKeyBeginPattern.exec(value);
+    if (!begin) {
+      return result + value.slice(cursor);
+    }
+
+    result += `${value.slice(cursor, begin.index)}[REDACTED PRIVATE KEY]`;
+    privateKeyEndPattern.lastIndex = begin.index + begin[0].length;
+    const end = privateKeyEndPattern.exec(value);
+    if (!end) {
+      return result;
+    }
+    cursor = end.index + end[0].length;
+  }
+  return result;
+}
+
+export function truncateAtGrapheme(value: string, maximumLength: number): string {
+  if (value.length <= maximumLength) {
+    return value;
+  }
+  let end = 0;
+  for (const segment of new Intl.Segmenter('en', { granularity: 'grapheme' }).segment(value)) {
+    const nextEnd = segment.index + segment.segment.length;
+    if (nextEnd > maximumLength) {
+      break;
+    }
+    end = nextEnd;
+  }
+  return value.slice(0, end);
 }
 
 function normalizeForSafety(value: string): string {

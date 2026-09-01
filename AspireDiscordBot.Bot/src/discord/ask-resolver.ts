@@ -1,5 +1,5 @@
 const threadReferencePattern =
-  /\b(?:op|ops|op's|original\s+poster|this\s+(?:post|thread|question)|(?:question|post|thread)\s+above|above|answer\s+(?:the|this|their|his|her|it)\b|help\s+(?:me\s+)?(?:answer|out)|their\s+question)\b/iu;
+  /\b(?:op|ops|op's|original\s+poster|this\s+(?:post|thread|question)|(?:question|post|thread|message|reply)\s+above|(?:replied-to|selected|forwarded)\s+message|above|answer\s+(?:the|this|their|his|her|it)\b|help\s+(?:me\s+)?(?:answer|out)|their\s+question)\b/iu;
 const threadReferencePhrasePattern =
   /\b(?:op(?:'s|s)?|original\s+poster|this\s+(?:post|thread|question)|(?:question|post|thread|message|reply)\s+above)\b/giu;
 const threadRequestFillerPattern =
@@ -22,12 +22,17 @@ export function isThreadOnlyReference(value: string | undefined): boolean {
 
 export function resolveQuestion(
   typedQuestion: string | undefined,
-  latestThreadQuestion: string | undefined,
+  ...fallbackQuestions: readonly (string | undefined)[]
 ): string | undefined {
   const typed = typedQuestion?.trim() ?? '';
   if (typed && !isThreadOnlyReference(typed)) {
     return typed;
   }
-  const latest = latestThreadQuestion?.trim();
-  return latest ? latest : undefined;
+  for (const fallback of fallbackQuestions) {
+    const question = fallback?.trim();
+    if (question) {
+      return question;
+    }
+  }
+  return undefined;
 }

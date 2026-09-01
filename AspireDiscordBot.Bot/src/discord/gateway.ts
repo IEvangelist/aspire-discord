@@ -1,23 +1,29 @@
 import {
+  ApplicationCommandType,
   Client,
+  ContextMenuCommandBuilder,
   Events,
   GatewayIntentBits,
   MessageFlags,
+  PermissionFlagsBits,
   SlashCommandBuilder,
   type ChatInputCommandInteraction,
   type ClientOptions,
   type Message,
+  type MessageContextMenuCommandInteraction,
   type TextBasedChannel,
 } from 'discord.js';
+import { setTimeout as delay } from 'node:timers/promises';
 import type { Logger } from 'pino';
 import type { AppConfig } from '../config.js';
 import type { AnswerService, ConversationContext } from '../domain.js';
 import { WorkLimiter, WorkQueueFullError } from '../work-limiter.js';
-import { resolveQuestion, referencesThread } from './ask-resolver.js';
 import { isUserAllowed } from './authorizer.js';
 import {
+  extractMessageFiles,
   extractMessageImages,
   readThreadContext,
+  unsupportedAttachmentNotices,
   type ThreadContextReadOptions,
   type ThreadContextResult,
 } from './context-reader.js';
@@ -27,17 +33,40 @@ import {
   SafeDiscordImageLoader,
   type DiscordImageCandidate,
 } from './image-context.js';
+import { resolveModalities, type ResolvedModalityRequest } from './modality-resolver.js';
 import { DiscordProgressController, progressMessage } from './progress.js';
+import { RequestDeduplicator } from './request-deduplicator.js';
+import {
+  readForwardedContext,
+  readReplyContext,
+  readSelectedMessageContext,
+  type MessageObservation,
+} from './reply-context.js';
+import {
+  SafeDiscordTextLoader,
+  TextAttachmentError,
+  type DiscordTextCandidate,
+} from './text-context.js';
+import { UserRateLimiter } from './user-rate-limiter.js';
 
 const askCommandName = 'ask';
+const askMessageCommandName = 'Ask Aspirey';
 const interactionDeadlineMilliseconds = 14 * 60_000;
+const inlineEmbedRefreshMilliseconds = 750;
 
 interface ResolveQuestionOptions extends Pick<
   ThreadContextReadOptions,
   'beforeMessageId' | 'beforeTimestamp'
 > {
+  readonly directFiles?: readonly DiscordTextCandidate[];
   readonly directImages?: readonly DiscordImageCandidate[];
+  readonly directNotices?: readonly string[];
+  readonly forwarded?: MessageObservation;
+  readonly reply?: MessageObservation;
+  readonly selected?: MessageObservation;
 }
+
+type AnswerInteraction = ChatInputCommandInteraction | MessageContextMenuCommandInteraction;
 
 export interface DiscordStatus {
   readonly botUser?: string;
@@ -51,10 +80,42 @@ export interface DiscordStatus {
   };
 }
 
+export function buildDiscordCommands(maxQuestionLength: number) {
+  const ask = new SlashCommandBuilder()
+    .setName(askCommandName)
+    .setDescription('Ask an Aspire question grounded in official sources.')
+    .addStringOption((option) =>
+      option
+        .setName('question')
+        .setDescription("Optional in a thread; I'll use its conversation and latest question.")
+        .setMaxLength(maxQuestionLength)
+        .setRequired(false),
+    )
+    .addAttachmentOption((option) =>
+      option
+        .setName('image')
+        .setDescription('Optional static image to inspect with the question.')
+        .setRequired(false),
+    )
+    .addAttachmentOption((option) =>
+      option
+        .setName('file')
+        .setDescription('Optional UTF-8 code, configuration, Markdown, JSON, or log file.')
+        .setRequired(false),
+    );
+  const askMessage = new ContextMenuCommandBuilder()
+    .setName(askMessageCommandName)
+    .setType(ApplicationCommandType.Message);
+  return [ask.toJSON(), askMessage.toJSON()];
+}
+
 export class DiscordGateway {
   readonly #client: Client;
   readonly #imageLoader: SafeDiscordImageLoader;
   readonly #limiter: WorkLimiter;
+  readonly #requests = new RequestDeduplicator();
+  readonly #textLoader: SafeDiscordTextLoader;
+  readonly #users: UserRateLimiter;
   #commandsRegistered = false;
   #started = false;
 
@@ -68,6 +129,8 @@ export class DiscordGateway {
     this.#client = client ?? new Client(createClientOptions(config.discord.mentionEnabled));
     this.#imageLoader = new SafeDiscordImageLoader(config.imageContext, logger);
     this.#limiter = new WorkLimiter(config.discord.maxConcurrency, config.discord.maxQueue);
+    this.#textLoader = new SafeDiscordTextLoader(config.textContext, logger);
+    this.#users = new UserRateLimiter(config.discord.maxRequestsPerMinute);
   }
 
   public get ready(): boolean {
@@ -112,7 +175,7 @@ export class DiscordGateway {
       );
     });
     this.#client.on(Events.InteractionCreate, (interaction) => {
-      if (interaction.isChatInputCommand()) {
+      if (interaction.isChatInputCommand() || interaction.isMessageContextMenuCommand()) {
         void this.#handleInteraction(interaction).catch((error: unknown) => {
           this.logger.error({ err: error }, 'Unhandled Discord interaction failure.');
         });
@@ -164,41 +227,81 @@ export class DiscordGateway {
   }
 
   async #registerCommands(readyClient: Client<true>): Promise<void> {
-    const command = new SlashCommandBuilder()
-      .setName(askCommandName)
-      .setDescription('Ask an Aspire question grounded in official sources.')
-      .addStringOption((option) =>
-        option
-          .setName('question')
-          .setDescription("Optional in a thread; I'll use its conversation and latest question.")
-          .setMaxLength(this.config.safety.maxQuestionLength)
-          .setRequired(false),
-      )
-      .addAttachmentOption((option) =>
-        option
-          .setName('image')
-          .setDescription('Optional PNG or JPEG screenshot to inspect with the question.')
-          .setRequired(false),
-      )
-      .toJSON();
+    const commands = buildDiscordCommands(this.config.safety.maxQuestionLength);
 
     if (this.config.discord.guildId) {
       const guild = await readyClient.guilds.fetch(this.config.discord.guildId);
-      await guild.commands.set([command]);
+      await guild.commands.set(commands);
       this.logger.info({ guildId: guild.id }, 'Registered guild Discord commands.');
       return;
     }
-    await readyClient.application.commands.set([command]);
+    await readyClient.application.commands.set(commands);
     this.logger.info('Registered global Discord commands.');
   }
 
-  async #handleInteraction(interaction: ChatInputCommandInteraction): Promise<void> {
-    if (interaction.commandName !== askCommandName) {
-      return;
+  async #handleInteraction(interaction: AnswerInteraction): Promise<void> {
+    let typed = '';
+    let input: ResolveQuestionOptions = {
+      beforeTimestamp: interaction.createdTimestamp,
+    };
+    let interactionKind: 'message-context' | 'slash';
+    let selectedTarget: Message | undefined;
+    if (interaction.isChatInputCommand()) {
+      if (interaction.commandName !== askCommandName) {
+        return;
+      }
+      interactionKind = 'slash';
+      typed = interaction.options.getString('question') ?? '';
+      const explicitImage = interaction.options.getAttachment('image');
+      const explicitFile = interaction.options.getAttachment('file');
+      input = {
+        ...input,
+        ...(explicitFile
+          ? {
+              directFiles: [
+                {
+                  attachment: explicitFile,
+                  explicit: true,
+                  source: 'current question',
+                },
+              ],
+            }
+          : {}),
+        ...(explicitImage
+          ? {
+              directImages: [
+                {
+                  attachment: explicitImage,
+                  explicit: true,
+                  source: 'current question',
+                },
+              ],
+            }
+          : {}),
+      };
+    } else {
+      if (interaction.commandName !== askMessageCommandName) {
+        return;
+      }
+      interactionKind = 'message-context';
+      selectedTarget = interaction.targetMessage;
     }
+
     if (!isUserAllowed(interaction.user.id, this.config.discord.allowedUserIds)) {
       await interaction.reply({
         content: 'Sorry - this bot is currently restricted to specific users.',
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+    if (!this.#requests.claim(`interaction:${interaction.id}`)) {
+      this.logger.debug('Ignored a duplicate Discord interaction delivery.');
+      return;
+    }
+    const rateLimit = this.#users.acquire(interaction.user.id);
+    if (!rateLimit.allowed) {
+      await interaction.reply({
+        content: rateLimitMessage(rateLimit.retryAfterSeconds),
         flags: MessageFlags.Ephemeral,
       });
       return;
@@ -217,22 +320,20 @@ export class DiscordGateway {
       const requestSignal = this.#requestSignal(
         AbortSignal.timeout(interactionDeadlineMilliseconds),
       );
-      const typed = interaction.options.getString('question') ?? '';
-      const explicitImage = interaction.options.getAttachment('image');
-      const resolved = await this.#resolveQuestion(interaction.channel, typed, {
-        beforeTimestamp: interaction.createdTimestamp,
-        ...(explicitImage
-          ? {
-              directImages: [
-                {
-                  attachment: explicitImage,
-                  explicit: true,
-                  source: 'current question',
-                },
-              ],
-            }
-          : {}),
-      });
+      if (selectedTarget) {
+        const reply = await readReplyContext(
+          selectedTarget,
+          this.#client.user?.id ?? '',
+          this.logger,
+        );
+        input = {
+          ...input,
+          forwarded: readForwardedContext(selectedTarget),
+          reply,
+          selected: readSelectedMessageContext(selectedTarget, this.#client.user?.id ?? ''),
+        };
+      }
+      const resolved = await this.#resolveQuestion(interaction.channel, typed, input);
       if (!resolved.question) {
         await progress.stop();
         await interaction.editReply(resolved.problem);
@@ -244,15 +345,23 @@ export class DiscordGateway {
         const conversation = await this.#loadConversation(
           resolved.context,
           resolved.imageCandidates ?? [],
+          resolved.fileCandidates ?? [],
+          resolved.notices ?? [],
+          resolved.requiresProcessedAttachment ?? false,
+          resolved.questionSource,
           requestSignal,
         );
         this.logger.info(
           {
+            documentCount: conversation?.documents?.length ?? 0,
             imageCount: conversation?.images?.length ?? 0,
+            interactionKind,
+            noticeCount: conversation?.notices?.length ?? 0,
             questionLength: question.length,
+            questionSource: resolved.questionSource,
             threadContextLength: resolved.context?.length ?? 0,
           },
-          'Handling Discord slash command.',
+          'Handling Discord interaction.',
         );
         return await this.answers.answer(
           question,
@@ -263,7 +372,7 @@ export class DiscordGateway {
           conversation,
         );
       }, requestSignal);
-      const [first, ...rest] = buildAnswerMessages(question, answer);
+      const [first, ...rest] = buildAnswerMessages(resolved.displayQuestion ?? question, answer);
       await progress.stop();
       await interaction.editReply(answerPayload(first));
       for (const content of rest) {
@@ -279,68 +388,105 @@ export class DiscordGateway {
         await interaction.editReply(error.userMessage);
         return;
       }
-      this.logger.error({ err: error }, 'Discord slash command failed.');
+      if (error instanceof TextAttachmentError) {
+        await interaction.editReply(error.userMessage);
+        return;
+      }
+      this.logger.error({ err: error }, 'Discord interaction failed.');
       await interaction.editReply('Sorry - something went wrong answering that. Please try again.');
     }
   }
 
   async #handleMessage(message: Message): Promise<void> {
+    const requestSignal = this.#requestSignal();
     if (message.author.bot || !this.#client.user || !message.mentions.has(this.#client.user)) {
       return;
     }
     if (!isUserAllowed(message.author.id, this.config.discord.allowedUserIds)) {
       return;
     }
+    if (!this.#requests.claim(`message:${message.id}`)) {
+      this.logger.debug('Ignored a duplicate Discord message delivery.');
+      return;
+    }
+    const rateLimit = this.#users.acquire(message.author.id);
+    if (!rateLimit.allowed) {
+      await message.reply(answerPayload(rateLimitMessage(rateLimit.retryAfterSeconds)));
+      return;
+    }
 
-    const typed = message.content
+    const received = await hydrateMessage(message, requestSignal, this.logger);
+    const typed = received.content
       .replace(new RegExp(`<@!?${this.#client.user.id}>`, 'gu'), '')
       .trim();
-    const requestSignal = this.#requestSignal();
-    const directImages = extractMessageImages(message).map(
+    const directImages = extractMessageImages(received).map(
       (attachment) =>
         ({
           attachment,
-          explicit: false,
+          explicit: true,
           source: 'current question',
         }) satisfies DiscordImageCandidate,
     );
-    const resolved = await this.#resolveQuestion(message.channel, typed, {
-      beforeMessageId: message.id,
-      beforeTimestamp: message.createdTimestamp,
+    const directFiles = extractMessageFiles(received).map(
+      (attachment) =>
+        ({
+          attachment,
+          explicit: true,
+          source: 'current question',
+        }) satisfies DiscordTextCandidate,
+    );
+    const [reply, forwarded] = await Promise.all([
+      readReplyContext(received, this.#client.user.id, this.logger),
+      Promise.resolve(readForwardedContext(received)),
+    ]);
+    const resolved = await this.#resolveQuestion(received.channel, typed, {
+      beforeMessageId: received.id,
+      beforeTimestamp: received.createdTimestamp,
+      ...(directFiles.length > 0 ? { directFiles } : {}),
       ...(directImages.length > 0 ? { directImages } : {}),
+      directNotices: unsupportedAttachmentNotices(received),
+      forwarded,
+      reply,
     });
     if (!resolved.question) {
-      await message.reply(resolved.problem);
+      await received.reply(resolved.problem);
       return;
     }
 
     let progress: DiscordProgressController | undefined;
     let progressReply: Message | undefined;
     try {
-      if ('sendTyping' in message.channel) {
-        await message.channel.sendTyping();
+      if ('sendTyping' in received.channel) {
+        await received.channel.sendTyping();
       }
       const question = resolved.question;
-      const reply = await message.reply(answerPayload(progressMessage('reading', message.id)));
-      progressReply = reply;
-      const sendTyping = typingAction(message.channel);
+      const response = await received.reply(answerPayload(progressMessage('reading', received.id)));
+      progressReply = response;
+      const sendTyping = typingAction(received.channel);
       progress = new DiscordProgressController({
         logger: this.logger,
-        seed: message.id,
+        seed: received.id,
         ...(sendTyping ? { sendTyping } : {}),
-        update: async (content) => await reply.edit(answerPayload(content)),
+        update: async (content) => await response.edit(answerPayload(content)),
       });
       await progress.start(true);
       const answer = await this.#limiter.run(async () => {
         const conversation = await this.#loadConversation(
           resolved.context,
           resolved.imageCandidates ?? [],
+          resolved.fileCandidates ?? [],
+          resolved.notices ?? [],
+          resolved.requiresProcessedAttachment ?? false,
+          resolved.questionSource,
           requestSignal,
         );
         this.logger.info(
           {
             imageCount: conversation?.images?.length ?? 0,
+            documentCount: conversation?.documents?.length ?? 0,
+            noticeCount: conversation?.notices?.length ?? 0,
             questionLength: question.length,
+            questionSource: resolved.questionSource,
             threadContextLength: resolved.context?.length ?? 0,
           },
           'Handling Discord mention.',
@@ -354,14 +500,14 @@ export class DiscordGateway {
           conversation,
         );
       }, requestSignal);
-      const [first, ...rest] = buildAnswerMessages(question, answer);
+      const [first, ...rest] = buildAnswerMessages(resolved.displayQuestion ?? question, answer);
       await progress.stop();
-      await reply.edit(answerPayload(first));
+      await response.edit(answerPayload(first));
       for (const content of rest) {
-        if (message.channel.isSendable()) {
-          await message.channel.send(answerPayload(content));
+        if (received.channel.isSendable()) {
+          await received.channel.send(answerPayload(content));
         } else {
-          await message.reply(answerPayload(content));
+          await received.reply(answerPayload(content));
         }
       }
     } catch (error) {
@@ -371,14 +517,20 @@ export class DiscordGateway {
           ? 'The bot is busy right now. Please retry shortly.'
           : error instanceof ImageAttachmentError
             ? error.userMessage
-            : 'Sorry - something went wrong answering that. Please try again.';
-      if (!(error instanceof WorkQueueFullError) && !(error instanceof ImageAttachmentError)) {
+            : error instanceof TextAttachmentError
+              ? error.userMessage
+              : 'Sorry - something went wrong answering that. Please try again.';
+      if (
+        !(error instanceof WorkQueueFullError) &&
+        !(error instanceof ImageAttachmentError) &&
+        !(error instanceof TextAttachmentError)
+      ) {
         this.logger.error({ err: error }, 'Discord mention failed.');
       }
       if (progressReply) {
         await progressReply.edit(answerPayload(content));
       } else {
-        await message.reply(answerPayload(content));
+        await received.reply(answerPayload(content));
       }
     }
   }
@@ -387,57 +539,72 @@ export class DiscordGateway {
     channel: TextBasedChannel | null,
     typed: string,
     options: ResolveQuestionOptions = {},
-  ): Promise<{
-    context?: string;
-    imageCandidates?: readonly DiscordImageCandidate[];
-    problem: string;
-    question?: string;
-  }> {
-    const { directImages = [], ...boundary } = options;
-    const thread = channel
-      ? await readThreadContext(
-          channel,
-          {
-            ...boundary,
-            ...(this.#client.user ? { botUserId: this.#client.user.id } : {}),
-            maxQuestionLength: this.config.safety.maxQuestionLength,
-          },
-          this.logger,
-        )
-      : ({ status: 'not-a-thread' } satisfies ThreadContextResult);
-    const question =
-      resolveQuestion(typed, thread.question) ??
-      (directImages.length > 0
-        ? 'What does the attached image show about this issue in the Aspire application?'
-        : undefined);
-    if (question && (!referencesThread(typed) || thread.context || directImages.length > 0)) {
-      const imageCandidates = [...directImages, ...(thread.images ?? [])];
-      return {
-        ...(thread.context ? { context: thread.context } : {}),
-        ...(imageCandidates.length > 0 ? { imageCandidates } : {}),
-        problem: '',
-        question,
-      };
-    }
-
-    if (typed.trim() && !referencesThread(typed)) {
-      return {
-        problem: "Please include an Aspire question and I'll answer from official sources.",
-      };
-    }
-    return { problem: threadContextProblem(thread.status) };
+  ): Promise<ResolvedModalityRequest> {
+    const { directFiles, directImages, directNotices, forwarded, reply, selected, ...boundary } =
+      options;
+    const thread =
+      channel?.isThread() &&
+      this.#client.user &&
+      channel.permissionsFor(this.#client.user)?.has(PermissionFlagsBits.ReadMessageHistory) ===
+        false
+        ? ({ status: 'forbidden' } satisfies ThreadContextResult)
+        : channel
+          ? await readThreadContext(
+              channel,
+              {
+                ...boundary,
+                ...(this.#client.user ? { botUserId: this.#client.user.id } : {}),
+                maxQuestionLength: this.config.safety.maxQuestionLength,
+              },
+              this.logger,
+            )
+          : ({ status: 'not-a-thread' } satisfies ThreadContextResult);
+    return resolveModalities({
+      ...(directFiles ? { directFiles } : {}),
+      ...(directImages ? { directImages } : {}),
+      ...(directNotices ? { directNotices } : {}),
+      ...(forwarded ? { forwarded } : {}),
+      ...(reply ? { reply } : {}),
+      ...(selected ? { selected } : {}),
+      thread,
+      typed,
+    });
   }
 
   async #loadConversation(
     history: string | undefined,
     imageCandidates: readonly DiscordImageCandidate[],
+    fileCandidates: readonly DiscordTextCandidate[],
+    notices: readonly string[],
+    requiresProcessedAttachment: boolean,
+    questionSource: string,
     signal?: AbortSignal,
   ): Promise<ConversationContext | undefined> {
-    const images = await this.#imageLoader.load(imageCandidates, signal);
-    return history || images.length > 0
+    const [imageContext, textContext] = await Promise.all([
+      this.#imageLoader.load(imageCandidates, signal),
+      this.#textLoader.load(fileCandidates, signal),
+    ]);
+    if (
+      requiresProcessedAttachment &&
+      imageContext.images.length === 0 &&
+      textContext.documents.length === 0
+    ) {
+      throw new ImageAttachmentError(
+        'I could not safely read the context attachment. Please attach a supported image or UTF-8 text file.',
+      );
+    }
+    const allNotices = [...notices, ...imageContext.notices, ...textContext.notices];
+    return history ||
+      imageContext.images.length > 0 ||
+      textContext.documents.length > 0 ||
+      allNotices.length > 0 ||
+      questionSource !== 'none'
       ? {
+          ...(textContext.documents.length > 0 ? { documents: textContext.documents } : {}),
           ...(history ? { history } : {}),
-          ...(images.length > 0 ? { images } : {}),
+          ...(imageContext.images.length > 0 ? { images: imageContext.images } : {}),
+          ...(allNotices.length > 0 ? { notices: [...new Set(allNotices)] } : {}),
+          questionSource,
         }
       : undefined;
   }
@@ -448,6 +615,33 @@ export class DiscordGateway {
     }
     return deadline ?? this.shutdownSignal;
   }
+}
+
+async function hydrateMessage(
+  message: Message,
+  signal: AbortSignal | undefined,
+  logger: Logger,
+): Promise<Message> {
+  if (
+    message.embeds.length === 0 &&
+    extractMessageImages(message).length === 0 &&
+    /https?:\/\//iu.test(message.content)
+  ) {
+    try {
+      await delay(inlineEmbedRefreshMilliseconds, undefined, {
+        ...(signal ? { signal } : {}),
+      });
+      return await message.fetch(true);
+    } catch (error) {
+      if (!signal?.aborted) {
+        logger.info(
+          { errorType: error instanceof Error ? error.name : 'Error' },
+          'Could not refresh asynchronous Discord embeds; using the original message.',
+        );
+      }
+    }
+  }
+  return message;
 }
 
 function typingAction(channel: TextBasedChannel | null): (() => Promise<unknown>) | undefined {
@@ -470,24 +664,6 @@ function createClientOptions(mentionEnabled: boolean): ClientOptions {
   };
 }
 
-function threadContextProblem(status: ThreadContextResult['status']): string {
-  switch (status) {
-    case 'forbidden':
-      return (
-        "I couldn't read the thread history because I'm missing **Read Message History**. " +
-        'Grant that permission or paste the question here.'
-      );
-    case 'empty':
-      return "The thread doesn't contain a readable user question. Paste the question here.";
-    case 'not-a-thread':
-      return 'Run `/ask` inside a forum post/thread or include a question directly.';
-    case 'error':
-      return "I couldn't read the thread history. Paste the question here.";
-    case 'found':
-      return 'Please include a question.';
-  }
-}
-
 function answerPayload(content: string): {
   readonly allowedMentions: { readonly parse: readonly []; readonly repliedUser: false };
   readonly content: string;
@@ -496,6 +672,10 @@ function answerPayload(content: string): {
     allowedMentions: { parse: [], repliedUser: false },
     content,
   };
+}
+
+function rateLimitMessage(retryAfterSeconds: number): string {
+  return `You're asking questions too quickly. Please retry in about ${String(retryAfterSeconds)} seconds.`;
 }
 
 async function withTimeout<T>(

@@ -92,6 +92,93 @@ describe('GroundedAnswerService', () => {
     );
   });
 
+  it('uses redacted text documents for retrieval and surfaces context notices', async () => {
+    const embed = vi.fn(async () => [1, 0, 0]);
+    const complete = vi.fn<AgentRuntime['complete']>(async () => 'Use AddRedis. [1]');
+    const service = new GroundedAnswerService(
+      createTestConfig(),
+      { embed },
+      {
+        searchApi: vi.fn(async () => []),
+        searchDocs: vi.fn(async () => [seed]),
+      },
+      { complete },
+      { createTools: () => [] },
+      testLogger,
+    );
+
+    const answer = await service.answer('Why did this fail?', undefined, undefined, {
+      documents: [
+        {
+          content: 'password=super-secret-value\nRedis connection failed.',
+          displayName: 'trace.log',
+          source: 'current question',
+        },
+      ],
+      notices: ['An unsupported attachment was omitted from the answer context.'],
+    });
+
+    expect(embed).toHaveBeenCalledWith(
+      expect.stringContaining('Redis connection failed'),
+      undefined,
+    );
+    expect(embed).toHaveBeenCalledWith(
+      expect.not.stringContaining('super-secret-value'),
+      undefined,
+    );
+    expect(complete).toHaveBeenCalledWith(
+      expect.stringContaining('ATTACHED TEXT'),
+      expect.any(Array),
+      undefined,
+      undefined,
+    );
+    expect(answer.notices).toEqual([
+      'An unsupported attachment was omitted from the answer context.',
+    ]);
+  });
+
+  it('enforces an aggregate observation budget before model invocation', async () => {
+    const complete = vi.fn<AgentRuntime['complete']>(async () => 'Use AddRedis. [1]');
+    const service = new GroundedAnswerService(
+      createTestConfig(),
+      embedding,
+      {
+        searchApi: vi.fn(async () => []),
+        searchDocs: vi.fn(async () => [seed]),
+      },
+      { complete },
+      { createTools: () => [] },
+      testLogger,
+    );
+
+    await service.answer('Why?', undefined, undefined, {
+      documents: [
+        {
+          content: 'a'.repeat(10_000),
+          displayName: 'one.log',
+          source: 'current question',
+        },
+        {
+          content: `${'b'.repeat(10_000)}DOCUMENT_END_SENTINEL`,
+          displayName: 'two.log',
+          source: 'thread starter',
+        },
+        {
+          content: 'third document must not appear',
+          displayName: 'three.log',
+          source: 'thread starter',
+        },
+      ],
+      history: `${'h'.repeat(20_000)}HISTORY_END_SENTINEL`,
+    });
+
+    const prompt = complete.mock.calls[0]?.[0] ?? '';
+    expect(prompt.length).toBeLessThan(25_000);
+    expect(prompt).not.toContain('DOCUMENT_END_SENTINEL');
+    expect(prompt).not.toContain('HISTORY_END_SENTINEL');
+    expect(prompt).not.toContain('third document must not appear');
+  });
+
   it('passes normalized images to the agent and requires grounded citations', async () => {
     const complete = vi.fn<AgentRuntime['complete']>(async () => 'Use AddRedis. [1]');
     const service = new GroundedAnswerService(

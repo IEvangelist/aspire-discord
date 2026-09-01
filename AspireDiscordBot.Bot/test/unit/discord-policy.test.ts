@@ -17,6 +17,7 @@ describe('Discord question policy', () => {
     expect(resolveQuestion('answer the OP above', 'Why does deployment still fail?')).toBe(
       'Why does deployment still fail?',
     );
+    expect(isThreadOnlyReference('answer the message above')).toBe(true);
   });
 
   it('preserves a substantive follow-up that references thread history', () => {

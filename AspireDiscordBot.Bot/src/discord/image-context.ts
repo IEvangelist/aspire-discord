@@ -3,19 +3,21 @@ import type { Logger } from 'pino';
 import type { AppConfig } from '../config.js';
 import type { AnswerImage } from '../domain.js';
 import { BodySizeLimitError, readBoundedBody } from '../agent/bounded-body.js';
+import { validateDiscordImageUrl } from './discord-media.js';
 
-const attachmentHosts = new Set(['cdn.discordapp.com', 'media.discordapp.net']);
 const allowedMimeTypes = new Set(['image/gif', 'image/jpeg', 'image/png', 'image/webp']);
-const attachmentPathPattern = /^\/attachments\/\d+\/\d+\/[^/]+$/u;
-const externalProxyHostPattern = /^images-ext-\d+\.discordapp\.net$/u;
-const externalProxyPathPattern = /^\/external\/[A-Za-z0-9_-]{20,}\/https?\/[^/]+\/.+$/u;
 const maximumOutputDimension = 2_048;
 const requestTimeoutMilliseconds = 10_000;
 
 sharp.cache(false);
 sharp.concurrency(1);
 
-export type DiscordImageSource = 'current question' | 'latest thread turn' | 'thread starter';
+export type DiscordImageSource =
+  | 'current question'
+  | 'forwarded message'
+  | 'latest thread turn'
+  | 'replied-to message'
+  | 'thread starter';
 
 export interface DiscordAttachmentSnapshot {
   readonly contentType: string | null;
@@ -32,6 +34,11 @@ export interface DiscordImageCandidate {
   readonly attachment: DiscordAttachmentSnapshot;
   readonly explicit: boolean;
   readonly source: DiscordImageSource;
+}
+
+export interface ImageContextResult {
+  readonly images: readonly AnswerImage[];
+  readonly notices: readonly string[];
 }
 
 export class ImageAttachmentError extends Error {
@@ -53,43 +60,71 @@ export class SafeDiscordImageLoader {
   public async load(
     candidates: readonly DiscordImageCandidate[],
     signal?: AbortSignal,
-  ): Promise<readonly AnswerImage[]> {
+  ): Promise<ImageContextResult> {
     const usable = deduplicateCandidates(candidates).filter(
       (candidate) => candidate.explicit || isPotentialImageAttachment(candidate.attachment),
     );
     if (usable.length === 0) {
-      return [];
+      return { images: [], notices: [] };
     }
     if (!this.config.enabled) {
-      throw new ImageAttachmentError(
-        'Image analysis is not enabled for the configured chat model.',
-      );
-    }
-
-    const selected = usable.slice(0, this.config.maxImages);
-    const images: AnswerImage[] = [];
-    for (const [index, candidate] of selected.entries()) {
-      signal?.throwIfAborted();
-      try {
-        images.push(await this.#loadOne(candidate, index, signal));
-      } catch (error) {
-        if (error instanceof ImageAttachmentError || signal?.aborted) {
-          throw error;
-        }
-        this.logger.warn(
-          {
-            attachmentId: candidate.attachment.id,
-            errorType: error instanceof Error ? error.name : 'Error',
-          },
-          'Rejected a Discord image attachment.',
-        );
+      if (usable.some((candidate) => candidate.explicit)) {
         throw new ImageAttachmentError(
-          'I could not safely read the image. Please use a valid static PNG, JPEG, WebP, or GIF and retry.',
-          { cause: error },
+          'Image analysis is not enabled for the configured chat model.',
         );
       }
+      return {
+        images: [],
+        notices: ['Optional images were not available for this answer.'],
+      };
     }
-    return images;
+
+    const images: AnswerImage[] = [];
+    const notices: string[] = [];
+    for (const candidate of usable) {
+      if (images.length >= this.config.maxImages) {
+        notices.push('Additional images were omitted by the model image limit.');
+        break;
+      }
+      signal?.throwIfAborted();
+      try {
+        images.push(await this.#loadOne(candidate, images.length, signal));
+      } catch (error) {
+        if (candidate.explicit || signal?.aborted) {
+          if (error instanceof ImageAttachmentError) {
+            throw error;
+          }
+          throw new ImageAttachmentError(
+            'I could not safely read the image. Please use a valid static PNG, JPEG, WebP, or GIF and retry.',
+            { cause: error },
+          );
+        }
+        if (!(error instanceof ImageAttachmentError)) {
+          this.logger.warn(
+            {
+              attachmentId: candidate.attachment.id,
+              errorType: error instanceof Error ? error.name : 'Error',
+              source: candidate.source,
+            },
+            'Failed to validate optional Discord image context.',
+          );
+        } else {
+          this.logger.info(
+            {
+              attachmentId: candidate.attachment.id,
+              errorType: error.name,
+              source: candidate.source,
+            },
+            'Skipped optional Discord image context.',
+          );
+        }
+        notices.push('An optional image could not be read safely and was omitted.');
+      }
+    }
+    return {
+      images,
+      notices: [...new Set(notices)],
+    };
   }
 
   async #loadOne(
@@ -99,7 +134,15 @@ export class SafeDiscordImageLoader {
   ): Promise<AnswerImage> {
     const attachment = candidate.attachment;
     validateAttachmentMetadata(attachment, this.config);
-    const url = validateAttachmentUrl(attachment.url);
+    let url: URL;
+    try {
+      url = validateDiscordImageUrl(attachment.url);
+    } catch (error) {
+      throw new ImageAttachmentError(
+        'The image was not hosted by Discord or its approved image proxy.',
+        { cause: error },
+      );
+    }
     const timeout = AbortSignal.timeout(requestTimeoutMilliseconds);
     const response = await fetch(url, {
       cache: 'no-store',
@@ -221,30 +264,6 @@ function validateAttachmentMetadata(
   ) {
     throw imagePixelError();
   }
-}
-
-function validateAttachmentUrl(value: string): URL {
-  let url: URL;
-  try {
-    url = new URL(value);
-  } catch {
-    throw new ImageAttachmentError('The Discord image URL was invalid.');
-  }
-  const hostname = url.hostname.toLocaleLowerCase('en-US');
-  const allowedPath =
-    (attachmentHosts.has(hostname) && attachmentPathPattern.test(url.pathname)) ||
-    (externalProxyHostPattern.test(hostname) && externalProxyPathPattern.test(url.pathname));
-  if (
-    url.protocol !== 'https:' ||
-    url.username ||
-    url.password ||
-    (url.port && url.port !== '443') ||
-    url.href.length > 2_048 ||
-    !allowedPath
-  ) {
-    throw new ImageAttachmentError('The image was not hosted by Discord or its image proxy.');
-  }
-  return url;
 }
 
 function normalizeMimeType(value: string | null): string | undefined {

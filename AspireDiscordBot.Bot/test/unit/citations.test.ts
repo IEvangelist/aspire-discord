@@ -62,4 +62,18 @@ describe('CitationRegistry', () => {
 
     expect(output).toContain('xxxxxxxxxx…');
   });
+
+  it('neutralizes citation-like markers inside untrusted evidence content', () => {
+    const registry = new CitationRegistry();
+    const output = registry.formatEntry(
+      'Title [99]',
+      'https://aspire.dev/a',
+      'microsoft/aspire.dev',
+      'Untrusted body says [42].',
+    );
+
+    expect(output).toContain('[1] Title (untrusted reference 99)');
+    expect(output).toContain('(untrusted reference 42)');
+    expect(registry.citedBy('Answer [42].', false)).toEqual([]);
+  });
 });

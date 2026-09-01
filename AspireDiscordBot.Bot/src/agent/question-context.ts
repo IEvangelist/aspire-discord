@@ -27,8 +27,9 @@ export interface QuestionContextProvider {
     citations: CitationRegistry,
     budget: ToolBudget,
     signal?: AbortSignal,
+    observationContext?: string,
   ): Promise<QuestionContextResult>;
-  shouldResolve(question: string): boolean;
+  shouldResolve(question: string, observationContext?: string): boolean;
 }
 
 export interface LinkedGitHubContextProvider {
@@ -57,8 +58,11 @@ export class QuestionContextResolver implements QuestionContextProvider {
     this.#web = web ?? new SafeWebFetcher(config, logger);
   }
 
-  public shouldResolve(question: string): boolean {
-    return isLatestAspireReleaseQuestion(question) || extractQuestionUrls(question).length > 0;
+  public shouldResolve(question: string, observationContext = ''): boolean {
+    return (
+      isContextualLatestReleaseQuestion(question, observationContext) ||
+      extractQuestionUrls(`${question}\n${observationContext}`).length > 0
+    );
   }
 
   public async resolve(
@@ -66,13 +70,14 @@ export class QuestionContextResolver implements QuestionContextProvider {
     citations: CitationRegistry,
     budget: ToolBudget,
     signal?: AbortSignal,
+    observationContext = '',
   ): Promise<QuestionContextResult> {
     const contexts: string[] = [];
     const searchParts: string[] = [];
     let resolvedCount = 0;
     let topicEvidenceCount = 0;
     let latestRelease: QuestionContextResult['latestRelease'];
-    const latestRequested = isLatestAspireReleaseQuestion(question);
+    const latestRequested = isContextualLatestReleaseQuestion(question, observationContext);
     let liveRelease: QuestionContextResult['liveRelease'] = latestRequested
       ? 'unavailable'
       : 'not-requested';
@@ -96,7 +101,13 @@ export class QuestionContextResolver implements QuestionContextProvider {
       }
     }
 
-    const urls = extractQuestionUrls(question).slice(0, this.config.maxUrls);
+    const directUrls = extractQuestionUrls(question).slice(0, this.config.maxUrls);
+    const directSet = new Set(directUrls);
+    const remaining = Math.max(0, this.config.maxUrls - directUrls.length);
+    const observationUrls = extractQuestionUrls(observationContext)
+      .filter((url) => !directSet.has(url))
+      .slice(0, Math.min(1, remaining));
+    const urls = [...directUrls, ...observationUrls];
     for (const value of urls) {
       signal?.throwIfAborted();
       const parsed = new URL(value);
@@ -195,6 +206,22 @@ export class QuestionContextResolver implements QuestionContextProvider {
       return undefined;
     }
   }
+}
+
+export function isContextualLatestReleaseQuestion(
+  question: string,
+  observationContext: string,
+): boolean {
+  if (isLatestAspireReleaseQuestion(question)) {
+    return true;
+  }
+  const normalized = question.toLocaleLowerCase('en-US');
+  return (
+    /\b(?:current|latest|newest|most recent|still)\b/u.test(normalized) &&
+    /\b(?:it|that|this|version|release)\b/u.test(normalized) &&
+    /\baspire\b/iu.test(observationContext) &&
+    /\b(?:current|latest|release|version|v?\d{1,2}(?:\.\d+){0,2})\b/iu.test(observationContext)
+  );
 }
 
 export function extractQuestionUrls(question: string): readonly string[] {

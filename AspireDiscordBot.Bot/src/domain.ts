@@ -9,6 +9,7 @@ export interface GroundedAnswer {
   readonly answer: string;
   readonly citations: readonly Citation[];
   readonly isGrounded: boolean;
+  readonly notices?: readonly string[];
   readonly topScore: number;
 }
 
@@ -27,9 +28,18 @@ export interface AnswerImage {
   readonly mimeType: 'image/jpeg' | 'image/png';
 }
 
+export interface AnswerDocument {
+  readonly content: string;
+  readonly displayName: string;
+  readonly source: string;
+}
+
 export interface ConversationContext {
+  readonly documents?: readonly AnswerDocument[];
   readonly history?: string;
   readonly images?: readonly AnswerImage[];
+  readonly notices?: readonly string[];
+  readonly questionSource?: string;
 }
 
 export interface VectorSearchResult {

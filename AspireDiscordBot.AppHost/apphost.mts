@@ -199,6 +199,10 @@ await bot.withEnvironment(
   await config("Parameters:DiscordAllowedUserIds"),
 );
 await bot.withEnvironment(
+  "DISCORD_MAX_REQUESTS_PER_MINUTE",
+  await config("Parameters:DiscordMaxRequestsPerMinute", "10"),
+);
+await bot.withEnvironment(
   "SAFETY_MAX_QUESTION_LENGTH",
   await config("Parameters:SafetyMaxQuestionLength", "2000"),
 );
@@ -214,6 +218,22 @@ await bot.withEnvironment(
 await bot.withEnvironment(
   "IMAGE_CONTEXT_MAX_PIXELS",
   await config("Parameters:ImageContextMaxPixels", "16000000"),
+);
+await bot.withEnvironment(
+  "TEXT_CONTEXT_ENABLED",
+  await config("Parameters:TextContextEnabled", "true"),
+);
+await bot.withEnvironment(
+  "TEXT_CONTEXT_MAX_FILES",
+  await config("Parameters:TextContextMaxFiles", "2"),
+);
+await bot.withEnvironment(
+  "TEXT_CONTEXT_MAX_BYTES",
+  await config("Parameters:TextContextMaxBytes", "262144"),
+);
+await bot.withEnvironment(
+  "TEXT_CONTEXT_MAX_CHARACTERS",
+  await config("Parameters:TextContextMaxCharacters", "12000"),
 );
 await bot.withEnvironment(
   "LINK_CONTEXT_ALLOWED_HOSTS",

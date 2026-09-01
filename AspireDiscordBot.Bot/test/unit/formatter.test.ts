@@ -36,6 +36,59 @@ describe('buildAnswerMessages', () => {
     expect(message).toContain('No matching coverage found');
   });
 
+  it('escapes user-controlled Markdown in the echoed question', () => {
+    const [message] = buildAnswerMessages('**bold** [link](https://example.com)', {
+      answer: 'Answer.',
+      citations: [],
+      isGrounded: false,
+      topScore: 0,
+    });
+
+    expect(message).toContain('\\*\\*bold\\*\\*');
+    expect(message).not.toContain('### ❓ **bold**');
+  });
+
+  it('redacts credentials from the echoed question', () => {
+    const [message] = buildAnswerMessages('password=super-secret-value', {
+      answer: 'Answer.',
+      citations: [],
+      isGrounded: false,
+      topScore: 0,
+    });
+
+    expect(message).not.toContain('super-secret-value');
+    expect(message).toContain('[REDACTED]');
+  });
+
+  it('surfaces bounded context degradation notices', () => {
+    const [message] = buildAnswerMessages('Why?', {
+      answer: 'Use AddRedis. [1]',
+      citations: [],
+      isGrounded: true,
+      notices: [
+        'An optional image could not be read safely and was omitted.',
+        'Thread history could not be read and was omitted from this answer.',
+      ],
+      topScore: 0.9,
+    });
+
+    expect(message).toContain('Context note: An optional image');
+    expect(message).toContain('Context note: Thread history');
+  });
+
+  it('summarizes notice overflow instead of silently dropping it', () => {
+    const [message] = buildAnswerMessages('Why?', {
+      answer: 'Answer.',
+      citations: [],
+      isGrounded: false,
+      notices: Array.from({ length: 7 }, (_, index) => `Limitation ${String(index + 1)}`),
+      topScore: 0,
+    });
+
+    expect(message).toContain('Limitation 5');
+    expect(message).toContain('2 additional context limitations were also applied');
+  });
+
   it('splits long answers within Discord limits and balances code fences', () => {
     const code = Array.from(
       { length: 180 },

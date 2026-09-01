@@ -117,15 +117,35 @@ In a regular text channel, mention the bot with the question:
 @Aspirey Bot How do I add Redis to an Aspire app?
 ```
 
-Use `/ask <question>` for a direct slash-command question. Inside a forum post/thread, `/ask`
-includes a bounded snapshot of the starter, recent participant replies, and prior bot answers.
-Invoking `/ask` without text answers the latest readable user turn, so follow-up questions retain
-the conversation that led to them. Thread history is context only; factual claims are still
-re-grounded in official sources. A static PNG, JPEG, WebP, or GIF can be supplied through the
-optional `/ask image` input; in threads, attachments and true inline image embeds from the latest
-human turn and starter are also considered. Article/link-preview thumbnails are ignored. Images are
-fetched only from Discord's CDN or image proxy, decoded and normalized in memory, and never treated
-as source evidence.
+Use `/ask <question>` for a direct slash-command question, or right-click any message and choose
+**Apps → Ask Aspirey**. A mention that replies to another message automatically uses the replied-to
+message; immutable forwarded-message snapshots are also understood.
+
+Inside a forum post/thread, `/ask` includes the forum title and tags plus a bounded, chronological
+snapshot of the starter, recent participant replies, and prior bot answers. Invoking `/ask` without
+text answers the latest readable user turn. A static PNG, JPEG, WebP, or GIF can be supplied through
+`/ask image`; `/ask file` accepts bounded UTF-8 code, configuration, Markdown, JSON, and logs.
+Attachments and true inline image embeds from the selected/replied-to message, latest thread turn,
+and starter are considered using deterministic precedence. Article/link-preview thumbnails are
+ignored.
+
+All user content, history, files, and images are untrusted observations, never authoritative
+evidence. Common credential and private-key patterns are redacted before model or embedding calls,
+images are normalized in memory, and factual guidance is still grounded in official Aspire sources.
+Invalid explicit attachments fail closed; invalid optional thread context is skipped with a visible
+context note.
+
+| Input combination | Deterministic behavior |
+| --- | --- |
+| Typed question plus any context | Typed question wins; context informs retrieval |
+| Current image/file without text | Current attachment becomes the active question |
+| Message-context command | Selected message wins |
+| Forwarded snapshot | Forwarded message wins over reply/thread fallbacks |
+| Reply mention | Replied-to message wins over thread history |
+| Bare `/ask` in a thread | Latest human turn wins; forum title is the final fallback |
+| Unsafe current turn | Request is blocked; older questions are never substituted |
+| Unreadable optional context | Remaining context is used and a visible note explains the omission |
+
 Answers use standard Discord messages rather than fixed-width embeds, and long answers continue
 across messages. While an answer is running, the bot edits one status message through link checking,
 documentation search, research, and writing phases while refreshing Discord's typing indicator.
@@ -317,18 +337,23 @@ the Aspire secret store. Credentials are never inherited across different provid
 
 ## Discord options
 
-| Parameter                            | Default                         | Description                                                               |
-| ------------------------------------ | ------------------------------- | ------------------------------------------------------------------------- |
-| `Parameters:DiscordGuildId`          | unset                           | Guild-scoped command registration for immediate development updates       |
-| `Parameters:DiscordMentionEnabled`   | `true`                          | Enables `@mention` questions and Message Content intent                   |
-| `Parameters:DiscordAllowedUserIds`   | empty                           | Comma-separated Discord user IDs; empty allows everyone                   |
-| `Parameters:SafetyMaxQuestionLength` | `2000`                          | Maximum direct or thread-turn question characters                         |
-| `Parameters:ImageContextEnabled`     | enabled for `gpt-5.6-sol`       | Enables validated in-memory image context for a vision-capable chat model |
-| `Parameters:ImageContextMaxImages`   | `1`                             | Maximum images sent; latest user image is preferred over the starter      |
-| `Parameters:ImageContextMaxBytes`    | `3145728`                       | Maximum encoded bytes accepted per source or normalized image             |
-| `Parameters:ImageContextMaxPixels`   | `16000000`                      | Maximum decoded pixels accepted per image                                 |
-| `Parameters:LinkContextAllowedHosts` | official Aspire/Microsoft hosts | Exact HTTPS hosts available to bounded linked-context fetching            |
-| `Parameters:LinkContextMaxUrls`      | `3`                             | Maximum user-provided links resolved per question                         |
+| Parameter                                | Default                         | Description                                                                 |
+| ---------------------------------------- | ------------------------------- | --------------------------------------------------------------------------- |
+| `Parameters:DiscordGuildId`              | unset                           | Guild-scoped command registration for immediate development updates         |
+| `Parameters:DiscordMentionEnabled`       | `true`                          | Enables `@mention` questions and Message Content intent                     |
+| `Parameters:DiscordAllowedUserIds`       | empty                           | Comma-separated Discord user IDs; empty allows everyone                     |
+| `Parameters:DiscordMaxRequestsPerMinute` | `10`                            | Per-user request limit across slash, context-menu, and mention entry points |
+| `Parameters:SafetyMaxQuestionLength`     | `2000`                          | Maximum direct or thread-turn question characters                           |
+| `Parameters:ImageContextEnabled`         | enabled for `gpt-5.6-sol`       | Enables validated in-memory image context for a vision-capable chat model   |
+| `Parameters:ImageContextMaxImages`       | `1`                             | Maximum images sent; latest user image is preferred over the starter        |
+| `Parameters:ImageContextMaxBytes`        | `3145728`                       | Maximum encoded bytes accepted per source or normalized image               |
+| `Parameters:ImageContextMaxPixels`       | `16000000`                      | Maximum decoded pixels accepted per image                                   |
+| `Parameters:TextContextEnabled`          | `true`                          | Enables bounded UTF-8 code, config, Markdown, JSON, and log attachments     |
+| `Parameters:TextContextMaxFiles`         | `2`                             | Maximum text attachments considered per request                             |
+| `Parameters:TextContextMaxBytes`         | `262144`                        | Maximum downloaded bytes per text attachment                                |
+| `Parameters:TextContextMaxCharacters`    | `12000`                         | Aggregate text attachment characters included in model context              |
+| `Parameters:LinkContextAllowedHosts`     | official Aspire/Microsoft hosts | Exact HTTPS hosts available to bounded linked-context fetching              |
+| `Parameters:LinkContextMaxUrls`          | `3`                             | Maximum user-provided links resolved per question                           |
 
 The gateway replaces the command set idempotently on startup instead of creating duplicates.
 Concurrent answers and queued requests are bounded; excess work gets a retry response.
@@ -399,7 +424,8 @@ GenAI visualizer.
 Prompt, response, tool-argument, and tool-result content is captured only when `NODE_ENV` is
 `development`, so the local dashboard can populate its input and output panels. Production keeps
 content capture disabled and does not write Discord question text to application logs. It records
-only content-free outcome, duration, citation count, and similarity metadata for operational tuning.
+only content-free outcome, duration, citation count, similarity, question-source, and modality-count
+metadata for operational tuning.
 
 ## Package feeds
 

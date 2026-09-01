@@ -15,6 +15,7 @@ describe('loadConfig', () => {
     expect(config.ai.embeddingModel).toBe('text-embedding-3-small');
     expect(config.ai.embeddingDimensions).toBe(1_536);
     expect(config.discord.mentionEnabled).toBe(true);
+    expect(config.discord.maxRequestsPerMinute).toBe(10);
     expect(config.imageContext).toEqual({
       enabled: false,
       maxBytes: 3 * 1_024 * 1_024,
@@ -22,6 +23,12 @@ describe('loadConfig', () => {
       maxPixels: 16_000_000,
     });
     expect(config.safety.maxQuestionLength).toBe(2_000);
+    expect(config.textContext).toEqual({
+      enabled: true,
+      maxBytes: 256 * 1_024,
+      maxCharacters: 12_000,
+      maxFiles: 2,
+    });
     expect(config.linkContext.allowedHosts.has('aspire.dev')).toBe(true);
     expect(config.linkContext.maxUrls).toBe(3);
     expect(config.qdrant.url).toBe('http://localhost:6333');
@@ -41,6 +48,23 @@ describe('loadConfig', () => {
       maxBytes: 1_048_576,
       maxImages: 1,
       maxPixels: 2_000_000,
+    });
+  });
+
+  it('configures bounded text attachment context', () => {
+    const config = loadConfig({
+      ...validEnvironment,
+      TEXT_CONTEXT_ENABLED: 'false',
+      TEXT_CONTEXT_MAX_BYTES: '32768',
+      TEXT_CONTEXT_MAX_CHARACTERS: '4000',
+      TEXT_CONTEXT_MAX_FILES: '1',
+    });
+
+    expect(config.textContext).toEqual({
+      enabled: false,
+      maxBytes: 32_768,
+      maxCharacters: 4_000,
+      maxFiles: 1,
     });
   });
 

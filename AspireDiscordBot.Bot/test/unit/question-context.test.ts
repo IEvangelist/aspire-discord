@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CitationRegistry } from '../../src/citations.js';
 import {
   extractQuestionUrls,
+  isContextualLatestReleaseQuestion,
   QuestionContextResolver,
   type LinkedGitHubContextProvider,
 } from '../../src/agent/question-context.js';
@@ -105,6 +106,61 @@ describe('QuestionContextResolver', () => {
     expect(fetchMock).not.toHaveBeenCalled();
     expect(result.resolvedCount).toBe(0);
     expect(result.topicEvidenceCount).toBe(0);
+  });
+
+  it('resolves approved links found in relevant conversation observations', async () => {
+    const readLinkedContext = vi.fn(async () => ({
+      context: '[1] Linked issue context',
+      searchText: 'Issue discusses deployment',
+    }));
+    const resolver = new QuestionContextResolver(
+      createTestConfig().linkContext,
+      github({ readLinkedContext }),
+      testLogger,
+    );
+
+    await resolver.resolve(
+      'Does that explain the behavior?',
+      new CitationRegistry(),
+      new ToolBudget(10),
+      undefined,
+      '[Original poster]\nSee https://github.com/microsoft/aspire/issues/123',
+    );
+
+    expect(readLinkedContext).toHaveBeenCalledOnce();
+  });
+
+  it('prioritizes direct links and budgets at most one observation-derived link', async () => {
+    const readLinkedContext = vi.fn(async (value: string) => ({
+      context: `[1] ${value}`,
+      searchText: value,
+    }));
+    const resolver = new QuestionContextResolver(
+      { ...createTestConfig().linkContext, maxUrls: 3 },
+      github({ readLinkedContext }),
+      testLogger,
+    );
+
+    await resolver.resolve(
+      'Compare https://github.com/microsoft/aspire/issues/1 and https://github.com/microsoft/aspire/issues/2',
+      new CitationRegistry(),
+      new ToolBudget(10),
+      undefined,
+      'Older context https://github.com/microsoft/aspire/issues/3 https://github.com/microsoft/aspire/issues/4',
+    );
+
+    expect(readLinkedContext.mock.calls.map(([value]) => value)).toEqual([
+      'https://github.com/microsoft/aspire/issues/1',
+      'https://github.com/microsoft/aspire/issues/2',
+      'https://github.com/microsoft/aspire/issues/3',
+    ]);
+  });
+
+  it('recognizes contextual latest-release follow-ups without broad false positives', () => {
+    const observations = '[Original poster]\nWhat Aspire version is current?';
+
+    expect(isContextualLatestReleaseQuestion('Is that still the latest?', observations)).toBe(true);
+    expect(isContextualLatestReleaseQuestion('Why does that fail?', observations)).toBe(false);
   });
 
   it('extracts unique HTTPS URLs and trims sentence punctuation', () => {

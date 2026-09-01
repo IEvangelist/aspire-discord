@@ -175,6 +175,10 @@ resource application 'Microsoft.App/containerApps@2025-07-01' = {
                 value: 'true'
               }
               {
+                name: 'DISCORD_MAX_REQUESTS_PER_MINUTE'
+                value: '10'
+              }
+              {
                 name: 'SAFETY_MAX_QUESTION_LENGTH'
                 value: '2000'
               }
@@ -193,6 +197,22 @@ resource application 'Microsoft.App/containerApps@2025-07-01' = {
               {
                 name: 'IMAGE_CONTEXT_MAX_PIXELS'
                 value: '16000000'
+              }
+              {
+                name: 'TEXT_CONTEXT_ENABLED'
+                value: 'true'
+              }
+              {
+                name: 'TEXT_CONTEXT_MAX_FILES'
+                value: '2'
+              }
+              {
+                name: 'TEXT_CONTEXT_MAX_BYTES'
+                value: '262144'
+              }
+              {
+                name: 'TEXT_CONTEXT_MAX_CHARACTERS'
+                value: '12000'
               }
               {
                 name: 'LINK_CONTEXT_ALLOWED_HOSTS'

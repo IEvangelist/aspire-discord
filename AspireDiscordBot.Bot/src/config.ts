@@ -24,6 +24,7 @@ const rawEnvironmentSchema = z.object({
   DISCORD_GUILD_ID: z.string().regex(/^\d+$/).optional().or(z.literal('')),
   DISCORD_MAX_CONCURRENCY: z.coerce.number().int().min(1).max(32).default(4),
   DISCORD_MAX_QUEUE: z.coerce.number().int().min(0).max(1_000).default(24),
+  DISCORD_MAX_REQUESTS_PER_MINUTE: z.coerce.number().int().min(1).max(120).default(10),
   DISCORD_MENTION_ENABLED: z.string().default('true'),
   DISCORD_TOKEN: z.string().min(1).optional(),
   GITHUB_MCP_ENDPOINT: z.url().default('https://api.githubcopilot.com/mcp/'),
@@ -62,6 +63,15 @@ const rawEnvironmentSchema = z.object({
   RETRIEVAL_TOP_K: z.coerce.number().int().min(1).max(20).default(6),
   SAFETY_MAX_QUESTION_LENGTH: z.coerce.number().int().min(100).max(4_000).default(2_000),
   SAFETY_MIN_TOPIC_SCORE: z.coerce.number().min(0).max(1).default(0.35),
+  TEXT_CONTEXT_ENABLED: z.string().default('true'),
+  TEXT_CONTEXT_MAX_BYTES: z.coerce
+    .number()
+    .int()
+    .min(1_024)
+    .max(1_024 * 1_024)
+    .default(256 * 1_024),
+  TEXT_CONTEXT_MAX_CHARACTERS: z.coerce.number().int().min(1_000).max(40_000).default(12_000),
+  TEXT_CONTEXT_MAX_FILES: z.coerce.number().int().min(1).max(5).default(2),
   VECTOR_STORE_API_INDEX: z.string().min(1).default('aspire-api'),
   VECTOR_STORE_DOCS_INDEX: z.string().min(1).default('aspire-docs'),
   VECTOR_STORE_ENDPOINT: z.url().optional(),
@@ -98,6 +108,7 @@ export interface AppConfig {
     readonly guildId?: string;
     readonly maxConcurrency: number;
     readonly maxQueue: number;
+    readonly maxRequestsPerMinute: number;
     readonly mentionEnabled: boolean;
     readonly token?: string;
   };
@@ -137,6 +148,12 @@ export interface AppConfig {
   readonly safety: {
     readonly maxQuestionLength: number;
     readonly minTopicScore: number;
+  };
+  readonly textContext: {
+    readonly enabled: boolean;
+    readonly maxBytes: number;
+    readonly maxCharacters: number;
+    readonly maxFiles: number;
   };
   readonly vectorStore: {
     readonly apiIndex: string;
@@ -193,6 +210,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): AppCon
   const discordGuildId = env.DISCORD_GUILD_ID ? env.DISCORD_GUILD_ID : undefined;
   const mentionEnabled = parseBoolean(env.DISCORD_MENTION_ENABLED, 'DISCORD_MENTION_ENABLED');
   const imageContextEnabled = parseBoolean(env.IMAGE_CONTEXT_ENABLED, 'IMAGE_CONTEXT_ENABLED');
+  const textContextEnabled = parseBoolean(env.TEXT_CONTEXT_ENABLED, 'TEXT_CONTEXT_ENABLED');
   const embeddingModel =
     env.AI_EMBEDDING_MODEL ??
     (env.AI_EMBEDDING_PROVIDER === 'ollama' ? 'nomic-embed-text' : 'text-embedding-3-small');
@@ -281,6 +299,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): AppCon
       ...(discordGuildId ? { guildId: discordGuildId } : {}),
       maxConcurrency: env.DISCORD_MAX_CONCURRENCY,
       maxQueue: env.DISCORD_MAX_QUEUE,
+      maxRequestsPerMinute: env.DISCORD_MAX_REQUESTS_PER_MINUTE,
       mentionEnabled,
       ...(env.DISCORD_TOKEN ? { token: env.DISCORD_TOKEN } : {}),
     },
@@ -320,6 +339,12 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): AppCon
     safety: {
       maxQuestionLength: env.SAFETY_MAX_QUESTION_LENGTH,
       minTopicScore: env.SAFETY_MIN_TOPIC_SCORE,
+    },
+    textContext: {
+      enabled: textContextEnabled,
+      maxBytes: env.TEXT_CONTEXT_MAX_BYTES,
+      maxCharacters: env.TEXT_CONTEXT_MAX_CHARACTERS,
+      maxFiles: env.TEXT_CONTEXT_MAX_FILES,
     },
     vectorStore: {
       apiIndex: env.VECTOR_STORE_API_INDEX,

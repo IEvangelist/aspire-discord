@@ -13,6 +13,7 @@ type ConfigOverrides = Omit<
   | 'qdrant'
   | 'retrieval'
   | 'safety'
+  | 'textContext'
   | 'vectorStore'
 > & {
   agent?: Partial<AppConfig['agent']>;
@@ -26,6 +27,7 @@ type ConfigOverrides = Omit<
   qdrant?: Partial<AppConfig['qdrant']>;
   retrieval?: Partial<AppConfig['retrieval']>;
   safety?: Partial<AppConfig['safety']>;
+  textContext?: Partial<AppConfig['textContext']>;
   vectorStore?: Partial<AppConfig['vectorStore']>;
 };
 
@@ -51,6 +53,7 @@ export function createTestConfig(overrides: ConfigOverrides = {}): AppConfig {
       allowedUserIds: new Set(),
       maxConcurrency: 2,
       maxQueue: 4,
+      maxRequestsPerMinute: 10,
       mentionEnabled: false,
     },
     githubMcp: {
@@ -93,6 +96,12 @@ export function createTestConfig(overrides: ConfigOverrides = {}): AppConfig {
       maxQuestionLength: 2_000,
       minTopicScore: 0.35,
     },
+    textContext: {
+      enabled: true,
+      maxBytes: 256 * 1_024,
+      maxCharacters: 12_000,
+      maxFiles: 2,
+    },
     vectorStore: {
       apiIndex: 'aspire-api',
       docsIndex: 'aspire-docs',
@@ -113,6 +122,7 @@ export function createTestConfig(overrides: ConfigOverrides = {}): AppConfig {
     qdrant: { ...base.qdrant, ...overrides.qdrant },
     retrieval: { ...base.retrieval, ...overrides.retrieval },
     safety: { ...base.safety, ...overrides.safety },
+    textContext: { ...base.textContext, ...overrides.textContext },
     vectorStore: { ...base.vectorStore, ...overrides.vectorStore },
   };
 }

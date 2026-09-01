@@ -1,4 +1,6 @@
+import { escapeMarkdown } from 'discord.js';
 import type { GroundedAnswer } from '../domain.js';
+import { redactSensitiveText } from '../safety.js';
 
 const maximumMessageLength = 2_000;
 const closingFence = '```';
@@ -7,7 +9,10 @@ export function buildAnswerMessages(
   question: string,
   answer: GroundedAnswer,
 ): readonly [string, ...string[]] {
-  const sections = [`### ❓ ${truncate(singleLine(question), 256)}`, answer.answer.trim()];
+  const sections = [
+    `### ❓ ${truncate(escapeMarkdown(singleLine(redactSensitiveText(question))), 256)}`,
+    answer.answer.trim(),
+  ];
 
   if (answer.isGrounded && answer.citations.length > 0) {
     const sources = answer.citations
@@ -18,6 +23,24 @@ export function buildAnswerMessages(
       )
       .join('\n');
     sections.push(`**Sources**\n${sources}`);
+  }
+
+  if (answer.notices?.length) {
+    sections.push(formatNotices(answer.notices));
+  }
+
+  function formatNotices(notices: readonly string[]): string {
+    const unique = [...new Set(notices)];
+    const displayed = unique
+      .slice(0, 5)
+      .map((notice) => `-# Context note: ${truncate(singleLine(notice), 240)}`);
+    const omitted = unique.length - displayed.length;
+    if (omitted > 0) {
+      displayed.push(
+        `-# Context note: ${String(omitted)} additional context limitation${omitted === 1 ? ' was' : 's were'} also applied.`,
+      );
+    }
+    return displayed.join('\n');
   }
 
   sections.push(
