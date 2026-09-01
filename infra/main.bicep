@@ -54,6 +54,10 @@ var searchServiceContributorRoleDefinitionId = subscriptionResourceId(
   'Microsoft.Authorization/roleDefinitions',
   '7ca78c08-252a-4471-8644-bb5ff32d4ba0'
 )
+var monitoringMetricsPublisherRoleDefinitionId = subscriptionResourceId(
+  'Microsoft.Authorization/roleDefinitions',
+  '3913510d-42f4-4e42-8a64-420c390055eb'
+)
 
 resource identity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
   name: '${baseName}-id'
@@ -136,6 +140,31 @@ resource logs 'Microsoft.OperationalInsights/workspaces@2023-09-01' = {
     sku: {
       name: 'PerGB2018'
     }
+  }
+}
+
+resource applicationInsights 'Microsoft.Insights/components@2020-02-02' = {
+  name: '${baseName}-insights'
+  location: location
+  kind: 'web'
+  tags: tags
+  properties: {
+    Application_Type: 'web'
+    DisableLocalAuth: true
+    IngestionMode: 'LogAnalytics'
+    WorkspaceResourceId: logs.id
+    publicNetworkAccessForIngestion: 'Enabled'
+    publicNetworkAccessForQuery: 'Enabled'
+  }
+}
+
+resource applicationInsightsPublisher 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(applicationInsights.id, identity.id, monitoringMetricsPublisherRoleDefinitionId)
+  scope: applicationInsights
+  properties: {
+    principalId: identity.properties.principalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: monitoringMetricsPublisherRoleDefinitionId
   }
 }
 
@@ -313,6 +342,7 @@ resource deploymentSearchServiceContributor 'Microsoft.Authorization/roleAssignm
 
 output registryName string = registry.name
 output registryServer string = registry.properties.loginServer
+output applicationInsightsName string = applicationInsights.name
 output containerEnvironmentName string = containerEnvironment.name
 output foundryEndpoint string = foundry.properties.endpoint
 output foundryName string = foundry.name

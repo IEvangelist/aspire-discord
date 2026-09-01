@@ -314,6 +314,63 @@ supported deployment entry point.
 After a successful migration from the older Qdrant deployment, the script removes the unsupported
 NFS-backed Container App and storage account.
 
+### Production observability
+
+The production deployment sends structured container logs to the 30-day Log Analytics workspace and
+exports correlated logs, traces, exceptions, runtime metrics, GenAI telemetry, Discord request
+outcomes, and ingestion-run metrics to workspace-based Application Insights. Telemetry ingestion uses
+the Container App's managed identity. Discord message content and attachment contents are never
+written to telemetry; request records contain IDs, dimensions, durations, counts, and outcomes only.
+
+The `/status` endpoint reports Discord connectivity, queue depth, and whether access is open or
+allowlisted. Every bot mention that reaches the gateway records one of these outcomes:
+`answered`, `not_grounded`, `not_authorized`, `rate_limited`, `duplicate`, `invalid_question`,
+`busy`, `image_rejected`, `text_rejected`, or `failed`.
+
+Useful Log Analytics queries:
+
+```kusto
+// Find rejected or failed Discord mentions and their trace IDs.
+ContainerAppConsoleLogs_CL
+| where ContainerAppName_s startswith "aspire-discord-"
+| extend entry = parse_json(replace_regex(Log_s, @"^[A-Z]\s+", ""))
+| where tostring(entry.outcome) in ("not_authorized", "rate_limited", "busy", "failed")
+| project TimeGenerated,
+          outcome=tostring(entry.outcome),
+          discordUserId=tostring(entry.discordUserId),
+          discordMessageId=tostring(entry.discordMessageId),
+          traceId=tostring(entry.trace_id),
+          message=tostring(entry.msg)
+| order by TimeGenerated desc
+```
+
+```kusto
+// Follow one Discord request across logs, dependencies, exceptions, and traces.
+let traceId = "<trace-id>";
+union AppRequests, AppDependencies, AppTraces, AppExceptions
+| where OperationId == traceId
+| order by TimeGenerated asc
+```
+
+```kusto
+// Request outcomes over the last 24 hours.
+AppMetrics
+| where TimeGenerated > ago(24h)
+| where Name == "aspire.discord.requests"
+| extend outcome = tostring(Properties["aspire.discord.request.outcome"])
+| summarize Requests=sum(Sum) by bin(TimeGenerated, 1h), outcome
+| order by TimeGenerated desc
+
+// Average request latency over the last 24 hours.
+AppMetrics
+| where TimeGenerated > ago(24h)
+| where Name == "aspire.discord.request.duration"
+| extend outcome = tostring(Properties["aspire.discord.request.outcome"])
+| summarize TotalDuration=sum(Sum), Samples=sum(ItemCount) by outcome
+| extend AverageDurationSeconds=TotalDuration / Samples
+| project outcome, AverageDurationSeconds, Samples
+```
+
 The defaults deploy to resource group `aspire-discord-prod` in subscription
 `11aa9ca6-306a-4ea9-b614-2d413efd04a8`. Override `Azure__SubscriptionId`,
 `Azure__ResourceGroup`, `Azure__Location`, or `Parameters__DeploymentResourceSuffix` to target

@@ -35,6 +35,7 @@ var searchEndpoint = 'https://aspire-discord-search-${resourceSuffix}.search.win
 var slotName = endsWith(applicationName, '-green') ? 'green' : 'blue'
 var apiIndexName = 'aspire-api-${slotName}'
 var docsIndexName = 'aspire-docs-${slotName}'
+var telemetryResourceAttributes = 'service.namespace=aspire-discord,service.version=${imageTag},deployment.environment.name=production,cloud.region=${location}'
 var tags = {
   application: 'aspire-discord'
   environment: environmentName
@@ -51,6 +52,10 @@ resource registry 'Microsoft.ContainerRegistry/registries@2023-07-01' existing =
 
 resource containerEnvironment 'Microsoft.App/managedEnvironments@2025-07-01' existing = {
   name: '${baseName}-env'
+}
+
+resource applicationInsights 'Microsoft.Insights/components@2020-02-02' existing = {
+  name: '${baseName}-insights'
 }
 
 resource application 'Microsoft.App/containerApps@2025-07-01' = {
@@ -94,6 +99,10 @@ resource application 'Microsoft.App/containerApps@2025-07-01' = {
           {
             name: 'github-token'
             value: githubToken
+          }
+          {
+            name: 'application-insights-connection-string'
+            value: applicationInsights.properties.ConnectionString
           }
         ],
         empty(discordAllowedUserIds)
@@ -165,6 +174,30 @@ resource application 'Microsoft.App/containerApps@2025-07-01' = {
               {
                 name: 'AZURE_TOKEN_CREDENTIALS'
                 value: 'ManagedIdentityCredential'
+              }
+              {
+                name: 'APPLICATIONINSIGHTS_AUTHENTICATION_STRING'
+                value: 'Authorization=AAD;ClientId=${identity.properties.clientId}'
+              }
+              {
+                name: 'APPLICATIONINSIGHTS_CONNECTION_STRING'
+                secretRef: 'application-insights-connection-string'
+              }
+              {
+                name: 'APPLICATIONINSIGHTS_INSTRUMENTATION_LOGGING_LEVEL'
+                value: 'WARN'
+              }
+              {
+                name: 'APPLICATIONINSIGHTS_STORAGE_DIRECTORY'
+                value: '/tmp/azure-monitor'
+              }
+              {
+                name: 'OTEL_RESOURCE_ATTRIBUTES'
+                value: telemetryResourceAttributes
+              }
+              {
+                name: 'OTEL_SERVICE_NAME'
+                value: 'aspire-discord-bot'
               }
               {
                 name: 'COPILOT_RUNTIME_BASE_PATH'
@@ -334,6 +367,22 @@ resource application 'Microsoft.App/containerApps@2025-07-01' = {
             {
               name: 'AZURE_TOKEN_CREDENTIALS'
               value: 'ManagedIdentityCredential'
+            }
+            {
+              name: 'APPLICATIONINSIGHTS_AUTHENTICATION_STRING'
+              value: 'Authorization=AAD;ClientId=${identity.properties.clientId}'
+            }
+            {
+              name: 'APPLICATIONINSIGHTS_CONNECTION_STRING'
+              secretRef: 'application-insights-connection-string'
+            }
+            {
+              name: 'OTEL_RESOURCE_ATTRIBUTES'
+              value: telemetryResourceAttributes
+            }
+            {
+              name: 'OTEL_SERVICE_NAME'
+              value: 'aspire-discord-ingestion'
             }
             {
               name: 'Ingestion__GitHubToken'

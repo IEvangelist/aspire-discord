@@ -12,6 +12,7 @@ function createClient(): Client {
     destroy: vi.fn(async () => undefined),
     guilds: { cache: new Map() },
     isReady: () => false,
+    rest: new EventEmitter(),
     user: { id: 'bot', tag: 'Aspirey Bot#5249' },
     ws: { ping: 0 },
   }) as unknown as Client;

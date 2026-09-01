@@ -16,6 +16,7 @@ describe('HTTP service', () => {
       discord: {
         ready: true,
         status: () => ({
+          access: { allowedUsers: 0, mode: 'open' },
           guilds: 0,
           mentionEnabled: false,
           pingMilliseconds: 0,
@@ -41,6 +42,7 @@ describe('HTTP service', () => {
       discord: {
         ready: true,
         status: () => ({
+          access: { allowedUsers: 0, mode: 'open' },
           guilds: 0,
           mentionEnabled: false,
           pingMilliseconds: 0,
@@ -62,6 +64,7 @@ describe('HTTP service', () => {
       discord: {
         ready: true,
         status: () => ({
+          access: { allowedUsers: 0, mode: 'open' },
           guilds: 0,
           mentionEnabled: false,
           pingMilliseconds: 0,

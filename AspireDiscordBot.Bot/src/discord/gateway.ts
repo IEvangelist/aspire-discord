@@ -28,6 +28,13 @@ import {
   type DiscordImageCandidate,
 } from './image-context.js';
 import { resolveModalities, type ResolvedModalityRequest } from './modality-resolver.js';
+import {
+  discordLogContext,
+  observeDiscordMention,
+  recordDiscordGatewayEvent,
+  type DiscordRequestObservation,
+  type DiscordRequestOutcome,
+} from './observability.js';
 import { DiscordProgressController, progressMessage } from './progress.js';
 import { RequestDeduplicator } from './request-deduplicator.js';
 import {
@@ -56,6 +63,10 @@ interface ResolveQuestionOptions extends Pick<
 }
 
 export interface DiscordStatus {
+  readonly access: {
+    readonly allowedUsers: number;
+    readonly mode: 'allowlist' | 'open';
+  };
   readonly botUser?: string;
   readonly guilds: number;
   readonly mentionEnabled: boolean;
@@ -96,8 +107,14 @@ export class DiscordGateway {
   }
 
   public status(): DiscordStatus {
+    const access = {
+      allowedUsers: this.config.discord.allowedUserIds.size,
+      mode:
+        this.config.discord.allowedUserIds.size > 0 ? ('allowlist' as const) : ('open' as const),
+    };
     if (!this.config.discord.token) {
       return {
+        access,
         guilds: 0,
         mentionEnabled: this.config.discord.mentionEnabled,
         pingMilliseconds: 0,
@@ -106,6 +123,7 @@ export class DiscordGateway {
       };
     }
     return {
+      access,
       ...(this.#client.user ? { botUser: this.#client.user.tag } : {}),
       guilds: this.#client.guilds.cache.size,
       mentionEnabled: this.config.discord.mentionEnabled,
@@ -120,8 +138,10 @@ export class DiscordGateway {
       return;
     }
     this.#started = true;
+    this.#commandsCleared = false;
     const ready = Promise.withResolvers<undefined>();
     this.#client.once(Events.ClientReady, (client) => {
+      recordDiscordGatewayEvent('ready');
       void this.#clearCommands(client).then(
         () => {
           this.#commandsCleared = true;
@@ -135,15 +155,79 @@ export class DiscordGateway {
     if (this.config.discord.mentionEnabled) {
       this.#client.on(Events.MessageCreate, (message) => {
         void this.#handleMessage(message).catch((error: unknown) => {
-          this.logger.error({ err: error }, 'Unhandled Discord mention failure.');
+          this.logger.error(
+            { err: error, ...discordLogContext(message) },
+            'Unhandled Discord mention failure.',
+          );
         });
       });
     }
     this.#client.on(Events.Error, (error) => {
+      recordDiscordGatewayEvent('client_error');
       this.logger.error({ err: error }, 'Discord client error.');
     });
     this.#client.on(Events.ShardError, (error, shardId) => {
+      recordDiscordGatewayEvent('shard_error', shardId);
       this.logger.error({ err: error, shardId }, 'Discord shard error.');
+    });
+    this.#client.on(Events.ShardDisconnect, (event, shardId) => {
+      recordDiscordGatewayEvent('disconnected', shardId);
+      this.logger.warn(
+        {
+          closeCode: event.code,
+          shardId,
+        },
+        'Discord shard disconnected.',
+      );
+    });
+    this.#client.on(Events.ShardReady, (shardId, unavailableGuilds) => {
+      recordDiscordGatewayEvent('shard_ready', shardId);
+      this.logger.info(
+        { shardId, unavailableGuildCount: unavailableGuilds?.size ?? 0 },
+        'Discord shard is ready.',
+      );
+    });
+    this.#client.on(Events.ShardReconnecting, (shardId) => {
+      recordDiscordGatewayEvent('reconnecting', shardId);
+      this.logger.warn({ shardId }, 'Discord shard is reconnecting.');
+    });
+    this.#client.on(Events.ShardResume, (shardId, replayedEvents) => {
+      recordDiscordGatewayEvent('resumed', shardId);
+      this.logger.info({ replayedEvents, shardId }, 'Discord shard resumed.');
+    });
+    this.#client.on(Events.Invalidated, () => {
+      recordDiscordGatewayEvent('invalidated');
+      this.logger.error('Discord session was invalidated.');
+    });
+    this.#client.on(Events.Warn, (warning) => {
+      recordDiscordGatewayEvent('warning');
+      this.logger.warn({ warning }, 'Discord client warning.');
+    });
+    this.#client.rest.on('rateLimited', (rateLimit) => {
+      recordDiscordGatewayEvent('rest_rate_limited');
+      this.logger.warn(
+        {
+          global: rateLimit.global,
+          limit: rateLimit.limit,
+          method: rateLimit.method,
+          retryAfterMilliseconds: rateLimit.retryAfter,
+          route: rateLimit.route,
+          scope: rateLimit.scope,
+          sublimitTimeoutMilliseconds: rateLimit.sublimitTimeout,
+          timeToResetMilliseconds: rateLimit.timeToReset,
+        },
+        'Discord REST request was rate limited.',
+      );
+    });
+    this.#client.rest.on('invalidRequestWarning', (warning) => {
+      recordDiscordGatewayEvent('rest_invalid_request');
+      this.logger.warn(
+        {
+          invalidRequestCount: warning.count,
+          remainingWindowMilliseconds: warning.remainingTime,
+        },
+        'Discord REST invalid-request threshold warning.',
+      );
     });
 
     if (!this.config.discord.token) {
@@ -155,18 +239,34 @@ export class DiscordGateway {
 
     try {
       await this.#client.login(this.config.discord.token);
-      await withTimeout(ready.promise, 30_000, 'Discord command cleanup timed out.');
-      this.logger.info(
-        { mentionEnabled: this.config.discord.mentionEnabled },
-        'Discord gateway login completed.',
-      );
     } catch (error) {
+      recordDiscordGatewayEvent('login_failed');
       this.logger.error(
         { err: error },
         'Discord login failed; verify the bot token and privileged intents.',
       );
       await this.#client.destroy();
+      return;
     }
+
+    try {
+      await withTimeout(ready.promise, 30_000, 'Discord command cleanup timed out.');
+    } catch (error) {
+      recordDiscordGatewayEvent('command_cleanup_failed');
+      this.logger.error({ err: error }, 'Discord command cleanup failed after login.');
+      await this.#client.destroy();
+      return;
+    }
+
+    this.logger.info(
+      {
+        allowedUserCount: this.config.discord.allowedUserIds.size,
+        authorizationMode: this.config.discord.allowedUserIds.size > 0 ? 'allowlist' : 'open',
+        guildCount: this.#client.guilds.cache.size,
+        mentionEnabled: this.config.discord.mentionEnabled,
+      },
+      'Discord gateway login completed.',
+    );
   }
 
   public async stop(): Promise<void> {
@@ -175,6 +275,7 @@ export class DiscordGateway {
     }
     this.#started = false;
     await this.#client.destroy();
+    recordDiscordGatewayEvent('stopped');
   }
 
   async #clearCommands(readyClient: Client<true>): Promise<void> {
@@ -188,26 +289,53 @@ export class DiscordGateway {
   }
 
   async #handleMessage(message: Message): Promise<void> {
-    const requestSignal = this.#requestSignal();
     if (message.author.bot || !this.#client.user || !message.mentions.has(this.#client.user)) {
       return;
     }
+    await observeDiscordMention(message, async (observation) => {
+      await this.#processMention(message, observation);
+    });
+  }
+
+  async #processMention(message: Message, observation: DiscordRequestObservation): Promise<void> {
+    const started = performance.now();
+    const logContext = discordLogContext(message);
+    const requestSignal = this.#requestSignal();
     if (!isUserAllowed(message.author.id, this.config.discord.allowedUserIds)) {
+      this.logger.warn(
+        {
+          ...logContext,
+          allowedUserCount: this.config.discord.allowedUserIds.size,
+          outcome: 'not_authorized',
+        },
+        'Ignored Discord mention from a user outside the allowlist.',
+      );
+      observation.complete('not_authorized');
       return;
     }
     if (!this.#requests.claim(`message:${message.id}`)) {
-      this.logger.debug('Ignored a duplicate Discord message delivery.');
+      this.logger.info(
+        { ...logContext, outcome: 'duplicate' },
+        'Ignored duplicate Discord mention.',
+      );
+      observation.complete('duplicate');
       return;
     }
     const rateLimit = this.#users.acquire(message.author.id);
     if (!rateLimit.allowed) {
       await message.reply(answerPayload(rateLimitMessage(rateLimit.retryAfterSeconds)));
+      this.logger.warn(
+        { ...logContext, outcome: 'rate_limited', retryAfterSeconds: rateLimit.retryAfterSeconds },
+        'Rate limited Discord mention.',
+      );
+      observation.complete('rate_limited');
       return;
     }
 
+    this.logger.info({ ...logContext, outcome: 'received' }, 'Received Discord mention.');
     const received = await hydrateMessage(message, requestSignal, this.logger);
     const typed = received.content
-      .replace(new RegExp(`<@!?${this.#client.user.id}>`, 'gu'), '')
+      .replace(new RegExp(`<@!?${this.#client.user?.id ?? ''}>`, 'gu'), '')
       .trim();
     const directImages = extractMessageImages(received).map(
       (attachment) =>
@@ -226,7 +354,7 @@ export class DiscordGateway {
         }) satisfies DiscordTextCandidate,
     );
     const [reply, forwarded] = await Promise.all([
-      readReplyContext(received, this.#client.user.id, this.logger),
+      readReplyContext(received, this.#client.user?.id ?? '', this.logger),
       Promise.resolve(readForwardedContext(received)),
     ]);
     const resolved = await this.#resolveQuestion(received.channel, typed, {
@@ -240,6 +368,11 @@ export class DiscordGateway {
     });
     if (!resolved.question) {
       await received.reply(answerPayload(resolved.problem));
+      this.logger.info(
+        { ...logContext, outcome: 'invalid_question' },
+        'Discord mention did not contain a resolvable question.',
+      );
+      observation.complete('invalid_question');
       return;
     }
 
@@ -272,11 +405,14 @@ export class DiscordGateway {
         );
         this.logger.info(
           {
-            imageCount: conversation?.images?.length ?? 0,
+            ...logContext,
+            activeWork: this.#limiter.active,
             documentCount: conversation?.documents?.length ?? 0,
+            imageCount: conversation?.images?.length ?? 0,
             noticeCount: conversation?.notices?.length ?? 0,
             questionLength: question.length,
             questionSource: resolved.questionSource,
+            queuedWork: this.#limiter.queued,
             threadContextLength: resolved.context?.length ?? 0,
           },
           'Handling Discord mention.',
@@ -297,27 +433,64 @@ export class DiscordGateway {
         ...formatted.answerMessages.slice(1),
         ...formatted.detailMessages,
       ]);
+      const responseMessageCount =
+        formatted.answerMessages.length + formatted.detailMessages.length;
+      const outcome = answer.isGrounded ? 'answered' : 'not_grounded';
+      const telemetryAttributes = {
+        'aspire.discord.answer.grounded': answer.isGrounded,
+        'aspire.discord.question.source': resolved.questionSource,
+        'aspire.discord.response.message_count': responseMessageCount,
+      };
+      observation.complete(outcome, telemetryAttributes);
+      this.logger.info(
+        {
+          ...logContext,
+          citationCount: answer.citations.length,
+          durationMilliseconds: Math.round(performance.now() - started),
+          grounded: answer.isGrounded,
+          outcome,
+          questionSource: resolved.questionSource,
+          responseMessageCount,
+        },
+        'Discord mention completed.',
+      );
     } catch (error) {
-      await progress?.stop();
-      const content =
-        error instanceof WorkQueueFullError
-          ? 'The bot is busy right now. Please retry shortly.'
-          : error instanceof ImageAttachmentError
-            ? error.userMessage
-            : error instanceof TextAttachmentError
-              ? error.userMessage
-              : 'Sorry - something went wrong answering that. Please try again.';
-      if (
-        !(error instanceof WorkQueueFullError) &&
-        !(error instanceof ImageAttachmentError) &&
-        !(error instanceof TextAttachmentError)
-      ) {
-        this.logger.error({ err: error }, 'Discord mention failed.');
+      try {
+        await progress?.stop();
+      } catch (progressError) {
+        this.logger.warn(
+          { err: progressError, ...logContext },
+          'Could not stop Discord progress updates after a failure.',
+        );
       }
-      if (progressReply) {
-        await progressReply.edit(answerPayload(content));
+      const failure = classifyMentionFailure(error);
+      if (failure.outcome === 'failed') {
+        this.logger.error(
+          { err: error, ...logContext, outcome: failure.outcome },
+          'Discord mention failed.',
+        );
       } else {
-        await received.reply(answerPayload(content));
+        this.logger.warn(
+          {
+            ...logContext,
+            errorType: error instanceof Error ? error.name : 'Error',
+            outcome: failure.outcome,
+          },
+          'Discord mention was rejected before completion.',
+        );
+      }
+      try {
+        if (progressReply) {
+          await progressReply.edit(answerPayload(failure.content));
+        } else {
+          await received.reply(answerPayload(failure.content));
+        }
+      } finally {
+        if (failure.outcome === 'failed') {
+          observation.fail(error);
+        } else {
+          observation.complete(failure.outcome);
+        }
       }
     }
   }
@@ -402,6 +575,28 @@ export class DiscordGateway {
   }
 }
 
+function classifyMentionFailure(error: unknown): {
+  readonly content: string;
+  readonly outcome: DiscordRequestOutcome;
+} {
+  if (error instanceof WorkQueueFullError) {
+    return {
+      content: 'The bot is busy right now. Please retry shortly.',
+      outcome: 'busy',
+    };
+  }
+  if (error instanceof ImageAttachmentError) {
+    return { content: error.userMessage, outcome: 'image_rejected' };
+  }
+  if (error instanceof TextAttachmentError) {
+    return { content: error.userMessage, outcome: 'text_rejected' };
+  }
+  return {
+    content: 'Sorry - something went wrong answering that. Please try again.',
+    outcome: 'failed',
+  };
+}
+
 async function replyInChain(root: Message, contents: readonly string[]): Promise<void> {
   let parent = root;
   for (const content of contents) {
@@ -453,6 +648,9 @@ function createClientOptions(mentionEnabled: boolean): ClientOptions {
           GatewayIntentBits.MessageContent,
         ]
       : [GatewayIntentBits.Guilds],
+    rest: {
+      invalidRequestWarningInterval: 500,
+    },
   };
 }
 

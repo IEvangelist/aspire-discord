@@ -17,6 +17,7 @@ import type { TelemetryHandle } from './telemetry.js';
 export async function main(telemetry: TelemetryHandle): Promise<void> {
   const config = loadConfig();
   const logger = createLogger(config);
+  logger.info({ telemetryMode: telemetry.mode }, 'Telemetry initialized.');
   const shutdownController = new AbortController();
   const embeddings = new OpenAiEmbeddingModel(config.ai);
   const vectorStore =
@@ -52,11 +53,21 @@ export async function main(telemetry: TelemetryHandle): Promise<void> {
         discord.stop(),
         githubMcp.close(),
         copilot.stop(),
-        telemetry.shutdown(),
       ]);
-      const failures = results
+      const failures: unknown[] = results
         .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
         .map((result): unknown => result.reason);
+      if (failures.length > 0) {
+        logger.error(
+          { err: new AggregateError(failures, 'One or more resources failed to stop.') },
+          'Resource cleanup failed during shutdown.',
+        );
+      }
+      try {
+        await telemetry.shutdown();
+      } catch (error) {
+        failures.push(error);
+      }
       if (failures.length > 0) {
         throw new AggregateError(failures, 'One or more resources failed to stop.');
       }

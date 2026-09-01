@@ -1,3 +1,5 @@
+using Azure.Identity;
+using Azure.Monitor.OpenTelemetry.AspNetCore;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.Extensions.DependencyInjection;
@@ -45,6 +47,8 @@ public static class Extensions
 
     public static TBuilder ConfigureOpenTelemetry<TBuilder>(this TBuilder builder) where TBuilder : IHostApplicationBuilder
     {
+        var useAzureMonitor =
+            !string.IsNullOrWhiteSpace(builder.Configuration["APPLICATIONINSIGHTS_CONNECTION_STRING"]);
         builder.Logging.AddOpenTelemetry(logging =>
         {
             logging.IncludeFormattedMessage = true;
@@ -54,26 +58,32 @@ public static class Extensions
         builder.Services.AddOpenTelemetry()
             .WithMetrics(metrics =>
             {
-                metrics.AddAspNetCoreInstrumentation()
-                    .AddHttpClientInstrumentation()
-                    .AddRuntimeInstrumentation()
-                    // GenAI metrics (token usage, operation duration) for the dashboard.
-                    .AddMeter("AspireDiscordBot.GenAI");
+                metrics.AddRuntimeInstrumentation();
+                if (!useAzureMonitor)
+                {
+                    metrics.AddAspNetCoreInstrumentation()
+                        .AddHttpClientInstrumentation();
+                }
+
+                // Custom meters are registered in both local OTLP and Azure Monitor modes.
+                metrics.AddMeter("AspireDiscordBot.GenAI")
+                    .AddMeter("AspireDiscordBot.Ingestion");
             })
             .WithTracing(tracing =>
             {
                 tracing.AddSource(builder.Environment.ApplicationName)
-                    // GenAI spans (chat, embeddings, tool calls, agent) for the dashboard visualization.
                     .AddSource("AspireDiscordBot.GenAI")
-                    .AddAspNetCoreInstrumentation(tracing =>
-                        // Exclude health check requests from tracing
-                        tracing.Filter = context =>
-                            !context.Request.Path.StartsWithSegments(HealthEndpointPath)
-                            && !context.Request.Path.StartsWithSegments(AlivenessEndpointPath)
-                    )
-                    // Uncomment the following line to enable gRPC instrumentation (requires the OpenTelemetry.Instrumentation.GrpcNetClient package)
-                    //.AddGrpcClientInstrumentation()
-                    .AddHttpClientInstrumentation();
+                    .AddSource("AspireDiscordBot.Ingestion");
+                if (!useAzureMonitor)
+                {
+                    tracing
+                        .AddAspNetCoreInstrumentation(tracing =>
+                            tracing.Filter = context =>
+                                !context.Request.Path.StartsWithSegments(HealthEndpointPath)
+                                && !context.Request.Path.StartsWithSegments(AlivenessEndpointPath)
+                        )
+                        .AddHttpClientInstrumentation();
+                }
             });
 
         builder.AddOpenTelemetryExporters();
@@ -83,19 +93,29 @@ public static class Extensions
 
     private static TBuilder AddOpenTelemetryExporters<TBuilder>(this TBuilder builder) where TBuilder : IHostApplicationBuilder
     {
+        var applicationInsightsConnectionString =
+            builder.Configuration["APPLICATIONINSIGHTS_CONNECTION_STRING"];
         var useOtlpExporter = !string.IsNullOrWhiteSpace(builder.Configuration["OTEL_EXPORTER_OTLP_ENDPOINT"]);
 
-        if (useOtlpExporter)
+        if (!string.IsNullOrWhiteSpace(applicationInsightsConnectionString))
+        {
+            var credentialOptions = new DefaultAzureCredentialOptions();
+            var managedIdentityClientId = builder.Configuration["AZURE_CLIENT_ID"];
+            if (!string.IsNullOrWhiteSpace(managedIdentityClientId))
+            {
+                credentialOptions.ManagedIdentityClientId = managedIdentityClientId;
+            }
+
+            builder.Services.AddOpenTelemetry().UseAzureMonitor(options =>
+            {
+                options.ConnectionString = applicationInsightsConnectionString;
+                options.Credential = new DefaultAzureCredential(credentialOptions);
+            });
+        }
+        else if (useOtlpExporter)
         {
             builder.Services.AddOpenTelemetry().UseOtlpExporter();
         }
-
-        // Uncomment the following lines to enable the Azure Monitor exporter (requires the Azure.Monitor.OpenTelemetry.AspNetCore package)
-        //if (!string.IsNullOrEmpty(builder.Configuration["APPLICATIONINSIGHTS_CONNECTION_STRING"]))
-        //{
-        //    builder.Services.AddOpenTelemetry()
-        //       .UseAzureMonitor();
-        //}
 
         return builder;
     }

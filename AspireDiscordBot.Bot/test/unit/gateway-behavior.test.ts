@@ -1,5 +1,6 @@
 import { EventEmitter } from 'node:events';
 import { Events, type Client, type Message, type MessageCreateOptions } from 'discord.js';
+import pino, { type Logger } from 'pino';
 import { describe, expect, it, vi } from 'vitest';
 import type { AnswerService, GroundedAnswer } from '../../src/domain.js';
 import { DiscordGateway } from '../../src/discord/gateway.js';
@@ -14,6 +15,7 @@ interface ClientHarness {
   readonly guildFetch: ReturnType<typeof vi.fn>;
   readonly guildSet: ReturnType<typeof vi.fn>;
   readonly login: ReturnType<typeof vi.fn>;
+  readonly rest: EventEmitter;
 }
 
 interface ReplyCall {
@@ -40,15 +42,25 @@ interface MessageOptions {
   readonly userId?: string;
 }
 
-function createClient(options: { readonly loginFailure?: Error } = {}): ClientHarness {
+function createClient(
+  options: {
+    readonly commandFailure?: Error;
+    readonly loginFailure?: Error;
+  } = {},
+): ClientHarness {
   const emitter = new EventEmitter();
-  const applicationSet = vi.fn(async () => undefined);
+  const applicationSet = vi.fn(async () => {
+    if (options.commandFailure) {
+      throw options.commandFailure;
+    }
+  });
   const destroy = vi.fn(async () => undefined);
   const guildSet = vi.fn(async () => undefined);
   const guildFetch = vi.fn(async (id: string) => ({
     commands: { set: guildSet },
     id,
   }));
+  const rest = new EventEmitter();
   let ready = false;
   const login = vi.fn(async () => {
     if (options.loginFailure) {
@@ -66,10 +78,11 @@ function createClient(options: { readonly loginFailure?: Error } = {}): ClientHa
     guilds: { cache: new Map([['guild', {}]]), fetch: guildFetch },
     isReady: () => ready,
     login,
+    rest,
     user: { id: 'bot', tag: 'Aspirey Bot#5249' },
     ws: { ping: 42 },
   }) as unknown as Client;
-  return { applicationSet, client, destroy, guildFetch, guildSet, login };
+  return { applicationSet, client, destroy, guildFetch, guildSet, login, rest };
 }
 
 function createAnswers(result: Partial<GroundedAnswer> = {}) {
@@ -116,7 +129,9 @@ function createMessage(options: MessageOptions = {}) {
     },
     content: options.content ?? '<@bot> How do I add Redis?',
     createdTimestamp: 100,
+    channelId: 'channel',
     embeds: [],
+    guildId: 'guild',
     id: options.id ?? 'message',
     mentions: { has: () => options.mentioned ?? true },
     reference: null,
@@ -124,6 +139,22 @@ function createMessage(options: MessageOptions = {}) {
     system: false,
   } as unknown as Message;
   return { chain, message, reply, sendTyping };
+}
+
+function createCapturingLogger(): {
+  readonly entries: Record<string, unknown>[];
+  readonly logger: Logger;
+} {
+  const entries: Record<string, unknown>[] = [];
+  const logger = pino(
+    { level: 'debug' },
+    {
+      write(line: string) {
+        entries.push(JSON.parse(line) as Record<string, unknown>);
+      },
+    },
+  );
+  return { entries, logger };
 }
 
 function attachment(name: string, contentType: string, size: number): DiscordAttachmentSnapshot {
@@ -153,14 +184,18 @@ function replyContent(call: ReplyCall): string {
 describe('Discord gateway behavior', () => {
   it('clears global commands, reports readiness, and handles lifecycle events idempotently', async () => {
     const harness = createClient();
+    const captured = createCapturingLogger();
     const gateway = new DiscordGateway(
       createTestConfig({ discord: { mentionEnabled: true, token: 'token' } }),
       createAnswers().service,
-      testLogger,
+      captured.logger,
       harness.client,
     );
 
-    expect(gateway.status()).toMatchObject({ state: 'offline' });
+    expect(gateway.status()).toMatchObject({
+      access: { allowedUsers: 0, mode: 'open' },
+      state: 'offline',
+    });
     await gateway.start();
     await gateway.start();
     (harness.client as unknown as EventEmitter).emit(Events.Error, new Error('gateway error'));
@@ -169,12 +204,33 @@ describe('Discord gateway behavior', () => {
       new Error('shard error'),
       0,
     );
+    (harness.client as unknown as EventEmitter).emit(Events.ShardDisconnect, { code: 1_006 }, 0);
+    (harness.client as unknown as EventEmitter).emit(Events.ShardReady, 0, new Set(['guild']));
+    (harness.client as unknown as EventEmitter).emit(Events.ShardReconnecting, 0);
+    (harness.client as unknown as EventEmitter).emit(Events.ShardResume, 0, 3);
+    (harness.client as unknown as EventEmitter).emit(Events.Invalidated);
+    (harness.client as unknown as EventEmitter).emit(Events.Warn, 'gateway warning');
+    harness.rest.emit('rateLimited', {
+      global: false,
+      hash: 'hash',
+      limit: 5,
+      majorParameter: 'channel',
+      method: 'POST',
+      retryAfter: 1_000,
+      route: '/channels/:id/messages',
+      scope: 'user',
+      sublimitTimeout: 0,
+      timeToReset: 1_000,
+      url: 'https://discord.com/api/v10/channels/channel/messages',
+    });
+    harness.rest.emit('invalidRequestWarning', { count: 500, remainingTime: 60_000 });
 
     expect(harness.applicationSet).toHaveBeenCalledWith([]);
     expect(harness.login).toHaveBeenCalledOnce();
     expect(gateway.ready).toBe(true);
     expect(gateway.status()).toMatchObject({
       botUser: 'Aspirey Bot#5249',
+      access: { allowedUsers: 0, mode: 'open' },
       guilds: 1,
       pingMilliseconds: 42,
       state: 'ready',
@@ -183,6 +239,24 @@ describe('Discord gateway behavior', () => {
     await gateway.stop();
     await gateway.stop();
     expect(harness.destroy).toHaveBeenCalledOnce();
+    expect(captured.entries).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ closeCode: 1_006, msg: 'Discord shard disconnected.' }),
+        expect.objectContaining({ msg: 'Discord shard is ready.', unavailableGuildCount: 1 }),
+        expect.objectContaining({ msg: 'Discord shard is reconnecting.' }),
+        expect.objectContaining({ msg: 'Discord shard resumed.', replayedEvents: 3 }),
+        expect.objectContaining({ msg: 'Discord session was invalidated.' }),
+        expect.objectContaining({ msg: 'Discord client warning.', warning: 'gateway warning' }),
+        expect.objectContaining({
+          msg: 'Discord REST request was rate limited.',
+          retryAfterMilliseconds: 1_000,
+        }),
+        expect.objectContaining({
+          invalidRequestCount: 500,
+          msg: 'Discord REST invalid-request threshold warning.',
+        }),
+      ]),
+    );
   });
 
   it('clears legacy guild and global commands when a guild is configured', async () => {
@@ -215,6 +289,33 @@ describe('Discord gateway behavior', () => {
 
     expect(gateway.ready).toBe(false);
     expect(harness.destroy).toHaveBeenCalledOnce();
+  });
+
+  it('reports command cleanup failures separately from login failures', async () => {
+    const harness = createClient({ commandFailure: new Error('cleanup failed') });
+    const captured = createCapturingLogger();
+    const gateway = new DiscordGateway(
+      createTestConfig({ discord: { token: 'token' } }),
+      createAnswers().service,
+      captured.logger,
+      harness.client,
+    );
+
+    await gateway.start();
+
+    expect(harness.login).toHaveBeenCalledOnce();
+    expect(harness.destroy).toHaveBeenCalledOnce();
+    expect(gateway.ready).toBe(false);
+    expect(captured.entries).toContainEqual(
+      expect.objectContaining({
+        msg: 'Discord command cleanup failed after login.',
+      }),
+    );
+    expect(captured.entries).not.toContainEqual(
+      expect.objectContaining({
+        msg: 'Discord login failed; verify the bot token and privileged intents.',
+      }),
+    );
   });
 
   it('publishes the answer and grounded sources as a safe reply chain', async () => {
@@ -318,6 +419,7 @@ describe('Discord gateway behavior', () => {
   it('ignores ineligible mentions and enforces authorization, deduplication, and rate limits', async () => {
     const harness = createClient();
     const answers = createAnswers();
+    const captured = createCapturingLogger();
     const gateway = new DiscordGateway(
       createTestConfig({
         discord: {
@@ -327,7 +429,7 @@ describe('Discord gateway behavior', () => {
         },
       }),
       answers.service,
-      testLogger,
+      captured.logger,
       harness.client,
     );
     await gateway.start();
@@ -356,6 +458,20 @@ describe('Discord gateway behavior', () => {
     expect(unmentioned.reply).not.toHaveBeenCalled();
     expect(unauthorized.reply).not.toHaveBeenCalled();
     expect(accepted.reply).toHaveBeenCalledOnce();
+    expect(gateway.status()).toMatchObject({
+      access: { allowedUsers: 1, mode: 'allowlist' },
+    });
+    expect(captured.entries).toContainEqual(
+      expect.objectContaining({
+        discordChannelId: 'channel',
+        discordGuildId: 'guild',
+        discordMessageId: 'unauthorized',
+        discordUserId: 'denied',
+        msg: 'Ignored Discord mention from a user outside the allowlist.',
+        outcome: 'not_authorized',
+      }),
+    );
+    expect(JSON.stringify(captured.entries)).not.toContain('How do I add Redis?');
     await gateway.stop();
   });
 

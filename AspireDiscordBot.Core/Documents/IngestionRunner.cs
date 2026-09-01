@@ -1,5 +1,7 @@
 using AspireDiscordBot.Core.Configuration;
+using AspireDiscordBot.Core.Telemetry;
 using AspireDiscordBot.Core.Vectors;
+using System.Diagnostics;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -97,14 +99,37 @@ public sealed class IngestionRunner(
 
         if (!includeDocs && !includeApi)
         {
-            var count = await vectorStore.CountAsync(cancellationToken);
-            var message = $"Startup ingest skipped: index already populated ({count} chunks). " +
-                          "Use the dashboard command or the scheduled refresh to update it.";
-            logger.LogInformation("{Message}", message);
-            var outcome = new RunOutcome(RunStatus.SkippedAlreadyPopulated, message, 0, 0, false, null, null);
-            _hasPublishedIndex = true;
-            _lastOutcome = outcome;
-            return outcome;
+            var startedTimestamp = Stopwatch.GetTimestamp();
+            using var activity = IngestionTelemetry.StartRun("startup", force);
+            try
+            {
+                var count = await vectorStore.CountAsync(cancellationToken);
+                var message = $"Startup ingest skipped: index already populated ({count} chunks). " +
+                              "Use the dashboard command or the scheduled refresh to update it.";
+                logger.LogInformation("{Message}", message);
+                var outcome = new RunOutcome(
+                    RunStatus.SkippedAlreadyPopulated,
+                    message,
+                    0,
+                    0,
+                    false,
+                    null,
+                    null);
+                _hasPublishedIndex = true;
+                _lastOutcome = outcome;
+                IngestionTelemetry.CompleteRun(activity, outcome, "startup", startedTimestamp);
+                return outcome;
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                IngestionTelemetry.CancelRun(activity, "startup", force, startedTimestamp);
+                throw;
+            }
+            catch (Exception ex)
+            {
+                IngestionTelemetry.FailRun(activity, "startup", force, startedTimestamp, ex);
+                throw;
+            }
         }
 
         return await RunInternalAsync(force, "startup", includeDocs, includeApi, cancellationToken);
@@ -119,20 +144,25 @@ public sealed class IngestionRunner(
     private async Task<RunOutcome> RunInternalAsync(
         bool force, string trigger, bool includeDocs, bool includeApi, CancellationToken cancellationToken)
     {
-        // Non-blocking: if a run is active, reject rather than queue.
-        if (!await _gate.WaitAsync(0, cancellationToken))
-        {
-            var busy = new RunOutcome(
-                RunStatus.Busy,
-                "An ingestion run is already in progress.",
-                0, 0, force, _lastStartedUtc, _lastFinishedUtc);
-            logger.LogInformation("Ingestion request ({Trigger}) ignored: already running.", trigger);
-            return busy;
-        }
-
+        var startedTimestamp = Stopwatch.GetTimestamp();
+        using var activity = IngestionTelemetry.StartRun(trigger, force);
+        var gateAcquired = false;
         var pendingBuilds = new List<IngestionBuildResult>();
         try
         {
+            // Non-blocking: if a run is active, reject rather than queue.
+            gateAcquired = await _gate.WaitAsync(0, cancellationToken);
+            if (!gateAcquired)
+            {
+                var busy = new RunOutcome(
+                    RunStatus.Busy,
+                    "An ingestion run is already in progress.",
+                    0, 0, force, _lastStartedUtc, _lastFinishedUtc);
+                logger.LogInformation("Ingestion request ({Trigger}) ignored: already running.", trigger);
+                IngestionTelemetry.CompleteRun(activity, busy, trigger, startedTimestamp);
+                return busy;
+            }
+
             _isRunning = true;
             _lastStartedUtc = DateTimeOffset.UtcNow;
             logger.LogInformation(
@@ -181,11 +211,13 @@ public sealed class IngestionRunner(
                 files, chunks, force, _lastStartedUtc, _lastFinishedUtc);
             _lastOutcome = outcome;
             logger.LogInformation("Ingestion complete (trigger: {Trigger}): {Message}", trigger, outcome.Message);
+            IngestionTelemetry.CompleteRun(activity, outcome, trigger, startedTimestamp);
             return outcome;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             await AbortPendingAsync(pendingBuilds);
+            IngestionTelemetry.CancelRun(activity, trigger, force, startedTimestamp);
             throw;
         }
         catch (Exception ex)
@@ -196,12 +228,21 @@ public sealed class IngestionRunner(
                 RunStatus.Failed, $"Ingestion failed: {ex.Message}", 0, 0, force, _lastStartedUtc, _lastFinishedUtc);
             _lastOutcome = outcome;
             logger.LogError(ex, "Ingestion failed (trigger: {Trigger}).", trigger);
+            IngestionTelemetry.CompleteRun(
+                activity,
+                outcome,
+                trigger,
+                startedTimestamp,
+                ex.GetType().Name);
             return outcome;
         }
         finally
         {
-            _isRunning = false;
-            _gate.Release();
+            if (gateAcquired)
+            {
+                _isRunning = false;
+                _gate.Release();
+            }
         }
     }
 

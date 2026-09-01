@@ -30,4 +30,4 @@ USER node
 WORKDIR /app/AspireDiscordBot.Bot
 
 EXPOSE 3000
-CMD ["node", "--enable-source-maps", "dist/src/index.js"]
+CMD ["node", "--enable-source-maps", "--import", "@azure/monitor-opentelemetry/loader", "dist/src/index.js"]
