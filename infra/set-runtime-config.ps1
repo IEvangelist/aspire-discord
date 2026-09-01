@@ -63,9 +63,15 @@ function Get-RuntimeSetting {
             Authorization = "Bearer $(Get-AppConfigToken)"
         } `
         -Method Get
-    $setting = $response.Content | ConvertFrom-Json
+    $content = if ($response.Content -is [byte[]]) {
+        [Text.Encoding]::UTF8.GetString($response.Content)
+    }
+    else {
+        [string]$response.Content
+    }
+    $setting = ConvertFrom-Json -InputObject $content
     return [pscustomobject]@{
-        ETag = [string]$setting.etag
+        ETag = [string]$response.Headers.ETag
         Value = [string]$setting.value
     }
 }
