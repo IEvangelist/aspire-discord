@@ -13,11 +13,13 @@ import { createLogger } from './logger.js';
 import { ensureOllamaModels } from './ollama-readiness.js';
 import { buildServer } from './server.js';
 import type { TelemetryHandle } from './telemetry.js';
+import { startRuntimeConfig } from './runtime-config.js';
 
 export async function main(telemetry: TelemetryHandle): Promise<void> {
   const config = loadConfig();
   const logger = createLogger(config);
   logger.info({ telemetryMode: telemetry.mode }, 'Telemetry initialized.');
+  const runtimeConfig = await startRuntimeConfig(config, logger);
   const shutdownController = new AbortController();
   const embeddings = new OpenAiEmbeddingModel(config.ai);
   const vectorStore =
@@ -36,7 +38,14 @@ export async function main(telemetry: TelemetryHandle): Promise<void> {
     logger,
     questionContext,
   );
-  const discord = new DiscordGateway(config, answers, logger, undefined, shutdownController.signal);
+  const discord = new DiscordGateway(
+    config,
+    answers,
+    logger,
+    undefined,
+    shutdownController.signal,
+    runtimeConfig,
+  );
   const server = await buildServer({ config, discord, logger, vectorStore });
   let shutdownPromise: Promise<void> | undefined;
   const lifecycle: { startup?: Promise<void> } = {};
@@ -48,6 +57,7 @@ export async function main(telemetry: TelemetryHandle): Promise<void> {
       if (waitForStartup && lifecycle.startup) {
         await lifecycle.startup.catch(() => undefined);
       }
+      runtimeConfig.stop();
       const results = await Promise.allSettled([
         server.close(),
         discord.stop(),

@@ -199,6 +199,18 @@ await bot.withEnvironment(
   await config("Parameters:DiscordAllowedUserIds"),
 );
 await bot.withEnvironment(
+  "DISCORD_GROUNDING_DETAILS_MODE",
+  await config("Parameters:DiscordGroundingDetailsMode", "collapsed"),
+);
+const runtimeConfigEndpoint = await config("Parameters:RuntimeConfigEndpoint");
+if (runtimeConfigEndpoint) {
+  await bot.withEnvironment("AZURE_APPCONFIG_ENDPOINT", runtimeConfigEndpoint);
+  await bot.withEnvironment(
+    "RUNTIME_CONFIG_REFRESH_INTERVAL_MS",
+    await config("Parameters:RuntimeConfigRefreshIntervalMs", "15000"),
+  );
+}
+await bot.withEnvironment(
   "DISCORD_MAX_REQUESTS_PER_MINUTE",
   await config("Parameters:DiscordMaxRequestsPerMinute", "10"),
 );

@@ -12,6 +12,7 @@ type ConfigOverrides = Omit<
   | 'linkContext'
   | 'qdrant'
   | 'retrieval'
+  | 'runtimeConfig'
   | 'safety'
   | 'textContext'
   | 'vectorStore'
@@ -26,6 +27,7 @@ type ConfigOverrides = Omit<
   linkContext?: Partial<AppConfig['linkContext']>;
   qdrant?: Partial<AppConfig['qdrant']>;
   retrieval?: Partial<AppConfig['retrieval']>;
+  runtimeConfig?: Partial<AppConfig['runtimeConfig']>;
   safety?: Partial<AppConfig['safety']>;
   textContext?: Partial<AppConfig['textContext']>;
   vectorStore?: Partial<AppConfig['vectorStore']>;
@@ -51,6 +53,7 @@ export function createTestConfig(overrides: ConfigOverrides = {}): AppConfig {
     copilot: {},
     discord: {
       allowedUserIds: new Set(),
+      groundingDetailsMode: 'collapsed',
       maxConcurrency: 2,
       maxQueue: 4,
       maxRequestsPerMinute: 10,
@@ -92,6 +95,9 @@ export function createTestConfig(overrides: ConfigOverrides = {}): AppConfig {
       resultsPerTool: 6,
       topK: 6,
     },
+    runtimeConfig: {
+      refreshIntervalMs: 15_000,
+    },
     safety: {
       maxQuestionLength: 2_000,
       minTopicScore: 0.35,
@@ -121,6 +127,7 @@ export function createTestConfig(overrides: ConfigOverrides = {}): AppConfig {
     linkContext: { ...base.linkContext, ...overrides.linkContext },
     qdrant: { ...base.qdrant, ...overrides.qdrant },
     retrieval: { ...base.retrieval, ...overrides.retrieval },
+    runtimeConfig: { ...base.runtimeConfig, ...overrides.runtimeConfig },
     safety: { ...base.safety, ...overrides.safety },
     textContext: { ...base.textContext, ...overrides.textContext },
     vectorStore: { ...base.vectorStore, ...overrides.vectorStore },

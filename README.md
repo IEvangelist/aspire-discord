@@ -279,16 +279,20 @@ The `infra` deployment targets Azure Container Apps in Central US. It provisions
 
 - GPT-5.6 Sol and `text-embedding-3-small` in Microsoft Foundry
 - Azure AI Search with versioned indexes and aliases
-- a user-assigned managed identity for Foundry, Search, and Azure Container Registry
+- Azure App Configuration for live operational settings
+- a user-assigned managed identity for Foundry, Search, App Configuration, Application Insights,
+  and Azure Container Registry
 - a blue/green Container Apps deployment containing the bot and ingestion worker
-- Log Analytics and a Basic container registry
+- Application Insights, Log Analytics, and a Basic container registry
 
 Foundry local authentication is disabled. The bot and ingestion worker use managed identity in
 Azure, so the deployment does not use a personal GitHub Copilot login or AI/Search API keys.
 
-The Aspire deployment pipeline reads `DiscordToken`, `GitHubMcpToken`, and the optional Discord
-user allow list from the local Aspire secret store. It also accepts `DISCORD_TOKEN`,
-`GITHUB_MCP_TOKEN`, and `DISCORD_ALLOWED_USER_IDS` environment variables for CI.
+The Aspire deployment pipeline reads `DiscordToken`, `GitHubMcpToken`, and a fallback Discord user
+allowlist from the local Aspire secret store. It also accepts `DISCORD_TOKEN`, `GITHUB_MCP_TOKEN`,
+and `DISCORD_ALLOWED_USER_IDS` environment variables for CI. The fallback allowlist seeds Azure App
+Configuration on first deployment and remains available if live configuration cannot be loaded
+during a restart.
 
 Build and deploy immutable images:
 
@@ -300,8 +304,8 @@ aspire deploy `
 
 `aspire deploy` resolves an explicit pipeline:
 
-1. `production-preflight` requires committed source, validates Azure access, and compiles both Bicep
-   templates.
+1. `production-preflight` requires committed source, validates Azure access, and compiles every
+   Bicep template.
 2. `production-blue-green` acquires the Azure deployment lease, builds immutable Git-tagged images,
    stages the inactive slot without Discord, waits for both Search aliases, cuts over the singleton
    Discord connection, and restores the prior slot if cutover fails.
@@ -314,6 +318,36 @@ supported deployment entry point.
 After a successful migration from the older Qdrant deployment, the script removes the unsupported
 NFS-backed Container App and storage account.
 
+### Live runtime configuration
+
+Production reads operational settings from Azure App Configuration with managed identity and checks
+for changes every 15 seconds. Updating these values does not rebuild an image, create a Container Apps
+revision, restart the process, or run `aspire deploy`. Invalid or unavailable remote values leave the
+last valid settings active. A cold start cannot become ready until the initial remote settings load,
+so an App Configuration outage never turns a missing allowlist into open access.
+
+Use the helper to update settings safely:
+
+```powershell
+# Add or remove allowlisted Discord users.
+.\infra\set-runtime-config.ps1 -AddDiscordUserId 347827564880068608
+.\infra\set-runtime-config.ps1 -RemoveDiscordUserId 347827564880068608
+# Opening access requires an explicit opt-in.
+.\infra\set-runtime-config.ps1 -AllowOpenAccess
+
+# Change how grounded sources render.
+.\infra\set-runtime-config.ps1 -GroundingDetailsMode collapsed
+```
+
+`collapsed` renders up to five sources as a compact row of link buttons, `expanded` renders the
+existing text list, and `hidden` omits source links. The same values can be edited directly in the
+Azure portal under these keys:
+
+```text
+AspireDiscord:Discord:AllowedUserIds
+AspireDiscord:Discord:GroundingDetailsMode
+```
+
 ### Production observability
 
 The production deployment sends structured container logs to the 30-day Log Analytics workspace and
@@ -322,8 +356,9 @@ outcomes, and ingestion-run metrics to workspace-based Application Insights. Tel
 the Container App's managed identity. Discord message content and attachment contents are never
 written to telemetry; request records contain IDs, dimensions, durations, counts, and outcomes only.
 
-The `/status` endpoint reports Discord connectivity, queue depth, and whether access is open or
-allowlisted. Every bot mention that reaches the gateway records one of these outcomes:
+The `/status` endpoint reports Discord connectivity, queue depth, live configuration source and
+revision, grounding-detail mode, and whether access is open or allowlisted. Every bot mention that
+reaches the gateway records one of these outcomes:
 `answered`, `not_grounded`, `not_authorized`, `rate_limited`, `duplicate`, `invalid_question`,
 `busy`, `image_rejected`, `text_rejected`, or `failed`.
 
@@ -398,7 +433,8 @@ the Aspire secret store. Credentials are never inherited across different provid
 | ---------------------------------------- | ------------------------------- | ------------------------------------------------------------------------- |
 | `Parameters:DiscordGuildId`              | unset                           | Optional legacy guild-command scope to clear during startup               |
 | `Parameters:DiscordMentionEnabled`       | `true`                          | Enables `@mention` questions and Message Content intent                   |
-| `Parameters:DiscordAllowedUserIds`       | empty                           | Comma-separated Discord user IDs; empty allows everyone                   |
+| `Parameters:DiscordAllowedUserIds`       | empty                           | Local/fallback user IDs; production uses live configuration               |
+| `Parameters:DiscordGroundingDetailsMode` | `collapsed`                     | Local/fallback source mode: `collapsed`, `expanded`, or `hidden`           |
 | `Parameters:DiscordMaxRequestsPerMinute` | `10`                            | Per-user request limit for mention-driven questions                       |
 | `Parameters:SafetyMaxQuestionLength`     | `2000`                          | Maximum direct or thread-turn question characters                         |
 | `Parameters:ImageContextEnabled`         | enabled for `gpt-5.6-sol`       | Enables validated in-memory image context for a vision-capable chat model |

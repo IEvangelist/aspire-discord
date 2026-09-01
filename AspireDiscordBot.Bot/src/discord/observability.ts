@@ -30,6 +30,7 @@ const gatewayEvents = meter.createCounter('aspire.discord.gateway.events', {
 export type DiscordRequestOutcome =
   | 'answered'
   | 'busy'
+  | 'configuration_unavailable'
   | 'duplicate'
   | 'failed'
   | 'image_rejected'

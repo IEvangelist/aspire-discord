@@ -20,6 +20,17 @@ param deploymentPrincipalId string = ''
 @description('Type of the optional deployment principal.')
 param deploymentPrincipalType string = 'User'
 
+@description('Optional operator principal granted access to edit live runtime configuration.')
+param runtimeConfigEditorPrincipalId string = ''
+
+@allowed([
+  'Group'
+  'ServicePrincipal'
+  'User'
+])
+@description('Type of the optional runtime configuration editor principal.')
+param runtimeConfigEditorPrincipalType string = 'User'
+
 var baseName = 'aspire-discord-${environmentName}'
 var compactName = 'aspirediscord${resourceSuffix}'
 var tags = {
@@ -58,6 +69,14 @@ var monitoringMetricsPublisherRoleDefinitionId = subscriptionResourceId(
   'Microsoft.Authorization/roleDefinitions',
   '3913510d-42f4-4e42-8a64-420c390055eb'
 )
+var appConfigurationDataReaderRoleDefinitionId = subscriptionResourceId(
+  'Microsoft.Authorization/roleDefinitions',
+  '516239f1-63e1-4d78-a4de-a74fb236a071'
+)
+var appConfigurationDataOwnerRoleDefinitionId = subscriptionResourceId(
+  'Microsoft.Authorization/roleDefinitions',
+  '5ae67dd6-50cb-40e7-96ff-dc2bfa4b606b'
+)
 
 resource identity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
   name: '${baseName}-id'
@@ -86,6 +105,46 @@ resource registryPull 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
     principalId: identity.properties.principalId
     principalType: 'ServicePrincipal'
     roleDefinitionId: acrPullRoleDefinitionId
+  }
+}
+
+resource runtimeConfig 'Microsoft.AppConfiguration/configurationStores@2024-06-01' = {
+  name: '${compactName}config'
+  location: location
+  tags: tags
+  sku: {
+    name: 'standard'
+  }
+  properties: {
+    dataPlaneProxy: {
+      authenticationMode: 'Pass-through'
+      privateLinkDelegation: 'Disabled'
+    }
+    defaultKeyValueRevisionRetentionPeriodInSeconds: 2592000
+    disableLocalAuth: true
+    enablePurgeProtection: true
+    publicNetworkAccess: 'Enabled'
+    softDeleteRetentionInDays: 30
+  }
+}
+
+resource runtimeConfigReader 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(runtimeConfig.id, identity.id, appConfigurationDataReaderRoleDefinitionId)
+  scope: runtimeConfig
+  properties: {
+    principalId: identity.properties.principalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: appConfigurationDataReaderRoleDefinitionId
+  }
+}
+
+resource deploymentRuntimeConfigOwner 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!empty(runtimeConfigEditorPrincipalId)) {
+  name: guid(runtimeConfig.id, runtimeConfigEditorPrincipalId, appConfigurationDataOwnerRoleDefinitionId)
+  scope: runtimeConfig
+  properties: {
+    principalId: runtimeConfigEditorPrincipalId
+    principalType: runtimeConfigEditorPrincipalType
+    roleDefinitionId: appConfigurationDataOwnerRoleDefinitionId
   }
 }
 
@@ -342,6 +401,8 @@ resource deploymentSearchServiceContributor 'Microsoft.Authorization/roleAssignm
 
 output registryName string = registry.name
 output registryServer string = registry.properties.loginServer
+output runtimeConfigEndpoint string = 'https://${runtimeConfig.name}.azconfig.io'
+output runtimeConfigName string = runtimeConfig.name
 output applicationInsightsName string = applicationInsights.name
 output containerEnvironmentName string = containerEnvironment.name
 output foundryEndpoint string = foundry.properties.endpoint

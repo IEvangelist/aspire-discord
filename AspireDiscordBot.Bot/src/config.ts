@@ -2,6 +2,8 @@ import { z } from 'zod';
 
 const providerSchema = z.enum(['copilot', 'azureopenai', 'azureaifoundry', 'openai', 'ollama']);
 const vectorStoreProviderSchema = z.enum(['azuresearch', 'qdrant']);
+export const groundingDetailsModeSchema = z.enum(['collapsed', 'expanded', 'hidden']);
+export type GroundingDetailsMode = z.infer<typeof groundingDetailsModeSchema>;
 
 const rawEnvironmentSchema = z.object({
   AI_API_KEY: z.string().optional(),
@@ -18,9 +20,11 @@ const rawEnvironmentSchema = z.object({
   AI_REASONING_EFFORT: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).default('low'),
   AGENT_MAX_TOOL_CALLS: z.coerce.number().int().min(1).max(30).default(10),
   AGENT_TIMEOUT_MS: z.coerce.number().int().min(5_000).max(300_000).default(90_000),
+  AZURE_APPCONFIG_ENDPOINT: z.url().optional(),
   COPILOT_GITHUB_TOKEN: z.string().min(1).optional(),
   COPILOT_RUNTIME_BASE_PATH: z.string().min(1).optional(),
   DISCORD_ALLOWED_USER_IDS: z.string().default(''),
+  DISCORD_GROUNDING_DETAILS_MODE: groundingDetailsModeSchema.default('collapsed'),
   DISCORD_GUILD_ID: z.string().regex(/^\d+$/).optional().or(z.literal('')),
   DISCORD_MAX_CONCURRENCY: z.coerce.number().int().min(1).max(32).default(4),
   DISCORD_MAX_QUEUE: z.coerce.number().int().min(0).max(1_000).default(24),
@@ -61,6 +65,12 @@ const rawEnvironmentSchema = z.object({
   RETRIEVAL_MIN_SCORE: z.coerce.number().min(0).max(1).default(0.35),
   RETRIEVAL_RESULTS_PER_TOOL: z.coerce.number().int().min(1).max(20).default(6),
   RETRIEVAL_TOP_K: z.coerce.number().int().min(1).max(20).default(6),
+  RUNTIME_CONFIG_REFRESH_INTERVAL_MS: z.coerce
+    .number()
+    .int()
+    .min(5_000)
+    .max(300_000)
+    .default(15_000),
   SAFETY_MAX_QUESTION_LENGTH: z.coerce.number().int().min(100).max(4_000).default(2_000),
   SAFETY_MIN_TOPIC_SCORE: z.coerce.number().min(0).max(1).default(0.35),
   TEXT_CONTEXT_ENABLED: z.string().default('true'),
@@ -105,6 +115,7 @@ export interface AppConfig {
   };
   readonly discord: {
     readonly allowedUserIds: ReadonlySet<string>;
+    readonly groundingDetailsMode: GroundingDetailsMode;
     readonly guildId?: string;
     readonly maxConcurrency: number;
     readonly maxQueue: number;
@@ -144,6 +155,10 @@ export interface AppConfig {
     readonly minScore: number;
     readonly resultsPerTool: number;
     readonly topK: number;
+  };
+  readonly runtimeConfig: {
+    readonly endpoint?: string;
+    readonly refreshIntervalMs: number;
   };
   readonly safety: {
     readonly maxQuestionLength: number;
@@ -296,6 +311,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): AppCon
     },
     discord: {
       allowedUserIds,
+      groundingDetailsMode: env.DISCORD_GROUNDING_DETAILS_MODE,
       ...(discordGuildId ? { guildId: discordGuildId } : {}),
       maxConcurrency: env.DISCORD_MAX_CONCURRENCY,
       maxQueue: env.DISCORD_MAX_QUEUE,
@@ -336,6 +352,10 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): AppCon
       resultsPerTool: env.RETRIEVAL_RESULTS_PER_TOOL,
       topK: env.RETRIEVAL_TOP_K,
     },
+    runtimeConfig: {
+      ...(env.AZURE_APPCONFIG_ENDPOINT ? { endpoint: env.AZURE_APPCONFIG_ENDPOINT } : {}),
+      refreshIntervalMs: env.RUNTIME_CONFIG_REFRESH_INTERVAL_MS,
+    },
     safety: {
       maxQuestionLength: env.SAFETY_MAX_QUESTION_LENGTH,
       minTopicScore: env.SAFETY_MIN_TOPIC_SCORE,
@@ -372,15 +392,17 @@ function parseBoolean(value: string, name: string): boolean {
   ]);
 }
 
-function parseIdentifierSet(value: string): ReadonlySet<string> {
-  const trimmed = value.trim();
-  if (!trimmed) {
+export function parseIdentifierSet(value: unknown): ReadonlySet<string> {
+  if (typeof value === 'string' && !value.trim()) {
     return new Set();
   }
 
-  const values: unknown = trimmed.startsWith('[')
-    ? JSON.parse(trimmed)
-    : trimmed.split(',').map((item) => item.trim());
+  const values: unknown =
+    typeof value === 'string'
+      ? value.trim().startsWith('[')
+        ? JSON.parse(value.trim())
+        : value.split(',').map((item) => item.trim())
+      : value;
   const parsed = z.array(z.string().regex(/^\d+$/)).parse(values);
   return new Set(parsed);
 }

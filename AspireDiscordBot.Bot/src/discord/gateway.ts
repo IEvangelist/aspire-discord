@@ -11,6 +11,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import type { Logger } from 'pino';
 import type { AppConfig } from '../config.js';
 import type { AnswerService, ConversationContext } from '../domain.js';
+import type { RuntimeConfig, RuntimeConfigSnapshot } from '../runtime-config.js';
 import { WorkLimiter, WorkQueueFullError } from '../work-limiter.js';
 import { isUserAllowed } from './authorizer.js';
 import {
@@ -21,7 +22,7 @@ import {
   type ThreadContextReadOptions,
   type ThreadContextResult,
 } from './context-reader.js';
-import { buildAnswerThread } from './formatter.js';
+import { buildAnswerThread, type AnswerDetailMessage } from './formatter.js';
 import {
   ImageAttachmentError,
   SafeDiscordImageLoader,
@@ -65,7 +66,11 @@ interface ResolveQuestionOptions extends Pick<
 export interface DiscordStatus {
   readonly access: {
     readonly allowedUsers: number;
-    readonly mode: 'allowlist' | 'open';
+    readonly configurationReady: boolean;
+    readonly groundingDetailsMode: RuntimeConfigSnapshot['groundingDetailsMode'];
+    readonly mode: 'allowlist' | 'open' | 'unavailable';
+    readonly revision: string;
+    readonly source: RuntimeConfigSnapshot['source'];
   };
   readonly botUser?: string;
   readonly guilds: number;
@@ -94,6 +99,7 @@ export class DiscordGateway {
     private readonly logger: Logger,
     client?: Client,
     private readonly shutdownSignal?: AbortSignal,
+    private readonly runtimeConfig: RuntimeConfig = staticRuntimeConfig(config),
   ) {
     this.#client = client ?? new Client(createClientOptions(config.discord.mentionEnabled));
     this.#imageLoader = new SafeDiscordImageLoader(config.imageContext, logger);
@@ -103,14 +109,25 @@ export class DiscordGateway {
   }
 
   public get ready(): boolean {
-    return !this.config.discord.token || (this.#client.isReady() && this.#commandsCleared);
+    return (
+      this.runtimeConfig.current().available &&
+      (!this.config.discord.token || (this.#client.isReady() && this.#commandsCleared))
+    );
   }
 
   public status(): DiscordStatus {
+    const runtime = this.runtimeConfig.current();
     const access = {
-      allowedUsers: this.config.discord.allowedUserIds.size,
-      mode:
-        this.config.discord.allowedUserIds.size > 0 ? ('allowlist' as const) : ('open' as const),
+      allowedUsers: runtime.allowedUserIds.size,
+      configurationReady: runtime.available,
+      groundingDetailsMode: runtime.groundingDetailsMode,
+      mode: !runtime.available
+        ? ('unavailable' as const)
+        : runtime.allowedUserIds.size > 0
+          ? ('allowlist' as const)
+          : ('open' as const),
+      revision: runtime.revision,
+      source: runtime.source,
     };
     if (!this.config.discord.token) {
       return {
@@ -258,12 +275,20 @@ export class DiscordGateway {
       return;
     }
 
+    const runtime = this.runtimeConfig.current();
     this.logger.info(
       {
-        allowedUserCount: this.config.discord.allowedUserIds.size,
-        authorizationMode: this.config.discord.allowedUserIds.size > 0 ? 'allowlist' : 'open',
+        allowedUserCount: runtime.allowedUserIds.size,
+        authorizationMode: !runtime.available
+          ? 'unavailable'
+          : runtime.allowedUserIds.size > 0
+            ? 'allowlist'
+            : 'open',
+        groundingDetailsMode: runtime.groundingDetailsMode,
         guildCount: this.#client.guilds.cache.size,
         mentionEnabled: this.config.discord.mentionEnabled,
+        runtimeConfigRevision: runtime.revision,
+        runtimeConfigSource: runtime.source,
       },
       'Discord gateway login completed.',
     );
@@ -301,11 +326,23 @@ export class DiscordGateway {
     const started = performance.now();
     const logContext = discordLogContext(message);
     const requestSignal = this.#requestSignal();
-    if (!isUserAllowed(message.author.id, this.config.discord.allowedUserIds)) {
+    const runtime = this.runtimeConfig.current();
+    if (!runtime.available) {
+      await message.reply(
+        answerPayload('The bot access configuration is unavailable. Please try again shortly.'),
+      );
+      this.logger.error(
+        { ...logContext, outcome: 'configuration_unavailable' },
+        'Rejected Discord mention because runtime configuration is unavailable.',
+      );
+      observation.complete('configuration_unavailable');
+      return;
+    }
+    if (!isUserAllowed(message.author.id, runtime.allowedUserIds)) {
       this.logger.warn(
         {
           ...logContext,
-          allowedUserCount: this.config.discord.allowedUserIds.size,
+          allowedUserCount: runtime.allowedUserIds.size,
           outcome: 'not_authorized',
         },
         'Ignored Discord mention from a user outside the allowlist.',
@@ -426,7 +463,11 @@ export class DiscordGateway {
           conversation,
         );
       }, requestSignal);
-      const formatted = buildAnswerThread(resolved.displayQuestion ?? question, answer);
+      const formatted = buildAnswerThread(
+        resolved.displayQuestion ?? question,
+        answer,
+        runtime.groundingDetailsMode,
+      );
       await progress.stop();
       await response.edit(answerPayload(formatted.answerMessages[0]));
       await replyInChain(response, [
@@ -597,7 +638,25 @@ function classifyMentionFailure(error: unknown): {
   };
 }
 
-async function replyInChain(root: Message, contents: readonly string[]): Promise<void> {
+function staticRuntimeConfig(config: AppConfig): RuntimeConfig {
+  const runtime: RuntimeConfigSnapshot = {
+    allowedUserIds: config.discord.allowedUserIds,
+    available: true,
+    groundingDetailsMode: config.discord.groundingDetailsMode,
+    revision: 'environment',
+    source: 'environment',
+  };
+  return {
+    current: () => runtime,
+    refresh: async () => undefined,
+    stop: () => undefined,
+  };
+}
+
+async function replyInChain(
+  root: Message,
+  contents: readonly (string | AnswerDetailMessage)[],
+): Promise<void> {
   let parent = root;
   for (const content of contents) {
     parent = await parent.reply(answerPayload(content));
@@ -654,13 +713,19 @@ function createClientOptions(mentionEnabled: boolean): ClientOptions {
   };
 }
 
-function answerPayload(content: string): {
+function answerPayload(content: string | AnswerDetailMessage): {
   readonly allowedMentions: { readonly parse: readonly []; readonly repliedUser: false };
+  readonly components?: NonNullable<AnswerDetailMessage['components']>;
   readonly content: string;
 } {
   return {
     allowedMentions: { parse: [], repliedUser: false },
-    content,
+    ...(typeof content === 'string'
+      ? { content }
+      : {
+          ...(content.components ? { components: content.components } : {}),
+          content: content.content,
+        }),
   };
 }
 

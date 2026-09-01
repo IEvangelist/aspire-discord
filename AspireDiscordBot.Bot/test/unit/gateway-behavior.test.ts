@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { AnswerService, GroundedAnswer } from '../../src/domain.js';
 import { DiscordGateway } from '../../src/discord/gateway.js';
 import type { DiscordAttachmentSnapshot } from '../../src/discord/image-context.js';
+import type { RuntimeConfig, RuntimeConfigSnapshot } from '../../src/runtime-config.js';
 import { createTestConfig } from '../helpers/config.js';
 import { testLogger } from '../helpers/logger.js';
 
@@ -155,6 +156,23 @@ function createCapturingLogger(): {
     },
   );
   return { entries, logger };
+}
+
+function createMutableRuntimeConfig(initial: RuntimeConfigSnapshot): {
+  readonly runtime: RuntimeConfig;
+  set(value: RuntimeConfigSnapshot): void;
+} {
+  let current = initial;
+  return {
+    runtime: {
+      current: () => current,
+      refresh: async () => undefined,
+      stop: () => undefined,
+    },
+    set: (value) => {
+      current = value;
+    },
+  };
 }
 
 function attachment(name: string, contentType: string, size: number): DiscordAttachmentSnapshot {
@@ -362,7 +380,8 @@ describe('Discord gateway behavior', () => {
       parent: 0,
       payload: {
         allowedMentions: { parse: [], repliedUser: false },
-        content: expect.stringContaining('**Grounded sources**'),
+        components: [expect.anything()],
+        content: expect.stringContaining('1 grounded source'),
       },
     });
     expect(answers.answer).toHaveBeenCalledWith(
@@ -400,11 +419,11 @@ describe('Discord gateway behavior', () => {
 
     await vi.waitFor(() => {
       expect(
-        request.chain.calls.some((call) => replyContent(call).includes('Grounded sources')),
+        request.chain.calls.some((call) => replyContent(call).includes('grounded source')),
       ).toBe(true);
     });
     const sourceIndex = request.chain.calls.findIndex((call) =>
-      replyContent(call).includes('Grounded sources'),
+      replyContent(call).includes('grounded source'),
     );
     expect(sourceIndex).toBeGreaterThan(0);
     expect(request.chain.calls.map((call) => call.parent)).toEqual(
@@ -472,6 +491,96 @@ describe('Discord gateway behavior', () => {
       }),
     );
     expect(JSON.stringify(captured.entries)).not.toContain('How do I add Redis?');
+    await gateway.stop();
+  });
+
+  it('uses refreshed runtime access and grounding settings without restarting', async () => {
+    const harness = createClient();
+    const answers = createAnswers();
+    const mutable = createMutableRuntimeConfig({
+      allowedUserIds: new Set(['first']),
+      available: true,
+      groundingDetailsMode: 'collapsed',
+      revision: 'one',
+      source: 'azure-app-configuration',
+    });
+    const gateway = new DiscordGateway(
+      createTestConfig({ discord: { mentionEnabled: true } }),
+      answers.service,
+      testLogger,
+      harness.client,
+      undefined,
+      mutable.runtime,
+    );
+    await gateway.start();
+    const first = createMessage({ id: 'first-request', userId: 'first' });
+
+    emit(harness.client, first.message);
+    await vi.waitFor(() => {
+      expect(answers.answer).toHaveBeenCalledOnce();
+    });
+
+    mutable.set({
+      allowedUserIds: new Set(['second']),
+      available: true,
+      groundingDetailsMode: 'hidden',
+      revision: 'two',
+      source: 'azure-app-configuration',
+    });
+    const removed = createMessage({ id: 'removed-request', userId: 'first' });
+    const second = createMessage({ id: 'second-request', userId: 'second' });
+    emit(harness.client, removed.message);
+    emit(harness.client, second.message);
+
+    await vi.waitFor(() => {
+      expect(answers.answer).toHaveBeenCalledTimes(2);
+    });
+    expect(removed.reply).not.toHaveBeenCalled();
+    expect(gateway.status().access).toEqual({
+      allowedUsers: 1,
+      configurationReady: true,
+      groundingDetailsMode: 'hidden',
+      mode: 'allowlist',
+      revision: 'two',
+      source: 'azure-app-configuration',
+    });
+    expect(second.chain.calls[0]?.payload.components).toBeUndefined();
+    await gateway.stop();
+  });
+
+  it('fails closed while remote runtime configuration is unavailable', async () => {
+    const harness = createClient();
+    const answers = createAnswers();
+    const mutable = createMutableRuntimeConfig({
+      allowedUserIds: new Set(),
+      available: false,
+      groundingDetailsMode: 'collapsed',
+      revision: 'unavailable',
+      source: 'unavailable',
+    });
+    const gateway = new DiscordGateway(
+      createTestConfig({ discord: { mentionEnabled: true } }),
+      answers.service,
+      testLogger,
+      harness.client,
+      undefined,
+      mutable.runtime,
+    );
+    await gateway.start();
+    const request = createMessage({ id: 'config-unavailable' });
+
+    emit(harness.client, request.message);
+
+    await vi.waitFor(() => {
+      expect(request.reply).toHaveBeenCalledWith(
+        expect.objectContaining({
+          content: expect.stringContaining('access configuration is unavailable'),
+        }),
+      );
+    });
+    expect(answers.answer).not.toHaveBeenCalled();
+    expect(gateway.ready).toBe(false);
+    expect(gateway.status().access.mode).toBe('unavailable');
     await gateway.stop();
   });
 

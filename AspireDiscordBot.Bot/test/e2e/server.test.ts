@@ -16,7 +16,14 @@ describe('HTTP service', () => {
       discord: {
         ready: true,
         status: () => ({
-          access: { allowedUsers: 0, mode: 'open' },
+          access: {
+            allowedUsers: 0,
+            configurationReady: true,
+            groundingDetailsMode: 'collapsed',
+            mode: 'open',
+            revision: 'environment',
+            source: 'environment',
+          },
           guilds: 0,
           mentionEnabled: false,
           pingMilliseconds: 0,
@@ -42,7 +49,14 @@ describe('HTTP service', () => {
       discord: {
         ready: true,
         status: () => ({
-          access: { allowedUsers: 0, mode: 'open' },
+          access: {
+            allowedUsers: 0,
+            configurationReady: true,
+            groundingDetailsMode: 'collapsed',
+            mode: 'open',
+            revision: 'environment',
+            source: 'environment',
+          },
           guilds: 0,
           mentionEnabled: false,
           pingMilliseconds: 0,
@@ -64,7 +78,14 @@ describe('HTTP service', () => {
       discord: {
         ready: true,
         status: () => ({
-          access: { allowedUsers: 0, mode: 'open' },
+          access: {
+            allowedUsers: 0,
+            configurationReady: true,
+            groundingDetailsMode: 'collapsed',
+            mode: 'open',
+            revision: 'environment',
+            source: 'environment',
+          },
           guilds: 0,
           mentionEnabled: false,
           pingMilliseconds: 0,

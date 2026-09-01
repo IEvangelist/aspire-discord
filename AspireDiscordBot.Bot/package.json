@@ -20,6 +20,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
+    "@azure/app-configuration": "1.12.1",
     "@azure/identity": "4.13.2",
     "@azure/monitor-opentelemetry": "1.19.0",
     "@azure/search-documents": "13.0.0",

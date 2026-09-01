@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { buildAnswerThread } from '../../src/discord/formatter.js';
 
 describe('buildAnswerThread', () => {
-  it('separates a grounded answer from its source reply', () => {
+  it('renders grounded sources as compact link buttons by default', () => {
     const formatted = buildAnswerThread('How?', {
       answer: 'Use the documented API. [1]',
       citations: [
@@ -21,9 +21,66 @@ describe('buildAnswerThread', () => {
     expect(formatted.answerMessages[0]).toContain('### ❓ How?');
     expect(formatted.answerMessages[0]).toContain('Use the documented API. [1]');
     expect(formatted.answerMessages[0]).not.toContain('Grounded sources');
-    expect(formatted.detailMessages[0]).toContain('**Grounded sources**');
-    expect(formatted.detailMessages[0]).toContain('[API (reference)]');
-    expect(formatted.detailMessages[0]).toContain('Grounded in microsoft/aspire & aspire.dev');
+    expect(formatted.detailMessages[0].content).toContain('1 grounded source');
+    expect(formatted.detailMessages[0].content).not.toContain('[API (reference)]');
+    expect(formatted.detailMessages[0].content).toContain(
+      'Grounded in microsoft/aspire & aspire.dev',
+    );
+    expect(formatted.detailMessages[0].components?.[0]?.toJSON()).toMatchObject({
+      components: [
+        {
+          label: '[1] API [reference]',
+          style: 5,
+          url: 'https://github.com/microsoft/aspire/blob/main/a.cs',
+        },
+      ],
+      type: 1,
+    });
+  });
+
+  it('supports expanded and hidden grounding details', () => {
+    const answer = {
+      answer: 'Use the documented API. [1]',
+      citations: [
+        {
+          number: 1,
+          repo: 'microsoft/aspire' as const,
+          title: 'API reference',
+          url: 'https://github.com/microsoft/aspire/blob/main/a.cs',
+        },
+      ],
+      isGrounded: true,
+      topScore: 0.9,
+    };
+
+    const expanded = buildAnswerThread('How?', answer, 'expanded');
+    const hidden = buildAnswerThread('How?', answer, 'hidden');
+
+    expect(expanded.detailMessages[0].content).toContain('**Grounded sources**');
+    expect(expanded.detailMessages[0].content).toContain('[API reference]');
+    expect(expanded.detailMessages[0].components).toBeUndefined();
+    expect(hidden.detailMessages[0].content).not.toContain('Grounded sources');
+    expect(hidden.detailMessages[0].components).toBeUndefined();
+  });
+
+  it('does not let an invalid citation URL break a collapsed answer', () => {
+    const formatted = buildAnswerThread('How?', {
+      answer: 'Use the documented API. [1]',
+      citations: [
+        {
+          number: 1,
+          repo: 'microsoft/aspire',
+          title: 'Invalid source',
+          url: 'javascript:alert(1)',
+        },
+      ],
+      isGrounded: true,
+      topScore: 0.9,
+    });
+
+    expect(formatted.answerMessages[0]).toContain('Use the documented API. [1]');
+    expect(formatted.detailMessages[0].content).toContain('source links unavailable');
+    expect(formatted.detailMessages[0].components).toBeUndefined();
   });
 
   it('renders ungrounded status as a separate reply without a sources section', () => {
@@ -35,8 +92,8 @@ describe('buildAnswerThread', () => {
     });
 
     expect(formatted.answerMessages[0]).not.toContain('Grounded sources');
-    expect(formatted.detailMessages[0]).not.toContain('Grounded sources');
-    expect(formatted.detailMessages[0]).toContain('No matching coverage found');
+    expect(formatted.detailMessages[0].content).not.toContain('Grounded sources');
+    expect(formatted.detailMessages[0].content).toContain('No matching coverage found');
   });
 
   it('escapes user-controlled Markdown in the echoed question', () => {
@@ -76,8 +133,8 @@ describe('buildAnswerThread', () => {
     });
 
     expect(answerMessages[0]).not.toContain('Context note:');
-    expect(detailMessages[0]).toContain('Context note: An optional image');
-    expect(detailMessages[0]).toContain('Context note: Thread history');
+    expect(detailMessages[0].content).toContain('Context note: An optional image');
+    expect(detailMessages[0].content).toContain('Context note: Thread history');
   });
 
   it('summarizes notice overflow instead of silently dropping it', () => {
@@ -89,8 +146,10 @@ describe('buildAnswerThread', () => {
       topScore: 0,
     });
 
-    expect(detailMessages[0]).toContain('Limitation 5');
-    expect(detailMessages[0]).toContain('2 additional context limitations were also applied');
+    expect(detailMessages[0].content).toContain('Limitation 5');
+    expect(detailMessages[0].content).toContain(
+      '2 additional context limitations were also applied',
+    );
   });
 
   it('splits long answers within Discord limits and balances code fences', () => {
@@ -107,7 +166,11 @@ describe('buildAnswerThread', () => {
 
     expect(formatted.answerMessages.length).toBeGreaterThan(1);
     expect(formatted.answerMessages.at(-1)).toContain('Finished.');
-    for (const message of [...formatted.answerMessages, ...formatted.detailMessages]) {
+    const messages = [
+      ...formatted.answerMessages,
+      ...formatted.detailMessages.map((message) => message.content),
+    ];
+    for (const message of messages) {
       expect(message.length).toBeLessThanOrEqual(2_000);
       expect((message.match(/```/gu) ?? []).length % 2).toBe(0);
     }

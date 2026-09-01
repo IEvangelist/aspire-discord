@@ -16,6 +16,8 @@ describe('loadConfig', () => {
     expect(config.ai.embeddingDimensions).toBe(1_536);
     expect(config.discord.mentionEnabled).toBe(true);
     expect(config.discord.maxRequestsPerMinute).toBe(10);
+    expect(config.discord.groundingDetailsMode).toBe('collapsed');
+    expect(config.runtimeConfig).toEqual({ refreshIntervalMs: 15_000 });
     expect(config.imageContext).toEqual({
       enabled: false,
       maxBytes: 3 * 1_024 * 1_024,
@@ -121,6 +123,21 @@ describe('loadConfig', () => {
 
     expect([...csv.discord.allowedUserIds]).toEqual(['123', '456']);
     expect([...json.discord.allowedUserIds]).toEqual(['789']);
+  });
+
+  it('configures live runtime settings', () => {
+    const config = loadConfig({
+      ...validEnvironment,
+      AZURE_APPCONFIG_ENDPOINT: 'https://example.azconfig.io',
+      DISCORD_GROUNDING_DETAILS_MODE: 'hidden',
+      RUNTIME_CONFIG_REFRESH_INTERVAL_MS: '30000',
+    });
+
+    expect(config.discord.groundingDetailsMode).toBe('hidden');
+    expect(config.runtimeConfig).toEqual({
+      endpoint: 'https://example.azconfig.io',
+      refreshIntervalMs: 30_000,
+    });
   });
 
   it('does not reuse a chat key for a different embedding provider', () => {

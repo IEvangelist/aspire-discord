@@ -1,4 +1,5 @@
-import { escapeMarkdown } from 'discord.js';
+import { ActionRowBuilder, ButtonBuilder, ButtonStyle, escapeMarkdown } from 'discord.js';
+import type { GroundingDetailsMode } from '../config.js';
 import type { GroundedAnswer } from '../domain.js';
 import { redactSensitiveText } from '../safety.js';
 
@@ -7,25 +8,59 @@ const closingFence = '```';
 
 export interface AnswerThread {
   readonly answerMessages: readonly [string, ...string[]];
-  readonly detailMessages: readonly [string, ...string[]];
+  readonly detailMessages: readonly [AnswerDetailMessage, ...AnswerDetailMessage[]];
 }
 
-export function buildAnswerThread(question: string, answer: GroundedAnswer): AnswerThread {
+export interface AnswerDetailMessage {
+  readonly components?: readonly ActionRowBuilder<ButtonBuilder>[];
+  readonly content: string;
+}
+
+export function buildAnswerThread(
+  question: string,
+  answer: GroundedAnswer,
+  groundingDetailsMode: GroundingDetailsMode = 'collapsed',
+): AnswerThread {
   const answerSections = [
     `### ❓ ${truncate(escapeMarkdown(singleLine(redactSensitiveText(question))), 256)}`,
     answer.answer.trim(),
   ];
   const detailSections: string[] = [];
+  let sourceComponents: readonly ActionRowBuilder<ButtonBuilder>[] | undefined;
 
   if (answer.isGrounded && answer.citations.length > 0) {
-    const sources = answer.citations
-      .slice(0, 5)
-      .map(
-        (citation) =>
-          `[${String(citation.number)}] [${truncate(sanitizeTitle(citation.title), 100)}](${citation.url})`,
-      )
-      .join('\n');
-    detailSections.push(`**Grounded sources**\n${sources}`);
+    const citations = answer.citations.slice(0, 5);
+    if (groundingDetailsMode === 'expanded') {
+      const sources = citations
+        .map((citation) =>
+          isSafeSourceUrl(citation.url)
+            ? `[${String(citation.number)}] [${truncate(sanitizeTitle(citation.title), 100)}](${citation.url})`
+            : `[${String(citation.number)}] ${truncate(sanitizeTitle(citation.title), 100)} (source link unavailable)`,
+        )
+        .join('\n');
+      detailSections.push(`**Grounded sources**\n${sources}`);
+    } else if (groundingDetailsMode === 'collapsed') {
+      const linkedCitations = citations.filter((citation) => isSafeSourceUrl(citation.url));
+      if (linkedCitations.length === 0) {
+        detailSections.push('-# Grounded source links unavailable');
+      } else {
+        detailSections.push(
+          `-# ${String(linkedCitations.length)} grounded source${linkedCitations.length === 1 ? '' : 's'}`,
+        );
+        sourceComponents = [
+          new ActionRowBuilder<ButtonBuilder>().addComponents(
+            linkedCitations.map((citation) =>
+              new ButtonBuilder()
+                .setLabel(
+                  `[${String(citation.number)}] ${truncate(singleLine(citation.title), 72)}`,
+                )
+                .setStyle(ButtonStyle.Link)
+                .setURL(citation.url),
+            ),
+          ),
+        ];
+      }
+    }
   }
 
   if (answer.notices?.length) {
@@ -46,7 +81,13 @@ export function buildAnswerThread(question: string, answer: GroundedAnswer): Ans
   );
   return {
     answerMessages: [firstAnswer, ...answerRest],
-    detailMessages: [firstDetail, ...detailRest],
+    detailMessages: [
+      {
+        ...(sourceComponents ? { components: sourceComponents } : {}),
+        content: firstDetail,
+      },
+      ...detailRest.map((content) => ({ content })),
+    ],
   };
 }
 
@@ -66,6 +107,17 @@ function formatNotices(notices: readonly string[]): string {
 
 function sanitizeTitle(value: string): string {
   return value.replaceAll('[', '(').replaceAll(']', ')');
+}
+
+function isSafeSourceUrl(value: string): boolean {
+  if (value.length > 512) {
+    return false;
+  }
+  try {
+    return new URL(value).protocol === 'https:';
+  } catch {
+    return false;
+  }
 }
 
 function singleLine(value: string): string {

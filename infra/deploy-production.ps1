@@ -90,6 +90,121 @@ function Get-ManagementToken {
     return $token.Trim()
 }
 
+function Get-AppConfigToken {
+    Assert-DeploymentNotCancelled
+    $token = & az account get-access-token `
+        --subscription $SubscriptionId `
+        --resource 'https://appconfig.azure.com' `
+        --query accessToken `
+        --output tsv
+    $exitCode = $LASTEXITCODE
+    Assert-DeploymentNotCancelled
+    if ($exitCode -ne 0 -or [string]::IsNullOrWhiteSpace($token)) {
+        throw 'Unable to acquire an Azure App Configuration token.'
+    }
+    return $token.Trim()
+}
+
+function Get-DeploymentPrincipal {
+    Assert-DeploymentNotCancelled
+    $accountJson = & az account show `
+        --subscription $SubscriptionId `
+        --query user `
+        --output json 2>$null
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($accountJson)) {
+        Write-Warning 'Could not resolve the deployment principal; runtime configuration editing access was not assigned.'
+        return [pscustomobject]@{ Id = ''; Type = 'User' }
+    }
+
+    $account = $accountJson | ConvertFrom-Json
+    $principalType = if ($account.type -eq 'servicePrincipal') {
+        'ServicePrincipal'
+    }
+    else {
+        'User'
+    }
+    $principalId = ''
+    try {
+        $token = Get-ManagementToken
+        $encodedPayload = $token.Split('.')[1].Replace('-', '+').Replace('_', '/')
+        $padding = (4 - ($encodedPayload.Length % 4)) % 4
+        $encodedPayload += '=' * $padding
+        $claims = [Text.Encoding]::UTF8.GetString(
+            [Convert]::FromBase64String($encodedPayload)) | ConvertFrom-Json
+        $principalId = [string]$claims.oid
+    }
+    catch {
+        Write-Warning 'Could not read the deployment principal from the Azure access token.'
+    }
+
+    if ([string]::IsNullOrWhiteSpace($principalId)) {
+        Write-Warning 'Could not resolve the deployment principal object ID; runtime configuration editing access was not assigned.'
+        return [pscustomobject]@{ Id = ''; Type = $principalType }
+    }
+    return [pscustomobject]@{ Id = $principalId; Type = $principalType }
+}
+
+function Initialize-RuntimeConfigSetting {
+    param(
+        [string] $StoreName,
+        [string] $Key,
+        [string] $Value
+    )
+
+    $encodedKey = [Uri]::EscapeDataString($Key)
+    $uri = "https://${StoreName}.azconfig.io/kv/${encodedKey}?api-version=1.0"
+    $body = @{
+        content_type = 'text/plain'
+        value = $Value
+    } | ConvertTo-Json -Compress
+    for ($attempt = 1; $attempt -le 90; $attempt++) {
+        Assert-DeploymentNotCancelled
+        $appConfigToken = Get-AppConfigToken
+        try {
+            Invoke-RestMethod `
+                -Uri $uri `
+                -Headers @{
+                    Authorization = "Bearer $appConfigToken"
+                    'If-None-Match' = '*'
+                } `
+                -Method Put `
+                -ContentType 'application/vnd.microsoft.appconfig.kv+json' `
+                -Body $body | Out-Null
+            return
+        }
+        catch {
+            $statusCode = [int]$_.Exception.Response.StatusCode
+            if ($statusCode -eq 412) {
+                return
+            }
+            if ($statusCode -notin @(401, 403, 429) -or $attempt -eq 90) {
+                throw
+            }
+            if ($attempt -eq 1 -or $attempt % 6 -eq 0) {
+                Write-Host 'Waiting for Azure App Configuration data access to propagate...'
+            }
+            Start-Sleep -Seconds 10
+        }
+    }
+    throw "Azure App Configuration setting '$Key' could not be initialized."
+}
+
+function Initialize-RuntimeConfig {
+    param(
+        [string] $StoreName,
+        [string] $AllowedUserIds
+    )
+
+    Initialize-RuntimeConfigSetting `
+        -StoreName $StoreName `
+        -Key 'AspireDiscord:Discord:AllowedUserIds' `
+        -Value $AllowedUserIds
+    Initialize-RuntimeConfigSetting `
+        -StoreName $StoreName `
+        -Key 'AspireDiscord:Discord:GroundingDetailsMode' `
+        -Value 'collapsed'
+}
+
 function Enter-DeploymentLease {
     $uri = "https://management.azure.com/subscriptions/$SubscriptionId/resourcegroups/${ResourceGroup}?api-version=2024-03-01"
     $leaseToken = [Guid]::NewGuid().ToString('N')
@@ -480,15 +595,22 @@ if ($resourceGroupExists -ne 'true') {
 $deploymentLease = Enter-DeploymentLease
 try {
 Assert-DeploymentNotCancelled
+$deploymentPrincipal = Get-DeploymentPrincipal
+$foundationParameters = @(
+    "location=$Location"
+    "resourceSuffix=$ResourceSuffix"
+    'environmentName=production'
+)
+if (-not [string]::IsNullOrWhiteSpace($deploymentPrincipal.Id)) {
+    $foundationParameters += "runtimeConfigEditorPrincipalId=$($deploymentPrincipal.Id)"
+    $foundationParameters += "runtimeConfigEditorPrincipalType=$($deploymentPrincipal.Type)"
+}
 $foundationJson = & az deployment group create `
     --subscription $SubscriptionId `
     --resource-group $ResourceGroup `
     --name "foundation-$runId" `
     --template-file (Join-Path $PSScriptRoot 'main.bicep') `
-    --parameters `
-        location=$Location `
-        resourceSuffix=$ResourceSuffix `
-        environmentName=production `
+    --parameters $foundationParameters `
     --query properties.outputs `
     --output json
 $exitCode = $LASTEXITCODE
@@ -498,6 +620,7 @@ if ($exitCode -ne 0) {
 }
 $foundation = $foundationJson | ConvertFrom-Json
 $registryName = $foundation.registryName.value
+$runtimeConfigName = $foundation.runtimeConfigName.value
 
 if (-not $SkipBuild) {
     $buildContext = Join-Path ([IO.Path]::GetTempPath()) "aspire-discord-build-$runId-$PID"
@@ -549,6 +672,10 @@ $allowedUserIds = Get-DeploymentSecret `
     -EnvironmentName 'DISCORD_ALLOWED_USER_IDS' `
     -AspireKey 'Parameters:DiscordAllowedUserIds' `
     -Optional
+
+Initialize-RuntimeConfig `
+    -StoreName $runtimeConfigName `
+    -AllowedUserIds $allowedUserIds
 
 $sourceApplication = Get-SourceApplication
 $targetApplication = if ($sourceApplication -eq 'aspire-discord-blue') {

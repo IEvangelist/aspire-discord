@@ -58,6 +58,10 @@ resource applicationInsights 'Microsoft.Insights/components@2020-02-02' existing
   name: '${baseName}-insights'
 }
 
+resource runtimeConfig 'Microsoft.AppConfiguration/configurationStores@2024-06-01' existing = {
+  name: '${compactName}config'
+}
+
 resource application 'Microsoft.App/containerApps@2025-07-01' = {
   name: applicationName
   location: location
@@ -176,6 +180,10 @@ resource application 'Microsoft.App/containerApps@2025-07-01' = {
                 value: 'ManagedIdentityCredential'
               }
               {
+                name: 'AZURE_APPCONFIG_ENDPOINT'
+                value: 'https://${runtimeConfig.name}.azconfig.io'
+              }
+              {
                 name: 'AZURE_LOG_LEVEL'
                 value: 'error'
               }
@@ -214,6 +222,10 @@ resource application 'Microsoft.App/containerApps@2025-07-01' = {
               {
                 name: 'DISCORD_MAX_REQUESTS_PER_MINUTE'
                 value: '10'
+              }
+              {
+                name: 'DISCORD_GROUNDING_DETAILS_MODE'
+                value: 'collapsed'
               }
               {
                 name: 'SAFETY_MAX_QUESTION_LENGTH'
@@ -258,6 +270,10 @@ resource application 'Microsoft.App/containerApps@2025-07-01' = {
               {
                 name: 'LINK_CONTEXT_MAX_URLS'
                 value: '3'
+              }
+              {
+                name: 'RUNTIME_CONFIG_REFRESH_INTERVAL_MS'
+                value: '15000'
               }
               {
                 name: 'GITHUB_MCP_TOKEN'
