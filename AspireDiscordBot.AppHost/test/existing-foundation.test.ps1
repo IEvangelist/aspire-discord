@@ -190,10 +190,13 @@ function Invoke-StagedAzureCli {
         throw 'Unsafe diagnostic transport.'
     }
     if ($script:probeScenario -eq 'missing-marker') { return 'fake-secret-do-not-log' }
+    if ($script:probeScenario -eq 'windows-newlines') { return "INFO: Connected`r`nASPIRE_STAGED_FEATURES_OK`r`r`n" }
     return "INFO: Connected`r`nASPIRE_STAGED_FEATURES_OK`r`n"
 }
 Test-StagedFeatures -ApplicationName 'aspire-discord-blue' -ExpectedRevision $expectedRevision
 if ($script:execCalls -ne 1) { throw 'The staged feature diagnostic did not execute exactly once.' }
+$script:probeScenario = 'windows-newlines'
+Test-StagedFeatures -ApplicationName 'aspire-discord-blue' -ExpectedRevision $expectedRevision
 $script:probeScenario = 'transition'
 $script:revisionReads = 0
 Test-StagedFeatures -ApplicationName 'aspire-discord-blue' -ExpectedRevision $expectedRevision

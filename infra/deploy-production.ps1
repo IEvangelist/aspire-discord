@@ -513,7 +513,8 @@ function Test-StagedFeatures {
     $output = Invoke-StagedAzureCli -Arguments (@('containerapp', 'exec') + $scope +
         @('--revision', $ExpectedRevision, '--replica', $replica.name, '--container', 'bot', '--command', $command))
     # Azure exec can return zero even when the child fails. Never echo its captured content.
-    if ($output -cnotmatch '(?m)^ASPIRE_STAGED_FEATURES_OK\r?$') {
+    # Windows CLI stdout can translate a remote CRLF into CRCRLF.
+    if ($output.Replace("`r`r`n", "`r`n") -cnotmatch '(?m)^ASPIRE_STAGED_FEATURES_OK\r?$') {
         throw 'Staged feature checks failed; source remains active and diagnostic output is withheld.'
     }
     Write-Host 'ASPIRE_STAGED_FEATURES_OK'
