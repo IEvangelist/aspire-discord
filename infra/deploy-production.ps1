@@ -484,11 +484,24 @@ function Test-StagedFeatures {
     $command = "node -e `"eval(require('node:zlib').brotliDecompressSync(Buffer.from('$payload','base64url')).toString())`""
     if ([Uri]::EscapeDataString($command).Length -gt 1800) { throw 'Staged diagnostic exceeds the console command limit.' }
     $scope = @('--subscription', $SubscriptionId, '--resource-group', $ResourceGroup, '--name', $ApplicationName)
-    $revisions = Invoke-StagedAzureCli -Arguments (@('containerapp', 'revision', 'list') + $scope + @('--output', 'json')) |
-        ConvertFrom-Json
-    $active = @($revisions | Where-Object { $_.properties.active })
-    if ($active.Count -ne 1 -or $active[0].name -cne $ExpectedRevision) {
-        throw 'The expected staging revision is not the sole active revision.'
+    $revisionDeadline = [DateTimeOffset]::UtcNow.AddMinutes(4)
+    while ($true) {
+        $revisions = Invoke-StagedAzureCli -Arguments (@('containerapp', 'revision', 'list') + $scope + @('--output', 'json')) |
+            ConvertFrom-Json
+        $active = @($revisions | Where-Object { $_.properties.active })
+        if ($active.Count -eq 1 -and $active[0].name -ceq $ExpectedRevision -and
+            $active[0].properties.healthState -eq 'Healthy') { break }
+        if (@($active | Where-Object {
+            -not $_.name.StartsWith("$ApplicationName--s-", [StringComparison]::Ordinal)
+        }).Count -gt 0) {
+            throw 'Unexpected non-staging revision is active in the staging slot.'
+        }
+        if ([DateTimeOffset]::UtcNow -ge $revisionDeadline) {
+            throw 'The expected staging revision did not become the sole active revision before the deadline.'
+        }
+        Assert-DeploymentNotCancelled
+        Write-Host 'Waiting for the exact new staging revision; production remains active...'
+        Start-Sleep -Seconds 5
     }
     $replicas = Invoke-StagedAzureCli -Arguments (@('containerapp', 'replica', 'list') + $scope +
         @('--revision', $ExpectedRevision, '--output', 'json')) | ConvertFrom-Json

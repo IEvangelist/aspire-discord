@@ -158,11 +158,18 @@ $sourceApplication = 'aspire-discord-green'
 $expectedRevision = 'aspire-discord-blue--s-test'
 $script:probeScenario = 'success'
 $script:execCalls = 0
+$script:revisionReads = 0
+function Start-Sleep {}
 function Invoke-StagedAzureCli {
     param([string[]] $Arguments)
     if ($Arguments[1] -eq 'revision') {
+        $script:revisionReads++
         $name = if ($script:probeScenario -eq 'wrong-revision') { 'wrong' } else { $expectedRevision }
-        return (@(@{ name = $name; properties = @{ active = $true } }) | ConvertTo-Json -Depth 5 -AsArray)
+        if ($script:probeScenario -eq 'transition' -and $script:revisionReads -eq 1) {
+            return (@(@{name='aspire-discord-blue--s-previous';properties=@{active=$true}},
+                @{name=$expectedRevision;properties=@{active=$true}}) | ConvertTo-Json -Depth 5 -AsArray)
+        }
+        return (@(@{ name = $name; properties = @{ active = $true; healthState = 'Healthy' } }) | ConvertTo-Json -Depth 5 -AsArray)
     }
     if ($Arguments[1] -eq 'replica') {
         return (@(@{ name = 'exact-staged-replica'; properties = @{
@@ -187,6 +194,10 @@ function Invoke-StagedAzureCli {
 }
 Test-StagedFeatures -ApplicationName 'aspire-discord-blue' -ExpectedRevision $expectedRevision
 if ($script:execCalls -ne 1) { throw 'The staged feature diagnostic did not execute exactly once.' }
+$script:probeScenario = 'transition'
+$script:revisionReads = 0
+Test-StagedFeatures -ApplicationName 'aspire-discord-blue' -ExpectedRevision $expectedRevision
+if ($script:revisionReads -ne 2) { throw 'The staging revision transition was not awaited.' }
 foreach ($scenario in @('wrong-revision', 'not-ready', 'missing-marker')) {
     $script:probeScenario = $scenario
     Assert-Fails { Test-StagedFeatures -ApplicationName 'aspire-discord-blue' -ExpectedRevision $expectedRevision }
