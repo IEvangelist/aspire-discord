@@ -94,6 +94,51 @@ export class GitHubRepositoryPolicy {
     }
   }
 
+  public scopeRepositoryQuery(query: string, repository: string): string {
+    this.ensureAllowed(repository);
+    // The MCP issue search's semantic mode removes free-text quotes before searching.
+    const semanticQuery = query.replace(/"/gu, '');
+    if (
+      /(?:^|\s)(?:OR|NOT|AND)(?:\s|$)/iu.test(semanticQuery) ||
+      /[()|&\\]/u.test(semanticQuery) ||
+      /(?:^|\s)[-+]?(?:org|user|owner):/iu.test(semanticQuery)
+    ) {
+      throw new Error('GitHub queries may not contain Boolean branches or owner scopes.');
+    }
+    const tokens = query.match(/(?:[^\s"]|"(?:\\.|[^"\\])*")+/gu) ?? [];
+    const scoped: string[] = [];
+    for (const token of tokens) {
+      const unquoted = token.replace(/"(?:\\.|[^"\\])*"/gu, '');
+      if (
+        /^(?:OR|NOT|AND)$/iu.test(unquoted) ||
+        /[()|&\\"]/u.test(unquoted) ||
+        /(?:^|[-+])(?:org|user|owner):/iu.test(unquoted)
+      ) {
+        throw new Error('GitHub queries may not contain Boolean branches or owner scopes.');
+      }
+      if (!/^repo:/iu.test(token) && /(?:^|\s)[-+]?repo:/iu.test(token.replace(/"/gu, ''))) {
+        throw new Error('GitHub repository qualifiers must not be embedded in quoted text.');
+      }
+      if (/^[-+]?repo:/iu.test(token)) {
+        const match =
+          /^repo:(?:"([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)"|([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+))$/iu.exec(
+            token,
+          );
+        const requested = match?.[1] ?? match?.[2];
+        if (requested?.toLowerCase() !== repository.toLowerCase()) {
+          throw new Error('GitHub query repository must match the selected allowed repository.');
+        }
+        continue;
+      }
+      scoped.push(token);
+    }
+    // Reject unmatched quotes rather than letting GitHub reinterpret the appended scope.
+    if (tokens.join(' ').replace(/\s/gu, '') !== query.trim().replace(/\s/gu, '')) {
+      throw new Error('GitHub query contains malformed quoting.');
+    }
+    return [...scoped, `repo:${repository}`].join(' ');
+  }
+
   public isAllowedUrl(value: string): boolean {
     let url: URL;
     try {
@@ -101,7 +146,14 @@ export class GitHubRepositoryPolicy {
     } catch {
       return false;
     }
-    if (url.hostname !== 'github.com' && url.hostname !== 'api.github.com') {
+    if (
+      url.protocol !== 'https:' ||
+      url.username ||
+      url.password ||
+      url.port ||
+      url.search ||
+      (url.hostname !== 'github.com' && url.hostname !== 'api.github.com')
+    ) {
       return false;
     }
 
@@ -121,7 +173,7 @@ export class GitHubRepositoryPolicy {
     } catch {
       return undefined;
     }
-    if (url.protocol !== 'https:' || url.hostname !== 'github.com') {
+    if (!this.isAllowedUrl(value) || url.hostname !== 'github.com') {
       return undefined;
     }
 

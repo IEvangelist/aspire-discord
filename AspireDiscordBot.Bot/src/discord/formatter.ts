@@ -29,7 +29,7 @@ export function buildAnswerThread(
   let sourceComponents: readonly ActionRowBuilder<ButtonBuilder>[] | undefined;
 
   if (answer.isGrounded && answer.citations.length > 0) {
-    const citations = answer.citations.slice(0, 5);
+    const citations = answer.citations.slice(0, answer.source === 'github' ? 25 : 5);
     if (groundingDetailsMode === 'expanded') {
       const sources = citations
         .map((citation) =>
@@ -47,18 +47,22 @@ export function buildAnswerThread(
         detailSections.push(
           `-# ${String(linkedCitations.length)} grounded source${linkedCitations.length === 1 ? '' : 's'}`,
         );
-        sourceComponents = [
-          new ActionRowBuilder<ButtonBuilder>().addComponents(
-            linkedCitations.map((citation) =>
-              new ButtonBuilder()
-                .setLabel(
-                  `[${String(citation.number)}] ${truncate(singleLine(citation.title), 72)}`,
-                )
-                .setStyle(ButtonStyle.Link)
-                .setURL(citation.url),
+        const rows: ActionRowBuilder<ButtonBuilder>[] = [];
+        for (let index = 0; index < linkedCitations.length; index += 5) {
+          rows.push(
+            new ActionRowBuilder<ButtonBuilder>().addComponents(
+              linkedCitations.slice(index, index + 5).map((citation) =>
+                new ButtonBuilder()
+                  .setLabel(
+                    `[${String(citation.number)}] ${truncate(singleLine(citation.title), 72)}`,
+                  )
+                  .setStyle(ButtonStyle.Link)
+                  .setURL(citation.url),
+              ),
             ),
-          ),
-        ];
+          );
+        }
+        sourceComponents = rows;
       }
     }
   }
@@ -68,9 +72,13 @@ export function buildAnswerThread(
   }
 
   detailSections.push(
-    answer.isGrounded
-      ? '-# Grounded in microsoft/aspire & aspire.dev'
-      : '-# No matching coverage found in microsoft/aspire or aspire.dev',
+    answer.source === 'github'
+      ? answer.isGrounded
+        ? '-# Live GitHub evidence from the configured Aspire repositories; see report coverage and limits.'
+        : '-# GitHub lookup needs clarification or is unavailable; no documentation match is required.'
+      : answer.isGrounded
+        ? '-# Grounded in microsoft/aspire & aspire.dev'
+        : '-# No matching coverage found in microsoft/aspire or aspire.dev',
   );
 
   const [firstAnswer = 'Sorry - I could not format that answer.', ...answerRest] = splitMarkdown(

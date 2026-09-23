@@ -171,7 +171,8 @@ The resource graph includes dashboard commands backed by the ingestion API:
 
 ## Agent behavior
 
-Each question follows the same bounded pipeline:
+Technical questions follow this bounded pipeline. After the same input safety guard, explicit
+GitHub read requests use the live repository workflow below instead of the documentation gate:
 
 1. Deterministic input guard rejects prompt injection, jailbreaks, extraction attempts, empty input,
    and questions over 2,000 characters.
@@ -220,6 +221,27 @@ the exact read-tool list, and the application's repository and argument policies
 Non-GitHub URL fetching is separately constrained to exact HTTPS hosts, validates every redirect,
 accepts text content only, reads at most 1 MiB, returns at most 12,000 characters, and never forwards
 credentials or cookies. Fetched text remains untrusted model context.
+
+### GitHub reports and read-only operations
+
+GitHub read requests do not require a match in the documentation index. For example,
+`@Aspirey Bot look at issue reports from afscrome this month` queries authored issues in both
+`microsoft/aspire` and `microsoft/aspire.dev`, including open and closed reports, and returns
+counts and links. PR reports and broader user-activity requests use the same repository allowlist.
+Relative dates are explicitly interpreted in UTC; an omitted date range defaults to the last
+30 days. Invalid/ambiguous usernames or unsupported date ranges request clarification.
+
+Reports distinguish issue/PR authorship from comments, reviews and commits. They state the
+categories, pagination, sample and API limitations rather than claiming to enumerate every GitHub
+event. A successful zero-result search is different from missing credentials, a rate limit or a
+failed repository lookup. Other repository questions use only the existing read-only GitHub tools
+with explicit page limits and source citations, not issue-publishing credentials or tools.
+Issue creation remains a separate, requester-approved workflow; this read path cannot write to GitHub.
+Activity snapshots cover authored issues/PRs, new issue/review comments, submitted PR reviews, and
+default-branch commits (filtered by committer date). Reactions, deleted activity, branch pushes,
+discussions and other events are not included. Bounds are 300 search results per repository,
+200 records per activity endpoint, four review candidates, 40 requests, 12 seconds per request,
+and 60 seconds overall. A summary may show a labeled sample of ten retrieved records.
 
 ## Ingestion
 
@@ -380,6 +402,12 @@ aspire deploy --apphost .\AspireDiscordBot.AppHost\apphost.mts --environment Pro
 `true` for this rollout**. Read-only discovery validates required resources,
 ownership, identities and authentication posture, and fails closed instead of
 falling back to foundation provisioning. This path skips legacy storage cleanup.
+
+Before cutover, the staged slot must pass health checks plus a bounded read-only smoke check:
+the actual GitHub report route, both-repository MCP search, and managed-identity Table access.
+The probe never creates an issue, invokes a model, or writes a table row. It runs only in the exact
+Discord-disabled staging revision and prints a fixed success/failure marker, not retrieved content.
+Any failed or partial lookup stops cutover while the current bot remains active.
 The existing lease, immutable build, disabled-Discord staging/readiness check,
 singleton cutover, rollback, and superseded-slot cleanup remain in place.
 Secret ARM parameters use an owner-protected local file that is removed on success

@@ -2,6 +2,35 @@ import { describe, expect, it } from 'vitest';
 import { buildAnswerThread } from '../../src/discord/formatter.js';
 
 describe('buildAnswerThread', () => {
+  it('never labels a failed or clarification-only GitHub lookup as missing documentation coverage', () => {
+    const formatted = buildAnswerThread('Issues from a user?', {
+      answer: 'Which GitHub username?',
+      citations: [],
+      isGrounded: false,
+      topScore: 0,
+      source: 'github',
+    });
+    expect(formatted.detailMessages[0].content).toContain('GitHub lookup');
+    expect(formatted.detailMessages[0].content).not.toContain('No matching coverage');
+  });
+  it('keeps GitHub report citations in valid five-button rows', () => {
+    const formatted = buildAnswerThread('Issue reports', {
+      answer: 'Reported issues.',
+      isGrounded: true,
+      topScore: 0,
+      source: 'github',
+      citations: Array.from({ length: 22 }, (_, index) => ({
+        number: index + 1,
+        title: `Issue ${String(index + 1)}`,
+        repo: 'microsoft/aspire',
+        url: `https://github.com/microsoft/aspire/issues/${String(index + 1)}`,
+      })),
+    });
+    expect(formatted.detailMessages[0].components).toHaveLength(5);
+    expect(formatted.detailMessages[0].components?.map((row) => row.components.length)).toEqual([
+      5, 5, 5, 5, 2,
+    ]);
+  });
   it('renders grounded sources as compact link buttons by default', () => {
     const formatted = buildAnswerThread('How?', {
       answer: 'Use the documented API. [1]',

@@ -428,6 +428,84 @@ function Wait-Application {
     throw "Container App at '$ApplicationUrl' did not reach the expected state."
 }
 
+function Invoke-StagedAzureCli {
+    param([string[]] $Arguments)
+
+    Assert-DeploymentNotCancelled
+    $executable = (Get-Command az -CommandType Application -ErrorAction Stop |
+        Select-Object -First 1).Source
+    $prefix = @()
+    if ($IsWindows -and $executable -like '*.cmd') {
+        # Bypass cmd.exe so the Node expression arrives as one unchanged argument.
+        $executable = Join-Path (Split-Path -Parent (Split-Path -Parent $executable)) 'python.exe'
+        if (-not (Test-Path -LiteralPath $executable)) { throw 'Azure CLI Python executable was not found.' }
+        $prefix = @('-X', 'utf8', '-IBm', 'azure.cli')
+    }
+    $start = [Diagnostics.ProcessStartInfo]::new($executable)
+    $start.UseShellExecute = $false
+    $start.RedirectStandardOutput = $true
+    $start.RedirectStandardError = $true
+    foreach ($argument in @($prefix) + $Arguments) { $start.ArgumentList.Add($argument) }
+    $process = [Diagnostics.Process]::new()
+    $process.StartInfo = $start
+    $started = $false
+    try {
+        $null = $process.Start()
+        $started = $true
+        $stdout = $process.StandardOutput.ReadToEndAsync()
+        $stderr = $process.StandardError.ReadToEndAsync()
+        $deadline = [DateTimeOffset]::UtcNow.AddSeconds(110)
+        while (-not $process.WaitForExit(500)) {
+            Assert-DeploymentNotCancelled
+            if ([DateTimeOffset]::UtcNow -ge $deadline) { throw 'Staged diagnostic CLI timed out.' }
+        }
+        Assert-DeploymentNotCancelled
+        if ($process.ExitCode -ne 0) { throw 'Staged diagnostic CLI failed; output withheld.' }
+        return $stdout.GetAwaiter().GetResult()
+    }
+    finally {
+        if ($started -and -not $process.HasExited) { $process.Kill($true) }
+        $process.Dispose()
+    }
+}
+
+function Test-StagedFeatures {
+    param([string] $ApplicationName, [string] $ExpectedRevision)
+
+    Assert-DeploymentNotCancelled
+    if ($ApplicationName -notin @('aspire-discord-blue', 'aspire-discord-green') -or
+        $ApplicationName -eq $sourceApplication -or
+        -not $ExpectedRevision.StartsWith("$ApplicationName--s-", [StringComparison]::Ordinal)) {
+        throw 'Staged diagnostics must target the isolated staging slot and revision.'
+    }
+    $probePath = Join-Path $repoRoot 'infra\verify-staged-features.cjs'
+    $payload = & node -e "process.stdout.write(require('node:zlib').brotliCompressSync(require('node:fs').readFileSync(process.argv[1])).toString('base64url'))" $probePath
+    if ($LASTEXITCODE -ne 0 -or $payload -cnotmatch '^[A-Za-z0-9_-]+$') { throw 'Unable to encode staged diagnostic.' }
+    $command = "node -e `"eval(require('node:zlib').brotliDecompressSync(Buffer.from('$payload','base64url')).toString())`""
+    if ([Uri]::EscapeDataString($command).Length -gt 1800) { throw 'Staged diagnostic exceeds the console command limit.' }
+    $scope = @('--subscription', $SubscriptionId, '--resource-group', $ResourceGroup, '--name', $ApplicationName)
+    $revisions = Invoke-StagedAzureCli -Arguments (@('containerapp', 'revision', 'list') + $scope + @('--output', 'json')) |
+        ConvertFrom-Json
+    $active = @($revisions | Where-Object { $_.properties.active })
+    if ($active.Count -ne 1 -or $active[0].name -cne $ExpectedRevision) {
+        throw 'The expected staging revision is not the sole active revision.'
+    }
+    $replicas = Invoke-StagedAzureCli -Arguments (@('containerapp', 'replica', 'list') + $scope +
+        @('--revision', $ExpectedRevision, '--output', 'json')) | ConvertFrom-Json
+    $replica = $replicas | Where-Object {
+        @($_.properties.containers | Where-Object { $_.name -eq 'bot' -and $_.ready -eq $true }).Count -eq 1
+    } | Select-Object -First 1
+    if (-not $replica -or [string]::IsNullOrWhiteSpace($replica.name)) { throw 'No ready staged bot replica was found.' }
+    Write-Host 'Checking staged GitHub reads and configured issue storage (read-only)...'
+    $output = Invoke-StagedAzureCli -Arguments (@('containerapp', 'exec') + $scope +
+        @('--revision', $ExpectedRevision, '--replica', $replica.name, '--container', 'bot', '--command', $command))
+    # Azure exec can return zero even when the child fails. Never echo its captured content.
+    if ($output -cnotmatch '(?m)^ASPIRE_STAGED_FEATURES_OK\r?$') {
+        throw 'Staged feature checks failed; source remains active and diagnostic output is withheld.'
+    }
+    Write-Host 'ASPIRE_STAGED_FEATURES_OK'
+}
+
 function Get-ActiveRevision {
     param(
         [string] $ApplicationName,
@@ -757,6 +835,10 @@ $stage = Invoke-AppDeployment `
     -DeploymentName "stage-$runId"
 $applicationUrl = $stage.applicationUrl.value
 Wait-Application -ApplicationUrl $applicationUrl -ExpectDiscord $false | Out-Null
+if ($GitHubIssuesKeyId) {
+    Test-StagedFeatures -ApplicationName $targetApplication `
+        -ExpectedRevision "$targetApplication--s-$($imageTag.Substring(0, 7))-$runId"
+}
 
 if ($StopLocalAppHost) {
     Assert-DeploymentNotCancelled

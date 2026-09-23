@@ -15,6 +15,8 @@ import { buildServer } from './server.js';
 import type { TelemetryHandle } from './telemetry.js';
 import { startRuntimeConfig } from './runtime-config.js';
 import { createIssueController } from './issues/setup.js';
+import { GitHubActivityReader } from './agent/github-activity.js';
+import { GitHubReadService } from './agent/github-read-service.js';
 
 export async function main(telemetry: TelemetryHandle): Promise<void> {
   const config = loadConfig();
@@ -38,6 +40,13 @@ export async function main(telemetry: TelemetryHandle): Promise<void> {
     githubMcp,
     logger,
     questionContext,
+    new GitHubReadService(
+      new GitHubActivityReader(config.githubMcp, logger),
+      githubMcp,
+      copilot,
+      logger,
+      config.agent.maxToolCalls,
+    ),
   );
   const discord = new DiscordGateway(
     config,

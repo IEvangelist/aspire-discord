@@ -5,7 +5,13 @@ $tokens = $null
 $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($path, [ref]$tokens, [ref]$errors)
 if ($errors.Count) { throw ($errors | Out-String) }
-foreach ($name in @('New-DeploymentParameterFile', 'Invoke-AppDeployment')) {
+$cliFunction = $ast.Find({ param($node)
+    $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Invoke-StagedAzureCli'
+}, $true)
+if ($cliFunction.Extent.Text -notmatch 'Get-Command az[^)]*Select-Object -First 1') {
+    throw 'Azure CLI discovery must select exactly one executable.'
+}
+foreach ($name in @('New-DeploymentParameterFile', 'Invoke-AppDeployment', 'Test-StagedFeatures')) {
     $function = $ast.Find({ param($node)
         $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name
     }.GetNewClosure(), $true)
@@ -126,4 +132,151 @@ $appTemplate = 'app.bicep'
 Assert-Fails { Invoke-AppDeployment -ApplicationName 'aspire-discord-blue' -DeploymentName 'test' -EnableDiscord $false }
 if (($script:capturedArguments -join ' ') -match 'fake-secret') { throw 'Secrets leaked to CLI arguments.' }
 if (Test-Path -LiteralPath $script:capturedPath) { throw 'Failed deployment left secret parameters behind.' }
+
+$stageWait = $ast.Find({ param($node)
+    $node -is [System.Management.Automation.Language.CommandAst] -and
+    $node.GetCommandName() -eq 'Wait-Application' -and $node.Extent.Text -match '-ExpectDiscord \$false'
+}, $true)
+$probeCall = $ast.Find({ param($node)
+    $node -is [System.Management.Automation.Language.CommandAst] -and $node.GetCommandName() -eq 'Test-StagedFeatures'
+}, $true)
+$deactivate = $ast.Find({ param($node)
+    $node -is [System.Management.Automation.Language.CommandAst] -and
+    $node.GetCommandName() -eq 'Set-RevisionActive' -and $node.Extent.Text -match '-Active \$false'
+}, $true)
+if (-not $probeCall -or $probeCall.Extent.StartOffset -le $stageWait.Extent.EndOffset -or
+    $probeCall.Extent.EndOffset -ge $deactivate.Extent.StartOffset) {
+    throw 'Staged feature checks must follow disabled readiness and precede source deactivation.'
+}
+$ancestor = $probeCall.Parent
+while ($ancestor -and $ancestor -isnot [System.Management.Automation.Language.IfStatementAst]) { $ancestor = $ancestor.Parent }
+if (-not $ancestor -or $ancestor.Clauses[0].Item1.Extent.Text -ne '$GitHubIssuesKeyId') {
+    throw 'The isolated release probe must not change legacy deployment behavior.'
+}
+
+$sourceApplication = 'aspire-discord-green'
+$expectedRevision = 'aspire-discord-blue--s-test'
+$script:probeScenario = 'success'
+$script:execCalls = 0
+function Invoke-StagedAzureCli {
+    param([string[]] $Arguments)
+    if ($Arguments[1] -eq 'revision') {
+        $name = if ($script:probeScenario -eq 'wrong-revision') { 'wrong' } else { $expectedRevision }
+        return (@(@{ name = $name; properties = @{ active = $true } }) | ConvertTo-Json -Depth 5 -AsArray)
+    }
+    if ($Arguments[1] -eq 'replica') {
+        return (@(@{ name = 'exact-staged-replica'; properties = @{
+            containers = @(@{ name = 'bot'; ready = $script:probeScenario -ne 'not-ready' })
+        } }) | ConvertTo-Json -Depth 5 -AsArray)
+    }
+    $script:execCalls++
+    foreach ($pair in @(
+        @('--name', 'aspire-discord-blue'), @('--revision', $expectedRevision),
+        @('--replica', 'exact-staged-replica'), @('--container', 'bot')
+    )) {
+        if ($Arguments[[Array]::IndexOf($Arguments, $pair[0]) + 1] -cne $pair[1]) {
+            throw 'Diagnostic targeted an unexpected resource.'
+        }
+    }
+    $command = $Arguments[[Array]::IndexOf($Arguments, '--command') + 1]
+    if ([Uri]::EscapeDataString($command).Length -gt 1800 -or $command -match 'fake-secret') {
+        throw 'Unsafe diagnostic transport.'
+    }
+    if ($script:probeScenario -eq 'missing-marker') { return 'fake-secret-do-not-log' }
+    return "INFO: Connected`r`nASPIRE_STAGED_FEATURES_OK`r`n"
+}
+Test-StagedFeatures -ApplicationName 'aspire-discord-blue' -ExpectedRevision $expectedRevision
+if ($script:execCalls -ne 1) { throw 'The staged feature diagnostic did not execute exactly once.' }
+foreach ($scenario in @('wrong-revision', 'not-ready', 'missing-marker')) {
+    $script:probeScenario = $scenario
+    Assert-Fails { Test-StagedFeatures -ApplicationName 'aspire-discord-blue' -ExpectedRevision $expectedRevision }
+}
+Assert-Fails { Test-StagedFeatures -ApplicationName $sourceApplication -ExpectedRevision $expectedRevision }
+Assert-Fails { Test-StagedFeatures -ApplicationName 'other-app' -ExpectedRevision $expectedRevision }
+
+$probeTests = @'
+const assert = require('node:assert/strict');
+const vm = require('node:vm');
+const source = require('node:fs').readFileSync(process.argv[1], 'utf8').replaceAll('import(', 'load(');
+(async () => {
+  for (const scenario of ['ok', 'empty-table', 'no-token', 'no-table', 'no-key', 'discord', 'ungrounded', 'one-repo', 'not-covered', 'partial', 'mcp-failure', 'mcp-one-repo', 'table-failure', 'no-identity', 'model']) {
+    const logs = [];
+    let tableReads = 0;
+    let finish;
+    const done = new Promise(resolve => { finish = resolve; });
+    const config = {
+      discord: { token: scenario === 'discord' ? 'fake-secret' : undefined },
+      githubMcp: { token: scenario === 'no-token' ? undefined : 'fake-secret' },
+      issues: { keyId: scenario === 'no-key' ? undefined : 'test-key-id', tableEndpoint: scenario === 'no-table' ? undefined : 'https://example.table.core.windows.net', tableName: 'IssueDrafts' },
+    };
+    class Reader { constructor() {} }
+    class Service {
+      constructor(reader, github, runtime) { this.runtime = runtime; }
+      async tryAnswer(question) {
+        assert.equal(question, 'look at issue reports from afscrome this month');
+        if (scenario === 'model') return this.runtime.complete();
+        return {
+          source: 'github', isGrounded: scenario !== 'ungrounded',
+          answer: scenario === 'not-covered' ? 'NOT_COVERED' : `${scenario === 'partial' ? 'partial: ' : ''}microsoft/aspire microsoft/aspire.dev`,
+          citations: (scenario === 'one-repo' ? ['microsoft/aspire'] : ['microsoft/aspire', 'microsoft/aspire.dev']).map(repo => ({ repo })),
+        };
+      }
+    }
+    class TableClient {
+      listEntities(options) {
+        assert.equal(options.queryOptions.top, 1);
+        assert.deepEqual(Array.from(options.queryOptions.select), ['PartitionKey', 'RowKey']);
+        assert.ok(options.abortSignal);
+        return { next: async () => {
+          tableReads++;
+          if (scenario === 'table-failure') throw Error('fake-secret-do-not-log');
+          return { done: scenario === 'empty-table', value: { partitionKey: 'private' } };
+        }};
+      }
+    }
+    class ManagedIdentityCredential {
+      constructor(options) { assert.equal(options.clientId, 'explicit-client-id'); }
+    }
+    class CitationRegistry { all = []; }
+    class ToolBudget { constructor(count) { assert.equal(count, 2); } }
+    class GitHubMcpClient {
+      createTools(citations, budget, signal) {
+        assert.ok(signal);
+        return [{name:'search_issues', handler: async () => {
+          if (scenario === 'mcp-failure') throw Error('fake-secret-do-not-log');
+          citations.all = (scenario === 'mcp-one-repo' ? ['microsoft/aspire'] :
+            ['microsoft/aspire','microsoft/aspire.dev']).map(repo => ({repo}));
+          return 'microsoft/aspire microsoft/aspire.dev';
+        }}];
+      }
+      async close() {}
+    }
+    vm.runInNewContext(source, {
+      load: async name => {
+        if (name.endsWith('/config.js')) return { loadConfig: () => config };
+        if (name.endsWith('/github-activity.js')) return { GitHubActivityReader: Reader };
+        if (name.endsWith('/github-read-service.js')) return { GitHubReadService: Service };
+        if (name.endsWith('/github-mcp.js')) return { GitHubMcpClient };
+        if (name.endsWith('/citations.js')) return { CitationRegistry };
+        if (name.endsWith('/tool-budget.js')) return { ToolBudget };
+        if (name === '@azure/data-tables') return { TableClient };
+        if (name === '@azure/identity') return { ManagedIdentityCredential };
+        throw Error('Unexpected import');
+      },
+      console: { log: text => logs.push(text) },
+      process: { env: { AZURE_CLIENT_ID: scenario === 'no-identity' ? undefined : 'explicit-client-id' }, exit: code => finish(code) },
+      setTimeout: (_, delay) => assert.equal(delay, 90000),
+      AbortSignal, fetch: () => { throw Error('Network is forbidden in regression checks'); },
+    });
+    const code = await done;
+    const success = ['ok', 'empty-table'].includes(scenario);
+    assert.equal(code, success ? 0 : 1, scenario);
+    assert.deepEqual(logs, [success ? 'ASPIRE_STAGED_FEATURES_OK' : 'ASPIRE_STAGED_FEATURES_FAILED'], scenario);
+    if (success) assert.equal(tableReads, 1);
+  }
+  console.log('Offline staged feature probe checks passed.');
+})().catch(error => { console.error(error); process.exitCode = 1; });
+'@
+& node -e $probeTests (Join-Path $repoRoot 'infra\verify-staged-features.cjs')
+if ($LASTEXITCODE -ne 0) { throw 'Offline staged feature probe checks failed.' }
 Write-Output 'Foundation and parameter-file regression checks passed.'

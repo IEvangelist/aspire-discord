@@ -20,6 +20,7 @@ import { ImageCapabilityError } from './image-capability.js';
 import type { QuestionContextProvider, QuestionContextResult } from './question-context.js';
 import { prioritizeCurrentDocumentation } from './retrieval-freshness.js';
 import { ToolBudget } from './tool-budget.js';
+import type { GitHubReadHandler } from './github-read-service.js';
 
 export interface AgentRuntime {
   complete(
@@ -30,13 +31,18 @@ export interface AgentRuntime {
     signal?: AbortSignal,
     onProgress?: AnswerProgressHandler,
     images?: readonly AnswerImage[],
+    systemPrompt?: string,
   ): Promise<string>;
 }
 
 export interface GitHubToolProvider {
   // The SDK models heterogeneous tool collections as Tool<any>[].
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  createTools(citations: CitationRegistry, budget: ToolBudget): readonly Tool<any>[];
+  createTools(
+    citations: CitationRegistry,
+    budget: ToolBudget,
+    signal?: AbortSignal,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  ): readonly Tool<any>[];
 }
 
 export interface RetrievalStore {
@@ -62,6 +68,7 @@ export class GroundedAnswerService implements AnswerService {
     private readonly githubMcp: GitHubToolProvider,
     private readonly logger: Logger,
     private readonly questionContext?: QuestionContextProvider,
+    private readonly githubReads?: GitHubReadHandler,
   ) {}
 
   public async answer(
@@ -95,6 +102,20 @@ export class GroundedAnswerService implements AnswerService {
             );
           }
 
+          const githubAnswer = await this.githubReads?.tryAnswer(
+            trimmed,
+            signal,
+            onProgress,
+            conversation,
+          );
+          if (githubAnswer) {
+            span.setAttribute(
+              'gen_ai.agent.outcome',
+              githubAnswer.isGrounded ? 'github_read' : 'github_read_unavailable',
+            );
+            span.setAttribute('gen_ai.agent.citation_count', githubAnswer.citations.length);
+            return githubAnswer;
+          }
           const agentQuestion = sanitizeForAgent(trimmed);
           const conversationHistory = truncateAtGrapheme(
             sanitizeForAgent(conversation?.history?.trim() ?? ''),
@@ -188,7 +209,7 @@ export class GroundedAnswerService implements AnswerService {
               embeddings: this.embeddings,
               qdrant: this.qdrant,
             }),
-            ...this.githubMcp.createTools(citations, budget),
+            ...this.githubMcp.createTools(citations, budget, signal),
           ];
           const toolNames = new Set(tools.map((tool) => tool.name));
           const initialContext = [linked.context, citations.formatResults(seed)]
@@ -266,7 +287,7 @@ export class GroundedAnswerService implements AnswerService {
         },
         'Answer pipeline completed.',
       );
-      const notices = [...new Set(conversation?.notices ?? [])];
+      const notices = [...new Set([...(result.notices ?? []), ...(conversation?.notices ?? [])])];
       return notices.length > 0 ? { ...result, notices } : result;
     } catch (error) {
       this.logger.warn(

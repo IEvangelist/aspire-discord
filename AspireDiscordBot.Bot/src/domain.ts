@@ -11,6 +11,7 @@ export interface GroundedAnswer {
   readonly isGrounded: boolean;
   readonly notices?: readonly string[];
   readonly topScore: number;
+  readonly source?: 'github';
 }
 
 export type AnswerProgressPhase =
