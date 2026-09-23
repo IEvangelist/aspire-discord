@@ -11,7 +11,7 @@
     "dev": "aspire run",
     "format": "prettier --write \"*.{json,mjs,mts}\" \"test/**/*.mts\"",
     "format:check": "prettier --check \"*.{json,mjs,mts}\" \"test/**/*.mts\"",
-    "lint": "eslint apphost.mts deployment-pipeline.mts test/**/*.mts",
+    "lint": "eslint apphost.mts deployment-pipeline.mts issue-storage.mts test/**/*.mts",
     "test": "node --import tsx --test test/*.test.mts",
     "typecheck": "tsc --noEmit -p tsconfig.apphost.json"
   },

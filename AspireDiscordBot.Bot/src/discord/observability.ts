@@ -1,5 +1,6 @@
 import {
   metrics,
+  ROOT_CONTEXT,
   SpanKind,
   SpanStatusCode,
   trace,
@@ -9,6 +10,7 @@ import {
 import type { Message } from 'discord.js';
 
 const tracer = trace.getTracer('AspireDiscordBot.Discord');
+const mentionOperationName = 'process discord mention';
 const meter = metrics.getMeter('AspireDiscordBot.Discord');
 const requestCount = meter.createCounter('aspire.discord.requests', {
   description: 'Discord mentions received by outcome.',
@@ -35,6 +37,7 @@ export type DiscordRequestOutcome =
   | 'failed'
   | 'image_rejected'
   | 'invalid_question'
+  | 'issue_handled'
   | 'not_authorized'
   | 'not_grounded'
   | 'rate_limited'
@@ -62,16 +65,21 @@ export interface DiscordRequestObservation {
   fail(error: unknown, attributes?: Attributes): void;
 }
 
+type DiscordMessageContext = Pick<Message, 'id' | 'channelId' | 'guildId'> & {
+  readonly author: Pick<Message['author'], 'id'>;
+};
+
 export async function observeDiscordMention<T>(
-  message: Message,
+  message: DiscordMessageContext,
   execute: (observation: DiscordRequestObservation) => Promise<T>,
 ): Promise<T> {
   return await tracer.startActiveSpan(
-    'process discord mention',
+    mentionOperationName,
     {
       attributes: discordTraceAttributes(message),
       kind: SpanKind.CONSUMER,
     },
+    ROOT_CONTEXT,
     async (span) => {
       const observation = new RequestObservation(span);
       try {
@@ -90,7 +98,7 @@ export async function observeDiscordMention<T>(
   );
 }
 
-export function discordLogContext(message: Message): Record<string, string> {
+export function discordLogContext(message: DiscordMessageContext): Record<string, string> {
   return {
     discordMessageId: message.id,
     discordUserId: message.author.id,
@@ -159,8 +167,10 @@ class RequestObservation implements DiscordRequestObservation {
   }
 }
 
-function discordTraceAttributes(message: Message): Attributes {
+function discordTraceAttributes(message: DiscordMessageContext): Attributes {
   return {
+    // Azure Monitor does not derive operation names from CONSUMER span names.
+    'ai.operation.name': mentionOperationName,
     'discord.channel.id': message.channelId,
     'discord.user.id': message.author.id,
     'messaging.message.id': message.id,

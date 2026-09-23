@@ -4,6 +4,8 @@ import { metrics } from '@opentelemetry/api';
 import { createHash } from 'node:crypto';
 import { Agent as HttpsAgent } from 'node:https';
 import type { Logger } from 'pino';
+import { disabledIssuePolicy, parseIssuePolicy } from './issues/policy.js';
+import type { IssuePolicy } from './issues/types.js';
 import {
   groundingDetailsModeSchema,
   parseIdentifierSet,
@@ -14,6 +16,7 @@ import {
 export const runtimeConfigKeys = {
   allowedUserIds: 'AspireDiscord:Discord:AllowedUserIds',
   groundingDetailsMode: 'AspireDiscord:Discord:GroundingDetailsMode',
+  issuePolicy: 'AspireDiscord:Discord:IssuePolicy',
 } as const;
 
 const runtimeConfigPrefix = 'AspireDiscord:Discord:';
@@ -25,6 +28,9 @@ const refreshes = meter.createCounter('aspire.runtime_config.refreshes', {
 });
 
 export interface RuntimeConfigSnapshot {
+  readonly issuePolicy?: IssuePolicy;
+  readonly issuePolicyAvailable?: boolean;
+  readonly validatedAt?: number;
   readonly allowedUserIds: ReadonlySet<string>;
   readonly available: boolean;
   readonly groundingDetailsMode: GroundingDetailsMode;
@@ -53,7 +59,7 @@ interface RuntimeConfigClient {
 }
 
 export async function startRuntimeConfig(
-  config: Pick<AppConfig, 'discord' | 'runtimeConfig'>,
+  config: Pick<AppConfig, 'discord' | 'runtimeConfig' | 'issues'>,
   logger: Logger,
   dependencies: RuntimeConfigDependencies = {},
 ): Promise<RuntimeConfig> {
@@ -62,6 +68,7 @@ export async function startRuntimeConfig(
     config.discord.groundingDetailsMode,
     'environment',
     true,
+    config.issues.policy,
   );
   if (!config.runtimeConfig.endpoint) {
     logger.info(
@@ -158,6 +165,7 @@ class RefreshingRuntimeConfig implements RuntimeConfig {
         'aspire.runtime_config.refresh.outcome': changed ? 'updated' : 'unchanged',
       });
     } catch (error) {
+      this.#snapshot = { ...this.#snapshot, issuePolicyAvailable: false };
       this.#consecutiveFailures++;
       refreshes.add(1, { 'aspire.runtime_config.refresh.outcome': 'failed' });
       if (this.#consecutiveFailures === 1 || this.#consecutiveFailures % 20 === 0) {
@@ -180,8 +188,16 @@ class RefreshingRuntimeConfig implements RuntimeConfig {
     const groundingDetailsMode = groundingDetailsModeSchema.parse(
       requiredSetting(configuration, runtimeConfigKeys.groundingDetailsMode),
     );
-    const next = snapshot(allowedUserIds, groundingDetailsMode, 'azure-app-configuration', true);
+    const issuePolicy = parseIssuePolicy(configuration.get(runtimeConfigKeys.issuePolicy));
+    const next = snapshot(
+      allowedUserIds,
+      groundingDetailsMode,
+      'azure-app-configuration',
+      true,
+      issuePolicy,
+    );
     if (next.revision === this.#snapshot.revision && next.source === this.#snapshot.source) {
+      this.#snapshot = next;
       return false;
     }
     this.#snapshot = next;
@@ -235,13 +251,17 @@ function snapshot(
   groundingDetailsMode: GroundingDetailsMode,
   source: RuntimeConfigSnapshot['source'],
   available: boolean,
+  issuePolicy: IssuePolicy = disabledIssuePolicy,
 ): RuntimeConfigSnapshot {
   const normalizedIds = [...allowedUserIds].sort();
   const revision = createHash('sha256')
-    .update(JSON.stringify({ allowedUserIds: normalizedIds, groundingDetailsMode }))
+    .update(JSON.stringify({ allowedUserIds: normalizedIds, groundingDetailsMode, issuePolicy }))
     .digest('hex')
     .slice(0, 12);
   return {
+    issuePolicy,
+    issuePolicyAvailable: available,
+    validatedAt: Date.now(),
     allowedUserIds: new Set(normalizedIds),
     available,
     groundingDetailsMode,

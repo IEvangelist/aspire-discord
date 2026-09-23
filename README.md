@@ -305,7 +305,7 @@ aspire deploy `
 `aspire deploy` resolves an explicit pipeline:
 
 1. `production-preflight` requires committed source, validates Azure access, and compiles every
-   Bicep template.
+   relevant Bicep template (only `app.bicep` when reusing the foundation).
 2. `production-blue-green` acquires the Azure deployment lease, builds immutable Git-tagged images,
    stages the inactive slot without Discord, waits for both Search aliases, cuts over the singleton
    Discord connection, and restores the prior slot if cutover fails.
@@ -317,6 +317,79 @@ supported deployment entry point.
 
 After a successful migration from the older Qdrant deployment, the script removes the unsupported
 NFS-backed Container App and storage account.
+
+### Issue-filing rollout without foundation changes
+
+Issue filing uses GitHub App **4968096**, installation **163850423**, a version-pinned
+Key Vault signing key, and managed-identity Azure Table storage. No PEM, storage
+account key, or new Key Vault role is supplied to the application.
+
+The existing private vault `aspire-issues-ffccd7` and its previously approved
+key-scoped runtime identity grant are prerequisites, not deployment resources in
+this release. Neither application deployment nor `issue-storage` changes the
+vault, network, DNS, NSGs, Search, Foundry, or telemetry retention.
+`infra\issue-vault.bicep`, `infra\issue-vault-access.bicep`, and
+`infra\private-endpoint-network.bicep` preserve the source of the earlier approved
+vault deployment; they are **not registered in either rollout scope**. Do not
+reapply them during this rollout (Azure-managed NSG rules must be preserved).
+The access template retains its custom-role default and explicit
+`builtin-key-scoped` opt-in; production already has the separately approved
+key-scoped Crypto User grant, so neither mode runs here.
+
+After reviewing and committing the release, provision the isolated storage scope:
+
+```powershell
+$env:Azure__SubscriptionId = '11aa9ca6-306a-4ea9-b614-2d413efd04a8'
+$env:Azure__ResourceGroup = 'aspire-discord-prod'
+$env:Azure__Location = 'centralus'
+$env:Parameters__DeploymentScope = 'issue-storage'
+aspire publish --apphost .\AspireDiscordBot.AppHost\apphost.mts --environment Production --non-interactive -o .\AspireDiscordBot.AppHost\.aspire\issue-storage-preview
+aspire deploy --apphost .\AspireDiscordBot.AppHost\apphost.mts --environment Production --non-interactive
+```
+
+The storage resource is owned by the AppHost, but its custom Aspire deployment step applies only a
+resource-group-scoped incremental deployment to the existing group. Native Azure provisioning is
+disconnected from this scope's `deploy` graph and guarded against direct invocation: Aspire 13.5.3's
+native context can otherwise fall back to creating/updating the group after a failed lookup.
+The custom step repeats read-only prerequisite checks immediately before deployment and propagates
+any failure without creating a group or rewriting its tags. Use `aspire deploy`, not the published
+subscription-level `main.bicep` wrapper, to preserve this existing-only behavior.
+
+This scope creates only `aspireissuesffccd7` (`StorageV2`, `Standard_LRS`, TLS 1.2,
+shared keys disabled, OAuth default, anonymous blob access disabled), the table
+service and `IssueDrafts` table, and **Storage Table Data Contributor**
+(`0a9a7e1f-b9d0-4cc4-a60d-0319b160aaa3`) scoped **only to that table**, for existing
+runtime principal `16d6bfa3-79e5-4da5-b2d8-b76672588040`. It creates no custom role
+definitions or new identities. Preflight rejects an unowned or incompatible
+existing account, wrong identity, or unexpected subscription/resource group.
+`aspire destroy` is blocked because this resource group also hosts the live bot.
+
+Then deploy the application while explicitly preserving the existing foundation:
+
+```powershell
+$env:Parameters__DeploymentScope = 'application'
+$env:Parameters__UseExistingFoundation = 'true'
+$env:Parameters__GitHubIssuesAppId = '4968096'
+$env:Parameters__GitHubIssuesInstallationId = '163850423'
+$env:GITHUB_ISSUES_KEY_ID = 'https://aspire-issues-ffccd7.vault.azure.net/keys/github-issues/b4ee9c33666f4abe90b3d9c17d2008bf'
+aspire deploy --apphost .\AspireDiscordBot.AppHost\apphost.mts --environment Production --non-interactive
+```
+
+`Parameters__GitHubIssuesKeyId` is also accepted. These identifiers are nonsecret.
+`UseExistingFoundation` defaults to `false` for legacy deployments; **set it to
+`true` for this rollout**. Read-only discovery validates required resources,
+ownership, identities and authentication posture, and fails closed instead of
+falling back to foundation provisioning. This path skips legacy storage cleanup.
+The existing lease, immutable build, disabled-Discord staging/readiness check,
+singleton cutover, rollback, and superseded-slot cleanup remain in place.
+Secret ARM parameters use an owner-protected local file that is removed on success
+or failure rather than secret command-line arguments.
+
+Credentials do **not** activate issue filing. Leave
+`AspireDiscord:Discord:IssuePolicy` absent or disabled during rollout. Activation is
+a separate, explicitly approved App Configuration policy change with nonempty
+user/channel/repository allowlists. Existing Q&A allowlist and grounding settings
+are never overwritten by deployment (initialization uses `If-None-Match: *`).
 
 ### Live runtime configuration
 

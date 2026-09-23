@@ -1,3 +1,5 @@
+import { AsyncResource } from 'node:async_hooks';
+
 export class WorkQueueFullError extends Error {
   public constructor(maximumQueued: number) {
     super(`The work queue is full (${String(maximumQueued)} waiting requests).`);
@@ -50,7 +52,7 @@ export class WorkLimiter {
 
     return new Promise<T>((resolve, reject) => {
       const entry: QueueEntry<T> = {
-        execute,
+        execute: AsyncResource.bind(execute),
         reject,
         resolve,
         ...(signal ? { signal } : {}),

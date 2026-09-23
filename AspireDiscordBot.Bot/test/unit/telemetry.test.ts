@@ -1,5 +1,11 @@
-import { describe, expect, it } from 'vitest';
-import { appendSignalPath, resolveTelemetryMode } from '../../src/telemetry.js';
+import { describe, expect, it, vi } from 'vitest';
+import { appendSignalPath, resolveTelemetryMode, startTelemetry } from '../../src/telemetry.js';
+
+const azureMonitor = vi.hoisted(() => ({
+  useAzureMonitor: vi.fn(),
+  shutdownAzureMonitor: vi.fn(async () => undefined),
+}));
+vi.mock('@azure/monitor-opentelemetry', () => azureMonitor);
 
 describe('OTLP signal endpoints', () => {
   it('builds trace and metric endpoints from an OTLP base URL', () => {
@@ -19,6 +25,20 @@ describe('OTLP signal endpoints', () => {
 });
 
 describe('telemetry mode', () => {
+  it('keeps all request traces rather than letting the rate cap override 100% sampling', async () => {
+    const telemetry = await startTelemetry({
+      APPLICATIONINSIGHTS_CONNECTION_STRING: 'InstrumentationKey=test',
+    });
+    expect(azureMonitor.useAzureMonitor).toHaveBeenCalledWith(
+      expect.objectContaining({
+        samplingRatio: 1,
+        tracesPerSecond: 0,
+        enableTraceBasedSamplingForLogs: false,
+      }),
+    );
+    await telemetry.shutdown();
+  });
+
   it('prefers Azure Monitor when its connection string is configured', () => {
     expect(
       resolveTelemetryMode({

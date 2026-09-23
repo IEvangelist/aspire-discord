@@ -7,6 +7,10 @@ param(
     [string] $ResultPath = '',
     [string] $CancellationPath = '',
     [switch] $SkipBuild,
+    [switch] $UseExistingFoundation,
+    [string] $GitHubIssuesAppId = '4968096',
+    [string] $GitHubIssuesKeyId = '',
+    [string] $GitHubIssuesInstallationId = '163850423',
     [switch] $StopLocalAppHost
 )
 
@@ -15,9 +19,18 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 $appHostPath = Join-Path $repoRoot 'AspireDiscordBot.AppHost\apphost.mts'
 $appTemplate = Join-Path $PSScriptRoot 'app.bicep'
 $deploymentLeaseTag = 'AspireDiscordDeploymentLease'
+. (Join-Path $PSScriptRoot 'existing-foundation.ps1') `
+    -SubscriptionId $SubscriptionId -ResourceGroup $ResourceGroup -Location $Location -ResourceSuffix $ResourceSuffix
 
 if ($env:ASPIRE_DEPLOYMENT_PIPELINE -ne '1') {
     throw 'This implementation is owned by the Aspire pipeline. Run aspire deploy --environment Production.'
+}
+if ($GitHubIssuesKeyId -and (-not $UseExistingFoundation -or
+    $GitHubIssuesKeyId -cnotmatch '^https://aspire-issues-ffccd7\.vault\.azure\.net/keys/github-issues/[a-f0-9]{32}$')) {
+    throw 'Issue deployment requires existing foundation and an approved versioned GitHubIssuesKeyId.'
+}
+if (Test-Path Env:GITHUB_ISSUES_APP_PRIVATE_KEY) {
+    throw 'Raw GitHub issue private keys are unsupported.'
 }
 
 function Assert-DeploymentNotCancelled {
@@ -316,30 +329,74 @@ function Invoke-AppDeployment {
     )
 
     Assert-DeploymentNotCancelled
-    $json = & az deployment group create `
-        --subscription $SubscriptionId `
-        --resource-group $ResourceGroup `
-        --name $DeploymentName `
-        --template-file $appTemplate `
-        --parameters `
-            location=$Location `
-            resourceSuffix=$ResourceSuffix `
-            environmentName=production `
-            applicationName=$ApplicationName `
-            imageTag=$imageTag `
-            revisionSuffix=$RevisionSuffix `
-            enableDiscord=$($EnableDiscord.ToString().ToLowerInvariant()) `
-            discordToken=$discordToken `
-            githubToken=$githubToken `
-            discordAllowedUserIds=$allowedUserIds `
-        --query properties.outputs `
-        --output json
-    $exitCode = $LASTEXITCODE
+    $parameters = @{
+        location = @{ value = $Location }
+        resourceSuffix = @{ value = $ResourceSuffix }
+        environmentName = @{ value = 'production' }
+        applicationName = @{ value = $ApplicationName }
+        imageTag = @{ value = $imageTag }
+        revisionSuffix = @{ value = $RevisionSuffix }
+        enableDiscord = @{ value = $EnableDiscord }
+        discordToken = @{ value = $discordToken }
+        githubToken = @{ value = $githubToken }
+        discordAllowedUserIds = @{ value = $allowedUserIds }
+        githubIssuesAppId = @{ value = $GitHubIssuesAppId }
+        githubIssuesKeyId = @{ value = $GitHubIssuesKeyId }
+        githubIssuesInstallationId = @{ value = $GitHubIssuesInstallationId }
+        githubIssuesTableEndpoint = @{ value = $githubIssuesTableEndpoint }
+    }
+    $parameterPath = New-DeploymentParameterFile -Parameters $parameters
+    try {
+        $json = @(& az deployment group create `
+            --subscription $SubscriptionId `
+            --resource-group $ResourceGroup `
+            --name $DeploymentName `
+            --mode Incremental `
+            --template-file $appTemplate `
+            --parameters "@$parameterPath" `
+            --query properties.outputs `
+            --only-show-errors `
+            --output json 2>&1)
+        $exitCode = $LASTEXITCODE
+    }
+    finally {
+        Remove-Item -LiteralPath (Split-Path -Parent $parameterPath) -Recurse -Force
+    }
     Assert-DeploymentNotCancelled
     if ($exitCode -ne 0) {
         throw "Azure application deployment '$DeploymentName' failed."
     }
-    return $json | ConvertFrom-Json
+    return ($json -join "`n") | ConvertFrom-Json
+}
+
+function New-DeploymentParameterFile {
+    param([hashtable] $Parameters)
+    $directory = Join-Path $repoRoot "AspireDiscordBot.AppHost\.aspire\deployment-$([Guid]::NewGuid().ToString('N'))"
+    try {
+        if ($IsWindows) {
+            New-Item -ItemType Directory -Path $directory | Out-Null
+            $acl = Get-Acl -LiteralPath $directory
+            $acl.SetAccessRuleProtection($true, $false)
+            $owner = [Security.Principal.WindowsIdentity]::GetCurrent().User
+            $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new(
+                $owner, 'FullControl', 'ContainerInherit, ObjectInherit', 'None', 'Allow'))
+            Set-Acl -LiteralPath $directory -AclObject $acl
+        }
+        else {
+            [IO.Directory]::CreateDirectory($directory,
+                [IO.UnixFileMode]::UserRead -bor [IO.UnixFileMode]::UserWrite -bor [IO.UnixFileMode]::UserExecute) | Out-Null
+        }
+        $path = Join-Path $directory 'parameters.json'
+        @{ parameters = $Parameters } | ConvertTo-Json -Depth 10 -Compress |
+            Set-Content -LiteralPath $path -Encoding utf8NoBOM
+        return $path
+    }
+    catch {
+        if (Test-Path -LiteralPath $directory) {
+            Remove-Item -LiteralPath $directory -Recurse -Force
+        }
+        throw 'Unable to prepare protected deployment parameters.'
+    }
 }
 
 function Wait-Application {
@@ -584,6 +641,9 @@ if ($exitCode -ne 0) {
     throw 'Unable to determine whether the Azure resource group exists.'
 }
 if ($resourceGroupExists -ne 'true') {
+    if ($UseExistingFoundation) {
+        throw 'Existing production resource group is missing; no foundation deployment will be attempted.'
+    }
     Invoke-AzureCli group create `
         --subscription $SubscriptionId `
         --name $ResourceGroup `
@@ -592,9 +652,13 @@ if ($resourceGroupExists -ne 'true') {
         --output none
 }
 
+if ($UseExistingFoundation) {
+    $foundation = Get-ExistingFoundation -RequireIssueStorage:([bool]$GitHubIssuesKeyId)
+}
 $deploymentLease = Enter-DeploymentLease
 try {
 Assert-DeploymentNotCancelled
+if (-not $UseExistingFoundation) {
 $deploymentPrincipal = Get-DeploymentPrincipal
 $foundationParameters = @(
     "location=$Location"
@@ -619,11 +683,13 @@ if ($exitCode -ne 0) {
     throw 'Azure foundation deployment failed.'
 }
 $foundation = $foundationJson | ConvertFrom-Json
+}
 $registryName = $foundation.registryName.value
 $runtimeConfigName = $foundation.runtimeConfigName.value
+$githubIssuesTableEndpoint = [string]$foundation.githubIssuesTableEndpoint.value
 
 if (-not $SkipBuild) {
-    $buildContext = Join-Path ([IO.Path]::GetTempPath()) "aspire-discord-build-$runId-$PID"
+    $buildContext = Join-Path $repoRoot "AspireDiscordBot.AppHost\.aspire\build-$runId-$PID"
     $archivePath = "$buildContext.tar"
     try {
         New-Item -ItemType Directory -Path $buildContext | Out-Null
@@ -797,7 +863,9 @@ if ($sourceApplication -ne $targetApplication) {
         -ApplicationName $sourceApplication `
         -IgnoreCancellation
 }
-Remove-LegacyQdrantStorage -IgnoreCancellation
+if (-not $UseExistingFoundation) {
+    Remove-LegacyQdrantStorage -IgnoreCancellation
+}
 
 $deploymentResult = [pscustomobject]@{
     Application = $targetApplication

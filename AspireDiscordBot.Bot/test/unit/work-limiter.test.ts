@@ -1,8 +1,35 @@
 import { getEventListeners } from 'node:events';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { describe, expect, it } from 'vitest';
 import { WorkLimiter, WorkQueueFullError } from '../../src/work-limiter.js';
 
 describe('WorkLimiter', () => {
+  it('runs queued work in its own request context, not the preceding request context', async () => {
+    const storage = new AsyncLocalStorage<string>();
+    const limiter = new WorkLimiter(1, 2);
+    const gate = Promise.withResolvers<undefined>();
+    const first = storage.run('first', () =>
+      limiter.run(async () => {
+        await gate.promise;
+        return storage.getStore();
+      }),
+    );
+    const second = storage.run('second', () =>
+      limiter.run(async () => {
+        await Promise.resolve();
+        return storage.getStore();
+      }),
+    );
+    const third = storage.run('third', () => limiter.run(async () => storage.getStore()));
+    gate.resolve(undefined);
+    await expect(Promise.all([first, second, third])).resolves.toEqual([
+      'first',
+      'second',
+      'third',
+    ]);
+    storage.disable();
+  });
+
   it('bounds concurrency and drains queued work', async () => {
     const limiter = new WorkLimiter(1, 2);
     let release!: () => void;

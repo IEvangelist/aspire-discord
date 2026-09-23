@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events';
+import { context, ROOT_CONTEXT, SpanKind, SpanStatusCode, trace } from '@opentelemetry/api';
 import { Events, type Client, type Message, type MessageCreateOptions } from 'discord.js';
 import pino, { type Logger } from 'pino';
 import { describe, expect, it, vi } from 'vitest';
@@ -6,8 +7,15 @@ import type { AnswerService, GroundedAnswer } from '../../src/domain.js';
 import { DiscordGateway } from '../../src/discord/gateway.js';
 import type { DiscordAttachmentSnapshot } from '../../src/discord/image-context.js';
 import type { RuntimeConfig, RuntimeConfigSnapshot } from '../../src/runtime-config.js';
+import { WorkQueueFullError } from '../../src/work-limiter.js';
 import { createTestConfig } from '../helpers/config.js';
 import { testLogger } from '../helpers/logger.js';
+import { useTestTelemetry } from '../helpers/telemetry.js';
+import { DiscordIssueController } from '../../src/discord/issue-controller.js';
+import { disabledIssuePolicy } from '../../src/issues/policy.js';
+
+const exporter = useTestTelemetry();
+const tracer = trace.getTracer('gateway-behavior-tests');
 
 interface ClientHarness {
   readonly applicationSet: ReturnType<typeof vi.fn>;
@@ -148,7 +156,10 @@ function createCapturingLogger(): {
 } {
   const entries: Record<string, unknown>[] = [];
   const logger = pino(
-    { level: 'debug' },
+    {
+      level: 'debug',
+      mixin: () => ({ testTraceId: trace.getActiveSpan()?.spanContext().traceId }),
+    },
     {
       write(line: string) {
         entries.push(JSON.parse(line) as Record<string, unknown>);
@@ -200,6 +211,208 @@ function replyContent(call: ReplyCall): string {
 }
 
 describe('Discord gateway behavior', () => {
+  it('keeps ordinary questions in Q&A when issue services are present but disabled', async () => {
+    const harness = createClient();
+    const answers = createAnswers();
+    const issues = new DiscordIssueController(undefined, () => disabledIssuePolicy, testLogger);
+    const gateway = new DiscordGateway(
+      createTestConfig({ discord: { mentionEnabled: true, token: 'token' } }),
+      answers.service,
+      testLogger,
+      harness.client,
+      undefined,
+      undefined,
+      issues,
+    );
+    await gateway.start();
+    const request = createMessage({
+      content: 'Can I create an Aspire AppHost without hitting this issue?',
+    });
+    emit(harness.client, request.message);
+    await vi.waitFor(() => expect(answers.answer).toHaveBeenCalledOnce());
+    expect(request.reply).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: expect.stringContaining('issue filing is disabled'),
+      }),
+    );
+    await gateway.stop();
+  });
+
+  it('applies the existing allowlist, deduplication and rate limits before issue dispatch', async () => {
+    const harness = createClient();
+    const answers = createAnswers();
+    const issues = new DiscordIssueController(undefined, () => disabledIssuePolicy, testLogger);
+    const dispatch = vi.spyOn(issues, 'handleMessage');
+    const gateway = new DiscordGateway(
+      createTestConfig({
+        discord: {
+          mentionEnabled: true,
+          token: 'token',
+          allowedUserIds: new Set(['allowed']),
+          maxRequestsPerMinute: 1,
+        },
+      }),
+      answers.service,
+      testLogger,
+      harness.client,
+      undefined,
+      undefined,
+      issues,
+    );
+    await gateway.start();
+    const denied = createMessage({
+      id: 'denied-issue',
+      userId: 'denied',
+      content: 'File an issue',
+    });
+    const allowed = createMessage({
+      id: 'allowed-issue',
+      userId: 'allowed',
+      content: 'File an issue',
+    });
+    const limited = createMessage({
+      id: 'limited-issue',
+      userId: 'allowed',
+      content: 'File an issue',
+    });
+    emit(harness.client, denied.message);
+    emit(harness.client, allowed.message);
+    await vi.waitFor(() => expect(allowed.reply).toHaveBeenCalledOnce());
+    emit(harness.client, allowed.message);
+    emit(harness.client, limited.message);
+    await vi.waitFor(() =>
+      expect(limited.reply).toHaveBeenCalledWith(
+        expect.objectContaining({
+          content: expect.stringContaining('retry in about'),
+        }),
+      ),
+    );
+    expect(denied.reply).not.toHaveBeenCalled();
+    expect(dispatch).toHaveBeenCalledOnce();
+    expect(allowed.reply).toHaveBeenCalledOnce();
+    expect(answers.answer).not.toHaveBeenCalled();
+    await gateway.stop();
+  });
+
+  it('routes issue messages and buttons without entering the documentation answer pipeline', async () => {
+    const harness = createClient();
+    const answers = createAnswers();
+    const issues = new DiscordIssueController(undefined, () => disabledIssuePolicy, testLogger);
+    const handleMessage = vi.spyOn(issues, 'handleMessage').mockResolvedValue(true);
+    const handleButton = vi.spyOn(issues, 'handleButton').mockResolvedValue(undefined);
+    const gateway = new DiscordGateway(
+      createTestConfig({ discord: { mentionEnabled: true, token: 'token' } }),
+      answers.service,
+      testLogger,
+      harness.client,
+      undefined,
+      undefined,
+      issues,
+    );
+    await gateway.start();
+    const { message } = createMessage({ content: '<@bot> file an issue' });
+    emit(harness.client, message);
+    const interaction = {
+      isButton: () => true,
+      customId: 'issue:confirm:example:1',
+      id: 'interaction',
+    };
+    (harness.client as unknown as EventEmitter).emit(Events.InteractionCreate, interaction);
+    await vi.waitFor(() => {
+      expect(handleMessage).toHaveBeenCalledOnce();
+      expect(handleButton).toHaveBeenCalledWith(interaction, undefined);
+    });
+    expect(answers.answer).not.toHaveBeenCalled();
+    await gateway.stop();
+  });
+
+  it('marks an undeliverable rejection as failed, not successfully busy', async () => {
+    const harness = createClient();
+    const captured = createCapturingLogger();
+    const answers = createAnswers();
+    answers.answer.mockRejectedValueOnce(new WorkQueueFullError(0));
+    const gateway = new DiscordGateway(
+      createTestConfig({ discord: { mentionEnabled: true, token: 'token' } }),
+      answers.service,
+      captured.logger,
+      harness.client,
+    );
+    await gateway.start();
+    const { message, chain } = createMessage();
+    chain.nodes[0]?.edit.mockRejectedValue(new Error('Discord response edit denied'));
+    emit(harness.client, message);
+    await vi.waitFor(() => {
+      expect(exporter.getFinishedSpans().some((span) => span.kind === SpanKind.CONSUMER)).toBe(
+        true,
+      );
+    });
+    const request = exporter.getFinishedSpans().find((span) => span.kind === SpanKind.CONSUMER);
+    expect(request?.status.code).toBe(SpanStatusCode.ERROR);
+    expect(request?.attributes['aspire.discord.request.outcome']).toBe('failed');
+    expect(captured.entries).toContainEqual(
+      expect.objectContaining({
+        msg: 'Unhandled Discord mention failure.',
+        outcome: 'failed',
+        testTraceId: request?.spanContext().traceId,
+      }),
+    );
+    await gateway.stop();
+  });
+
+  it('does not correlate gateway lifecycle logs with an unrelated request', async () => {
+    const harness = createClient();
+    const captured = createCapturingLogger();
+    const gateway = new DiscordGateway(
+      createTestConfig({ discord: { mentionEnabled: true, token: 'token' } }),
+      createAnswers().service,
+      captured.logger,
+      harness.client,
+    );
+    await gateway.start();
+    await tracer.startActiveSpan('unrelated request', async (span) => {
+      (harness.client as unknown as EventEmitter).emit(Events.ShardReconnecting, 0);
+      (harness.client as unknown as EventEmitter).emit(Events.ShardResume, 0, 1);
+      span.end();
+    });
+    const lifecycle = captured.entries.filter(
+      (entry) =>
+        entry.msg === 'Discord shard is reconnecting.' || entry.msg === 'Discord shard resumed.',
+    );
+    expect(lifecycle).toHaveLength(2);
+    expect(lifecycle.every((entry) => entry.testTraceId === undefined)).toBe(true);
+    await gateway.stop();
+  });
+
+  it('keeps failures before answer generation on the failed mention trace', async () => {
+    const harness = createClient();
+    const captured = createCapturingLogger();
+    const gateway = new DiscordGateway(
+      createTestConfig({ discord: { mentionEnabled: true, token: 'token' } }),
+      createAnswers().service,
+      captured.logger,
+      harness.client,
+    );
+    await gateway.start();
+    const { message, reply } = createMessage({ content: '<@bot>' });
+    reply.mockRejectedValueOnce(new Error('Discord reply denied'));
+    context.with(ROOT_CONTEXT, () => emit(harness.client, message));
+    await vi.waitFor(() => {
+      expect(
+        captured.entries.some((entry) => entry.msg === 'Unhandled Discord mention failure.'),
+      ).toBe(true);
+    });
+    const request = exporter.getFinishedSpans().find((span) => span.kind === SpanKind.CONSUMER);
+    expect(request?.status.code).toBe(SpanStatusCode.ERROR);
+    expect(captured.entries).toContainEqual(
+      expect.objectContaining({
+        msg: 'Unhandled Discord mention failure.',
+        outcome: 'failed',
+        testTraceId: request?.spanContext().traceId,
+      }),
+    );
+    await gateway.stop();
+  });
+
   it('clears global commands, reports readiness, and handles lifecycle events idempotently', async () => {
     const harness = createClient();
     const captured = createCapturingLogger();

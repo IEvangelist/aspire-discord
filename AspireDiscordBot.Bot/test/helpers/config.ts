@@ -1,4 +1,5 @@
 import type { AppConfig } from '../../src/config.js';
+import { disabledIssuePolicy } from '../../src/issues/policy.js';
 
 type ConfigOverrides = Omit<
   Partial<AppConfig>,
@@ -9,6 +10,7 @@ type ConfigOverrides = Omit<
   | 'githubMcp'
   | 'http'
   | 'imageContext'
+  | 'issues'
   | 'linkContext'
   | 'qdrant'
   | 'retrieval'
@@ -24,6 +26,7 @@ type ConfigOverrides = Omit<
   githubMcp?: Partial<AppConfig['githubMcp']>;
   http?: Partial<AppConfig['http']>;
   imageContext?: Partial<AppConfig['imageContext']>;
+  issues?: Partial<AppConfig['issues']>;
   linkContext?: Partial<AppConfig['linkContext']>;
   qdrant?: Partial<AppConfig['qdrant']>;
   retrieval?: Partial<AppConfig['retrieval']>;
@@ -63,6 +66,7 @@ export function createTestConfig(overrides: ConfigOverrides = {}): AppConfig {
       allowedRepositories: ['microsoft/aspire', 'microsoft/aspire.dev'],
       endpoint: 'https://api.githubcopilot.com/mcp/',
     },
+    issues: { appId: '4968096', tableName: 'IssueDrafts', policy: disabledIssuePolicy },
     http: {
       host: '127.0.0.1',
       port: 3_000,
@@ -124,6 +128,7 @@ export function createTestConfig(overrides: ConfigOverrides = {}): AppConfig {
     githubMcp: { ...base.githubMcp, ...overrides.githubMcp },
     http: { ...base.http, ...overrides.http },
     imageContext: { ...base.imageContext, ...overrides.imageContext },
+    issues: { ...base.issues, ...overrides.issues },
     linkContext: { ...base.linkContext, ...overrides.linkContext },
     qdrant: { ...base.qdrant, ...overrides.qdrant },
     retrieval: { ...base.retrieval, ...overrides.retrieval },

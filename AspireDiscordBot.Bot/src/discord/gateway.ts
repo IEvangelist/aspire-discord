@@ -1,3 +1,4 @@
+import { context, ROOT_CONTEXT } from '@opentelemetry/api';
 import {
   Client,
   Events,
@@ -49,6 +50,7 @@ import {
   type DiscordTextCandidate,
 } from './text-context.js';
 import { UserRateLimiter } from './user-rate-limiter.js';
+import type { DiscordIssueController } from './issue-controller.js';
 
 const inlineEmbedRefreshMilliseconds = 750;
 
@@ -64,6 +66,7 @@ interface ResolveQuestionOptions extends Pick<
 }
 
 export interface DiscordStatus {
+  readonly issues?: { readonly configured: boolean; readonly enabled: boolean };
   readonly access: {
     readonly allowedUsers: number;
     readonly configurationReady: boolean;
@@ -100,6 +103,7 @@ export class DiscordGateway {
     client?: Client,
     private readonly shutdownSignal?: AbortSignal,
     private readonly runtimeConfig: RuntimeConfig = staticRuntimeConfig(config),
+    private readonly issues?: DiscordIssueController,
   ) {
     this.#client = client ?? new Client(createClientOptions(config.discord.mentionEnabled));
     this.#imageLoader = new SafeDiscordImageLoader(config.imageContext, logger);
@@ -131,6 +135,7 @@ export class DiscordGateway {
     };
     if (!this.config.discord.token) {
       return {
+        ...(this.issues ? { issues: this.issues.status() } : {}),
         access,
         guilds: 0,
         mentionEnabled: this.config.discord.mentionEnabled,
@@ -140,6 +145,7 @@ export class DiscordGateway {
       };
     }
     return {
+      ...(this.issues ? { issues: this.issues.status() } : {}),
       access,
       ...(this.#client.user ? { botUser: this.#client.user.tag } : {}),
       guilds: this.#client.guilds.cache.size,
@@ -157,69 +163,117 @@ export class DiscordGateway {
     this.#started = true;
     this.#commandsCleared = false;
     const ready = Promise.withResolvers<undefined>();
-    this.#client.once(Events.ClientReady, (client) => {
-      recordDiscordGatewayEvent('ready');
-      void this.#clearCommands(client).then(
-        () => {
-          this.#commandsCleared = true;
-          ready.resolve(undefined);
-        },
-        (error: unknown) => {
-          ready.reject(error);
-        },
-      );
-    });
+    this.#client.once(
+      Events.ClientReady,
+      context.bind(ROOT_CONTEXT, (client) => {
+        recordDiscordGatewayEvent('ready');
+        void this.#clearCommands(client).then(
+          () => {
+            this.#commandsCleared = true;
+            ready.resolve(undefined);
+          },
+          (error: unknown) => {
+            ready.reject(error);
+          },
+        );
+      }),
+    );
     if (this.config.discord.mentionEnabled) {
-      this.#client.on(Events.MessageCreate, (message) => {
-        void this.#handleMessage(message).catch((error: unknown) => {
-          this.logger.error(
-            { err: error, ...discordLogContext(message) },
-            'Unhandled Discord mention failure.',
-          );
-        });
-      });
+      this.#client.on(
+        Events.MessageCreate,
+        context.bind(ROOT_CONTEXT, (message) => {
+          void this.#handleMessage(message).catch((error: unknown) => {
+            this.logger.error(
+              { err: error, ...discordLogContext(message) },
+              'Unhandled Discord mention failure.',
+            );
+          });
+        }),
+      );
+      this.#client.on(
+        Events.InteractionCreate,
+        context.bind(ROOT_CONTEXT, (interaction) => {
+          if (interaction.isButton() && interaction.customId.startsWith('issue:') && this.issues) {
+            void this.issues
+              .handleButton(interaction, this.shutdownSignal)
+              .catch((error: unknown) => {
+                this.logger.error(
+                  {
+                    errorType: error instanceof Error ? error.name : 'Error',
+                    interactionId: interaction.id,
+                  },
+                  'Could not complete a Discord issue interaction.',
+                );
+              });
+          }
+        }),
+      );
     }
-    this.#client.on(Events.Error, (error) => {
-      recordDiscordGatewayEvent('client_error');
-      this.logger.error({ err: error }, 'Discord client error.');
-    });
-    this.#client.on(Events.ShardError, (error, shardId) => {
-      recordDiscordGatewayEvent('shard_error', shardId);
-      this.logger.error({ err: error, shardId }, 'Discord shard error.');
-    });
-    this.#client.on(Events.ShardDisconnect, (event, shardId) => {
-      recordDiscordGatewayEvent('disconnected', shardId);
-      this.logger.warn(
-        {
-          closeCode: event.code,
-          shardId,
-        },
-        'Discord shard disconnected.',
-      );
-    });
-    this.#client.on(Events.ShardReady, (shardId, unavailableGuilds) => {
-      recordDiscordGatewayEvent('shard_ready', shardId);
-      this.logger.info(
-        { shardId, unavailableGuildCount: unavailableGuilds?.size ?? 0 },
-        'Discord shard is ready.',
-      );
-    });
-    this.#client.on(Events.ShardReconnecting, (shardId) => {
-      recordDiscordGatewayEvent('reconnecting', shardId);
-      this.logger.warn({ shardId }, 'Discord shard is reconnecting.');
-    });
-    this.#client.on(Events.ShardResume, (shardId, replayedEvents) => {
-      recordDiscordGatewayEvent('resumed', shardId);
-      this.logger.info({ replayedEvents, shardId }, 'Discord shard resumed.');
-    });
-    this.#client.on(Events.Invalidated, () => {
-      recordDiscordGatewayEvent('invalidated');
-      this.logger.error('Discord session was invalidated.');
-    });
-    this.#client.on(Events.Warn, (warning) => {
-      recordDiscordGatewayEvent('warning');
-      this.logger.warn({ warning }, 'Discord client warning.');
-    });
+    this.#client.on(
+      Events.Error,
+      context.bind(ROOT_CONTEXT, (error) => {
+        recordDiscordGatewayEvent('client_error');
+        this.logger.error({ err: error }, 'Discord client error.');
+      }),
+    );
+    this.#client.on(
+      Events.ShardError,
+      context.bind(ROOT_CONTEXT, (error, shardId) => {
+        recordDiscordGatewayEvent('shard_error', shardId);
+        this.logger.error({ err: error, shardId }, 'Discord shard error.');
+      }),
+    );
+    this.#client.on(
+      Events.ShardDisconnect,
+      context.bind(ROOT_CONTEXT, (event, shardId) => {
+        recordDiscordGatewayEvent('disconnected', shardId);
+        this.logger.warn(
+          {
+            closeCode: event.code,
+            shardId,
+          },
+          'Discord shard disconnected.',
+        );
+      }),
+    );
+    this.#client.on(
+      Events.ShardReady,
+      context.bind(ROOT_CONTEXT, (shardId, unavailableGuilds) => {
+        recordDiscordGatewayEvent('shard_ready', shardId);
+        this.logger.info(
+          { shardId, unavailableGuildCount: unavailableGuilds?.size ?? 0 },
+          'Discord shard is ready.',
+        );
+      }),
+    );
+    this.#client.on(
+      Events.ShardReconnecting,
+      context.bind(ROOT_CONTEXT, (shardId) => {
+        recordDiscordGatewayEvent('reconnecting', shardId);
+        this.logger.warn({ shardId }, 'Discord shard is reconnecting.');
+      }),
+    );
+    this.#client.on(
+      Events.ShardResume,
+      context.bind(ROOT_CONTEXT, (shardId, replayedEvents) => {
+        recordDiscordGatewayEvent('resumed', shardId);
+        this.logger.info({ replayedEvents, shardId }, 'Discord shard resumed.');
+      }),
+    );
+    this.#client.on(
+      Events.Invalidated,
+      context.bind(ROOT_CONTEXT, () => {
+        recordDiscordGatewayEvent('invalidated');
+        this.logger.error('Discord session was invalidated.');
+      }),
+    );
+    this.#client.on(
+      Events.Warn,
+      context.bind(ROOT_CONTEXT, (warning) => {
+        recordDiscordGatewayEvent('warning');
+        this.logger.warn({ warning }, 'Discord client warning.');
+      }),
+    );
     this.#client.rest.on('rateLimited', (rateLimit) => {
       recordDiscordGatewayEvent('rest_rate_limited');
       this.logger.warn(
@@ -314,11 +368,30 @@ export class DiscordGateway {
   }
 
   async #handleMessage(message: Message): Promise<void> {
-    if (message.author.bot || !this.#client.user || !message.mentions.has(this.#client.user)) {
+    if (message.author.bot || !this.#client.user) {
+      return;
+    }
+    if (!message.mentions.has(this.#client.user)) {
+      const runtime = this.runtimeConfig.current();
+      if (
+        message.reference?.messageId &&
+        runtime.available &&
+        isUserAllowed(message.author.id, runtime.allowedUserIds)
+      ) {
+        await this.issues?.handleMessage(message, this.#client.user, this.shutdownSignal);
+      }
       return;
     }
     await observeDiscordMention(message, async (observation) => {
-      await this.#processMention(message, observation);
+      try {
+        await this.#processMention(message, observation);
+      } catch (error) {
+        observation.fail(error);
+        this.logger.error(
+          { err: error, ...discordLogContext(message), outcome: 'failed' },
+          'Unhandled Discord mention failure.',
+        );
+      }
     });
   }
 
@@ -366,6 +439,15 @@ export class DiscordGateway {
         'Rate limited Discord mention.',
       );
       observation.complete('rate_limited');
+      return;
+    }
+
+    if (
+      this.issues &&
+      this.#client.user &&
+      (await this.issues.handleMessage(message, this.#client.user, requestSignal))
+    ) {
+      observation.complete('issue_handled');
       return;
     }
 
@@ -520,18 +602,16 @@ export class DiscordGateway {
           'Discord mention was rejected before completion.',
         );
       }
-      try {
-        if (progressReply) {
-          await progressReply.edit(answerPayload(failure.content));
-        } else {
-          await received.reply(answerPayload(failure.content));
-        }
-      } finally {
-        if (failure.outcome === 'failed') {
-          observation.fail(error);
-        } else {
-          observation.complete(failure.outcome);
-        }
+      if (failure.outcome === 'failed') {
+        observation.fail(error);
+      }
+      if (progressReply) {
+        await progressReply.edit(answerPayload(failure.content));
+      } else {
+        await received.reply(answerPayload(failure.content));
+      }
+      if (failure.outcome !== 'failed') {
+        observation.complete(failure.outcome);
       }
     }
   }
@@ -640,6 +720,8 @@ function classifyMentionFailure(error: unknown): {
 
 function staticRuntimeConfig(config: AppConfig): RuntimeConfig {
   const runtime: RuntimeConfigSnapshot = {
+    issuePolicy: config.issues.policy,
+    issuePolicyAvailable: true,
     allowedUserIds: config.discord.allowedUserIds,
     available: true,
     groundingDetailsMode: config.discord.groundingDetailsMode,

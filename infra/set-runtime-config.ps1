@@ -5,6 +5,7 @@ param(
     [switch] $AllowOpenAccess,
     [ValidateSet('collapsed', 'expanded', 'hidden')]
     [string] $GroundingDetailsMode,
+    [string] $IssuePolicyJson,
     [string] $SubscriptionId = '11aa9ca6-306a-4ea9-b614-2d413efd04a8',
     [string] $ResourceSuffix = 'ffccd7'
 )
@@ -13,12 +14,14 @@ $ErrorActionPreference = 'Stop'
 $storeName = "aspirediscord${ResourceSuffix}config"
 $allowedUsersKey = 'AspireDiscord:Discord:AllowedUserIds'
 $groundingModeKey = 'AspireDiscord:Discord:GroundingDetailsMode'
+$issuePolicyKey = 'AspireDiscord:Discord:IssuePolicy'
 
 if ($AddDiscordUserId.Count -eq 0 `
     -and $RemoveDiscordUserId.Count -eq 0 `
     -and -not $AllowOpenAccess `
-    -and -not $PSBoundParameters.ContainsKey('GroundingDetailsMode')) {
-    throw 'Specify -AddDiscordUserId, -RemoveDiscordUserId, -AllowOpenAccess, or -GroundingDetailsMode.'
+    -and -not $PSBoundParameters.ContainsKey('GroundingDetailsMode') `
+    -and -not $PSBoundParameters.ContainsKey('IssuePolicyJson')) {
+    throw 'Specify -AddDiscordUserId, -RemoveDiscordUserId, -AllowOpenAccess, -GroundingDetailsMode, or -IssuePolicyJson.'
 }
 
 $requestedIds = @($AddDiscordUserId) + @($RemoveDiscordUserId)
@@ -53,16 +56,24 @@ function Get-AppConfigToken {
 }
 
 function Get-RuntimeSetting {
-    param([string] $Key)
+    param([string] $Key, [switch] $AllowMissing)
 
     $encodedKey = [Uri]::EscapeDataString($Key)
-    $response = Invoke-WebRequest `
+    try {
+        $response = Invoke-WebRequest `
         -Uri "$endpoint/kv/${encodedKey}?api-version=1.0" `
         -Headers @{
             Accept = 'application/vnd.microsoft.appconfig.kv+json'
             Authorization = "Bearer $(Get-AppConfigToken)"
         } `
-        -Method Get
+            -Method Get
+    }
+    catch {
+        if ($AllowMissing -and [int]$_.Exception.Response.StatusCode -eq 404) {
+            return $null
+        }
+        throw
+    }
     $content = if ($response.Content -is [byte[]]) {
         [Text.Encoding]::UTF8.GetString($response.Content)
     }
@@ -80,21 +91,26 @@ function Set-RuntimeSetting {
     param(
         [string] $Key,
         [string] $Value,
-        [string] $ETag
+        [string] $ETag,
+        [switch] $CreateIfMissing,
+        [string] $ContentType = 'text/plain'
     )
 
     $encodedKey = [Uri]::EscapeDataString($Key)
     $quotedETag = "`"$($ETag.Trim('"'))`""
+    $condition = if ($CreateIfMissing) { 'If-None-Match' } else { 'If-Match' }
+    $conditionValue = if ($CreateIfMissing) { '*' } else { $quotedETag }
     try {
         Invoke-RestMethod `
             -Uri "$endpoint/kv/${encodedKey}?api-version=1.0" `
             -Headers @{
                 Authorization = "Bearer $(Get-AppConfigToken)"
-                'If-Match' = $quotedETag
+                $condition = $conditionValue
             } `
             -Method Put `
             -ContentType 'application/vnd.microsoft.appconfig.kv+json' `
-            -Body (@{ content_type = 'text/plain'; value = $Value } | ConvertTo-Json -Compress) |
+            -Body ([Text.Encoding]::UTF8.GetBytes(
+                (@{ content_type = $ContentType; value = $Value } | ConvertTo-Json -Compress))) |
             Out-Null
         return $true
     }
@@ -186,12 +202,101 @@ function Update-GroundingMode {
     throw 'The grounding mode changed concurrently too many times. Retry the command.'
 }
 
+function ConvertTo-IssuePolicyJson {
+    param([string] $Value)
+
+    try {
+        $document = [Text.Json.JsonDocument]::Parse($Value)
+    }
+    catch {
+        throw 'IssuePolicyJson must be a JSON object.'
+    }
+    try {
+        $root = $document.RootElement
+        if ($root.ValueKind -ne [Text.Json.JsonValueKind]::Object) {
+            throw 'IssuePolicyJson must be a JSON object.'
+        }
+        $keys = @('enabled', 'allowedUserIds', 'allowedChannelIds', 'allowedRepositories')
+        $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+        foreach ($property in $root.EnumerateObject()) {
+            if ($keys -cnotcontains $property.Name -or -not $seen.Add($property.Name)) {
+                throw 'IssuePolicyJson contains an unknown or duplicate property.'
+            }
+        }
+        if ($seen.Count -ne $keys.Count -or $root.GetProperty('enabled').ValueKind -notin @(
+            [Text.Json.JsonValueKind]::True, [Text.Json.JsonValueKind]::False)) {
+            throw 'IssuePolicyJson requires enabled (boolean), allowedUserIds, allowedChannelIds, and allowedRepositories.'
+        }
+        $policy = [ordered]@{ enabled = $root.GetProperty('enabled').GetBoolean() }
+        foreach ($key in $keys | Select-Object -Skip 1) {
+            $array = $root.GetProperty($key)
+            if ($array.ValueKind -ne [Text.Json.JsonValueKind]::Array) {
+                throw "IssuePolicyJson $key must be an array of strings."
+            }
+            $maximum = if ($key -eq 'allowedRepositories') { 20 } else { 500 }
+            if ($array.GetArrayLength() -gt $maximum) {
+                throw "IssuePolicyJson $key cannot contain more than $maximum entries."
+            }
+            $values = [Collections.Generic.List[string]]::new()
+            foreach ($item in $array.EnumerateArray()) {
+                if ($item.ValueKind -ne [Text.Json.JsonValueKind]::String) {
+                    throw "IssuePolicyJson $key must contain only strings."
+                }
+                $entry = $item.GetString().Trim()
+                if ($key -eq 'allowedRepositories') {
+                    $entry = $entry.ToLowerInvariant()
+                    if ($entry -notmatch '^[a-z0-9](?:[a-z0-9-]{0,37}[a-z0-9])?/[a-z0-9._-]{1,100}$' `
+                        -or ($entry -split '/')[1] -in @('.', '..')) {
+                        throw 'IssuePolicyJson repositories must use canonical owner/repo names, not URLs.'
+                    }
+                }
+                elseif ($entry -notmatch '^[1-9][0-9]*$') {
+                    throw "IssuePolicyJson $key must contain positive Discord ID strings."
+                }
+                if (-not $values.Contains($entry)) {
+                    $values.Add($entry)
+                }
+            }
+            if ($policy.enabled -and $values.Count -eq 0) {
+                throw "IssuePolicyJson $key must not be empty when enabled."
+            }
+            $policy[$key] = @($values.ToArray())
+        }
+        return $policy | ConvertTo-Json -Depth 5 -Compress
+    }
+    finally {
+        $document.Dispose()
+    }
+}
+
+function Update-IssuePolicy {
+    param([string] $Value)
+
+    $setting = Get-RuntimeSetting -Key $issuePolicyKey -AllowMissing
+    if ($null -ne $setting -and $setting.Value -ceq $Value) {
+        return $false
+    }
+    $etag = if ($null -eq $setting) { '' } else { $setting.ETag }
+    if (-not (Set-RuntimeSetting -Key $issuePolicyKey -Value $Value -ETag $etag `
+        -CreateIfMissing:($null -eq $setting) -ContentType 'application/json')) {
+        throw 'The issue policy changed concurrently. Review it and retry the command.'
+    }
+    return $true
+}
+
+$normalizedIssuePolicy = if ($PSBoundParameters.ContainsKey('IssuePolicyJson')) {
+    ConvertTo-IssuePolicyJson -Value $IssuePolicyJson
+}
+
 $changed = $false
 if ($AddDiscordUserId.Count -gt 0 -or $RemoveDiscordUserId.Count -gt 0 -or $AllowOpenAccess) {
     $changed = Update-DiscordAllowlist
 }
 if ($PSBoundParameters.ContainsKey('GroundingDetailsMode')) {
     $changed = (Update-GroundingMode) -or $changed
+}
+if ($PSBoundParameters.ContainsKey('IssuePolicyJson')) {
+    $changed = (Update-IssuePolicy -Value $normalizedIssuePolicy) -or $changed
 }
 
 if ($changed) {

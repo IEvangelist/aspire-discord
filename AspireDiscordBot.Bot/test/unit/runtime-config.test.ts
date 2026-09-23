@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { startRuntimeConfig, runtimeConfigKeys } from '../../src/runtime-config.js';
 import { createTestConfig } from '../helpers/config.js';
 import { testLogger } from '../helpers/logger.js';
+import { currentIssuePolicy } from '../../src/issues/policy.js';
 
 class FakeConfigurationClient {
   public constructor(readonly values: Map<string, string | undefined>) {}
@@ -24,6 +25,49 @@ beforeEach(() => {
 });
 
 describe('runtime configuration', () => {
+  it('fails issue writes closed on refresh errors and restores them after a valid refresh', async () => {
+    const remote = new FakeConfigurationClient(
+      new Map([
+        [runtimeConfigKeys.allowedUserIds, '123'],
+        [runtimeConfigKeys.groundingDetailsMode, 'collapsed'],
+        [
+          runtimeConfigKeys.issuePolicy,
+          JSON.stringify({
+            enabled: true,
+            allowedUserIds: ['123'],
+            allowedChannelIds: ['456'],
+            allowedRepositories: ['microsoft/aspire'],
+          }),
+        ],
+      ]),
+    );
+    const runtime = await startRuntimeConfig(
+      createTestConfig({ runtimeConfig: { endpoint: 'https://example.azconfig.io' } }),
+      testLogger,
+      { client: remote },
+    );
+    expect(currentIssuePolicy(runtime.current()).enabled).toBe(true);
+    remote.values.set(runtimeConfigKeys.issuePolicy, '{bad json');
+    await runtime.refresh();
+    expect(runtime.current().available).toBe(true);
+    expect(currentIssuePolicy(runtime.current()).enabled).toBe(false);
+    remote.values.set(
+      runtimeConfigKeys.issuePolicy,
+      JSON.stringify({
+        enabled: true,
+        allowedUserIds: ['123'],
+        allowedChannelIds: ['456'],
+        allowedRepositories: ['microsoft/aspire'],
+      }),
+    );
+    await runtime.refresh();
+    expect(currentIssuePolicy(runtime.current()).enabled).toBe(true);
+    remote.values.delete(runtimeConfigKeys.issuePolicy);
+    await runtime.refresh();
+    expect(currentIssuePolicy(runtime.current()).enabled).toBe(false);
+    runtime.stop();
+  });
+
   it('uses environment values when Azure App Configuration is not configured', async () => {
     const runtime = await startRuntimeConfig(
       createTestConfig({

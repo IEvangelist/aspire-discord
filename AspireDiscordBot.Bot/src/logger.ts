@@ -7,6 +7,9 @@ const redactedPaths = [
   'res.headers["set-cookie"]',
   '*.apiKey',
   '*.token',
+  '*.privateKey',
+  'privateKey',
+  'GITHUB_ISSUES_APP_PRIVATE_KEY',
   'apiKey',
   'token',
 ];

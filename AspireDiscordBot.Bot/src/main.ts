@@ -14,6 +14,7 @@ import { ensureOllamaModels } from './ollama-readiness.js';
 import { buildServer } from './server.js';
 import type { TelemetryHandle } from './telemetry.js';
 import { startRuntimeConfig } from './runtime-config.js';
+import { createIssueController } from './issues/setup.js';
 
 export async function main(telemetry: TelemetryHandle): Promise<void> {
   const config = loadConfig();
@@ -45,8 +46,14 @@ export async function main(telemetry: TelemetryHandle): Promise<void> {
     undefined,
     shutdownController.signal,
     runtimeConfig,
+    createIssueController(config.issues, runtimeConfig, copilot, logger),
   );
-  const server = await buildServer({ config, discord, logger, vectorStore });
+  const server = await buildServer({
+    config,
+    discord,
+    logger,
+    vectorStore,
+  });
   let shutdownPromise: Promise<void> | undefined;
   const lifecycle: { startup?: Promise<void> } = {};
 

@@ -1,4 +1,7 @@
 import { z } from 'zod';
+import { parseIssuePolicy } from './issues/policy.js';
+import { validateGitHubSigningKeyId } from './issues/keyvault-signer.js';
+import type { IssuePolicy } from './issues/types.js';
 
 const providerSchema = z.enum(['copilot', 'azureopenai', 'azureaifoundry', 'openai', 'ollama']);
 const vectorStoreProviderSchema = z.enum(['azuresearch', 'qdrant']);
@@ -33,6 +36,35 @@ const rawEnvironmentSchema = z.object({
   DISCORD_TOKEN: z.string().min(1).optional(),
   GITHUB_MCP_ENDPOINT: z.url().default('https://api.githubcopilot.com/mcp/'),
   GITHUB_MCP_TOKEN: z.string().min(1).optional(),
+  GITHUB_ISSUES_APP_ID: z
+    .string()
+    .regex(/^[1-9]\d{0,19}$/u)
+    .default('4968096'),
+  GITHUB_ISSUES_KEY_ID: z
+    .string()
+    .superRefine((value, refinement) => {
+      try {
+        validateGitHubSigningKeyId(value);
+      } catch {
+        refinement.addIssue({
+          code: 'custom',
+          message:
+            'Use a versioned HTTPS Azure Key Vault key URI, not a secret URI or key material.',
+        });
+      }
+    })
+    .optional()
+    .or(z.literal('')),
+  GITHUB_ISSUES_INSTALLATION_ID: z.coerce.number().int().positive().optional(),
+  GITHUB_ISSUES_TABLE_ENDPOINT: z
+    .url()
+    .refine((value) => new URL(value).protocol === 'https:', 'Issue storage requires HTTPS.')
+    .optional(),
+  GITHUB_ISSUES_TABLE_NAME: z
+    .string()
+    .regex(/^[A-Za-z][A-Za-z0-9]{2,62}$/u)
+    .default('IssueDrafts'),
+  GITHUB_ISSUES_POLICY: z.string().optional(),
   HOST: z.string().min(1).default('0.0.0.0'),
   IMAGE_CONTEXT_ENABLED: z.string().default('false'),
   IMAGE_CONTEXT_MAX_BYTES: z.coerce
@@ -128,6 +160,14 @@ export interface AppConfig {
     readonly endpoint: string;
     readonly token?: string;
   };
+  readonly issues: {
+    readonly appId: string;
+    readonly keyId?: string;
+    readonly installationId?: number;
+    readonly tableEndpoint?: string;
+    readonly tableName: string;
+    readonly policy: IssuePolicy;
+  };
   readonly http: {
     readonly host: string;
     readonly port: number;
@@ -190,6 +230,16 @@ export class ConfigurationError extends Error {
 }
 
 export function loadConfig(environment: NodeJS.ProcessEnv = process.env): AppConfig {
+  if (environment.GITHUB_ISSUES_APP_PRIVATE_KEY !== undefined) {
+    throw new ConfigurationError([
+      {
+        code: 'custom',
+        path: ['GITHUB_ISSUES_APP_PRIVATE_KEY'],
+        message:
+          'Runtime PEM signing is not supported. Remove this setting and configure GITHUB_ISSUES_KEY_ID.',
+      },
+    ]);
+  }
   const result = rawEnvironmentSchema.safeParse(environment);
   if (!result.success) {
     throw new ConfigurationError(result.error.issues);
@@ -323,6 +373,20 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): AppCon
       allowedRepositories: ['microsoft/aspire', 'microsoft/aspire.dev'],
       endpoint: env.GITHUB_MCP_ENDPOINT,
       ...(env.GITHUB_MCP_TOKEN ? { token: env.GITHUB_MCP_TOKEN } : {}),
+    },
+    issues: {
+      appId: env.GITHUB_ISSUES_APP_ID,
+      ...(env.GITHUB_ISSUES_KEY_ID
+        ? { keyId: validateGitHubSigningKeyId(env.GITHUB_ISSUES_KEY_ID) }
+        : {}),
+      ...(env.GITHUB_ISSUES_INSTALLATION_ID
+        ? { installationId: env.GITHUB_ISSUES_INSTALLATION_ID }
+        : {}),
+      ...(env.GITHUB_ISSUES_TABLE_ENDPOINT
+        ? { tableEndpoint: env.GITHUB_ISSUES_TABLE_ENDPOINT }
+        : {}),
+      tableName: env.GITHUB_ISSUES_TABLE_NAME,
+      policy: parseIssuePolicy(env.GITHUB_ISSUES_POLICY),
     },
     http: {
       host: env.HOST,

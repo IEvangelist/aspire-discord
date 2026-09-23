@@ -125,7 +125,7 @@ async function startAzureMonitor(environment: NodeJS.ProcessEnv): Promise<Teleme
       http: httpInstrumentation,
     },
     samplingRatio: 1,
-    tracesPerSecond: 5,
+    tracesPerSecond: 0,
   });
 
   const pinoInstrumentation = new PinoInstrumentation();

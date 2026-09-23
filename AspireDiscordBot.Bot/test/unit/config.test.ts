@@ -7,6 +7,52 @@ const validEnvironment = {
 };
 
 describe('loadConfig', () => {
+  it('keeps GitHub issue writes disabled until explicitly configured', () => {
+    const config = loadConfig(validEnvironment);
+    expect(config.issues).toMatchObject({
+      appId: '4968096',
+      tableName: 'IssueDrafts',
+      policy: { enabled: false, allowedUserIds: [], allowedRepositories: [] },
+    });
+    expect(config.issues.keyId).toBeUndefined();
+    expect(() =>
+      loadConfig({
+        ...validEnvironment,
+        GITHUB_ISSUES_TABLE_ENDPOINT: 'http://example.table.core.windows.net',
+      }),
+    ).toThrow();
+  });
+
+  it('accepts only a versioned Key Vault key URI for issue signing', () => {
+    const keyId =
+      'https://aspire-signing.vault.azure.net/keys/github-app/0123456789abcdef0123456789abcdef';
+    const config = loadConfig({ ...validEnvironment, GITHUB_ISSUES_KEY_ID: keyId });
+    expect(config.issues.keyId).toBe(keyId);
+    expect(config.issues.policy.enabled).toBe(false);
+    const disabled = loadConfig({ ...validEnvironment, GITHUB_ISSUES_KEY_ID: '' });
+    expect(disabled.issues.keyId).toBeUndefined();
+    expect(disabled.issues.policy.enabled).toBe(false);
+    for (const invalid of [
+      ' ',
+      'https://aspire-signing.vault.azure.net/keys/github-app',
+      'https://aspire-signing.vault.azure.net/secrets/github-app/0123456789abcdef0123456789abcdef',
+      'http://aspire-signing.vault.azure.net/keys/github-app/0123456789abcdef0123456789abcdef',
+      `${keyId}?api-version=7.4`,
+      'https://attacker.example/keys/github-app/0123456789abcdef0123456789abcdef',
+    ]) {
+      expect(() => loadConfig({ ...validEnvironment, GITHUB_ISSUES_KEY_ID: invalid })).toThrow(
+        ConfigurationError,
+      );
+    }
+  });
+
+  it('rejects legacy runtime PEM configuration without including the key in an error', () => {
+    const run = () =>
+      loadConfig({ ...validEnvironment, GITHUB_ISSUES_APP_PRIVATE_KEY: 'sensitive-private-key' });
+    expect(run).toThrow(/Runtime PEM signing is not supported/u);
+    expect(run).not.toThrow(/sensitive-private-key/u);
+  });
+
   it('loads hosted Foundry defaults', () => {
     const config = loadConfig(validEnvironment);
 

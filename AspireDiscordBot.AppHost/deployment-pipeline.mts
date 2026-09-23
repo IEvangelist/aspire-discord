@@ -1,7 +1,6 @@
 import { spawn } from "node:child_process";
 import { writeFileSync } from "node:fs";
 import { access, mkdtemp, readFile, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import type {
@@ -14,12 +13,22 @@ import type {
 const preflightStep = "production-preflight";
 const deploymentStep = "production-blue-green";
 
+export function rejectSharedResourceGroupDestroy(): never {
+  throw new Error(
+    "Aspire destroy is blocked for the shared production resource group; use a separately approved resource-specific retirement plan.",
+  );
+}
+
 export interface ProductionDeploymentOptions {
   readonly allowedUserIds: string;
   readonly appHostPath: string;
   readonly discordToken: string;
   readonly environmentName: string;
   readonly githubToken: string;
+  readonly githubIssuesAppId?: string;
+  readonly githubIssuesKeyId?: string;
+  readonly githubIssuesInstallationId?: string;
+  readonly useExistingFoundation?: boolean;
   readonly location: string;
   readonly repositoryRoot: string;
   readonly resourceGroup: string;
@@ -63,6 +72,13 @@ export async function configureProductionDeployment(
   options: ProductionDeploymentOptions,
 ): Promise<void> {
   const pipeline = await builder.pipeline();
+  await pipeline.addStep(
+    "protect-shared-resource-group",
+    () => Promise.resolve().then(rejectSharedResourceGroupDestroy),
+    {
+      requiredBy: ["destroy-prereq"],
+    },
+  );
   let deploymentSecrets: DeploymentSecrets | undefined;
   await pipeline.addStep(preflightStep, async (context) => {
     await withPipelineCancellation(context, async (signal) => {
@@ -110,12 +126,60 @@ export function buildDeploymentArguments(
     "-CancellationPath",
     cancellationPath,
     ...(options.skipBuild ? ["-SkipBuild"] : []),
+    ...(options.useExistingFoundation ? ["-UseExistingFoundation"] : []),
+    "-GitHubIssuesAppId",
+    options.githubIssuesAppId ?? "4968096",
+    "-GitHubIssuesKeyId",
+    options.githubIssuesKeyId ?? "",
+    "-GitHubIssuesInstallationId",
+    options.githubIssuesInstallationId ?? "163850423",
   ];
 }
 
 export function validateDeploymentOptions(
   options: ProductionDeploymentOptions,
 ): void {
+  if (
+    Object.keys(process.env).some((name) =>
+      [
+        "GITHUB_ISSUES_APP_PRIVATE_KEY",
+        "PARAMETERS__GITHUBISSUESAPPPRIVATEKEY",
+      ].includes(name.toUpperCase()),
+    )
+  ) {
+    throw new Error(
+      "Raw GitHub issue private keys are unsupported; use GitHubIssuesKeyId.",
+    );
+  }
+  const keyId = options.githubIssuesKeyId ?? "";
+  if (
+    keyId &&
+    !/^https:\/\/aspire-issues-ffccd7\.vault\.azure\.net\/keys\/github-issues\/[a-f0-9]{32}$/u.test(
+      keyId,
+    )
+  ) {
+    throw new Error(
+      "GitHubIssuesKeyId must be a versioned HTTPS key URI in the approved issue vault.",
+    );
+  }
+  if (keyId && !options.useExistingFoundation) {
+    throw new Error(
+      "Issue application deployment requires Parameters:UseExistingFoundation=true; provision issue-storage separately.",
+    );
+  }
+  for (const value of [
+    options.githubIssuesAppId,
+    options.githubIssuesInstallationId,
+  ]) {
+    if (
+      value &&
+      (!/^[1-9]\d*$/u.test(value) || !Number.isSafeInteger(Number(value)))
+    ) {
+      throw new Error(
+        "GitHub issue App and installation IDs must be positive safe integers.",
+      );
+    }
+  }
   if (options.environmentName.toLocaleLowerCase("en-US") !== "production") {
     throw new Error(
       `The Aspire Discord deployment pipeline only targets Production, not '${options.environmentName}'.`,
@@ -230,7 +294,7 @@ async function resolveSecret(
   return "";
 }
 
-async function withPipelineCancellation<T>(
+export async function withPipelineCancellation<T>(
   context: PipelineStepContext,
   action: (signal: AbortSignal) => Promise<T>,
 ): Promise<T> {
@@ -372,7 +436,32 @@ async function runPreflight(
     options.repositoryRoot,
     { discardOutput: true, signal, terminateOnAbort: true },
   );
-  for (const template of ["infra/main.bicep", "infra/app.bicep"]) {
+  if (options.useExistingFoundation) {
+    await runCommand(
+      "pwsh",
+      [
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-File",
+        resolve(options.repositoryRoot, "infra", "existing-foundation.ps1"),
+        "-SubscriptionId",
+        options.subscriptionId,
+        "-ResourceGroup",
+        options.resourceGroup,
+        "-Location",
+        options.location,
+        "-ResourceSuffix",
+        options.resourceSuffix,
+        ...(options.githubIssuesKeyId ? ["-RequireIssueStorage"] : []),
+      ],
+      options.repositoryRoot,
+      { signal, discardOutput: true, terminateOnAbort: true },
+    );
+  }
+  for (const template of options.useExistingFoundation
+    ? ["infra/app.bicep"]
+    : ["infra/main.bicep", "infra/app.bicep"]) {
     await runCommand(
       azureCli.command,
       [
@@ -427,7 +516,7 @@ async function runDeployment(
   );
 
   const workingDirectory = await mkdtemp(
-    join(tmpdir(), "aspire-discord-deploy-"),
+    join(dirname(options.appHostPath), ".aspire", "deploy-"),
   );
   const resultPath = join(workingDirectory, "result.json");
   const cancellationPath = join(workingDirectory, "cancel");

@@ -93,6 +93,7 @@ export class CopilotRuntime {
     signal?: AbortSignal,
     onProgress?: AnswerProgressHandler,
     images?: readonly AnswerImage[],
+    systemPrompt: string = AGENT_SYSTEM_PROMPT,
   ): Promise<string> {
     if (signal?.aborted) {
       throw abortReason(signal);
@@ -100,6 +101,7 @@ export class CopilotRuntime {
     await this.start();
     await this.#assertImageSupport(images ?? []);
     const provider = buildProvider(this.config.ai);
+    const requestContext = context.active();
     const session = await this.#client.createSession({
       availableTools: ['custom:*'],
       clientName: 'aspire-discord-bot',
@@ -122,21 +124,29 @@ export class CopilotRuntime {
       skipCustomInstructions: true,
       skipEmbeddingRetrieval: true,
       streaming: true,
-      systemMessage: { mode: 'append', content: AGENT_SYSTEM_PROMPT },
+      systemMessage: { mode: 'append', content: systemPrompt },
       toolSearch: { enabled: false },
-      tools: [...tools],
+      tools: tools.map((tool) =>
+        tool.handler ? { ...tool, handler: context.bind(requestContext, tool.handler) } : tool,
+      ),
     });
     let writingReported = false;
     const unsubscribe = [
-      session.on('tool.execution_start', () => {
-        notifyProgress(onProgress, 'researching', this.logger);
-      }),
-      session.on('assistant.message_delta', (event) => {
-        if (!writingReported && event.data.deltaContent.trim()) {
-          writingReported = true;
-          notifyProgress(onProgress, 'writing', this.logger);
-        }
-      }),
+      session.on(
+        'tool.execution_start',
+        context.bind(requestContext, () => {
+          notifyProgress(onProgress, 'researching', this.logger);
+        }),
+      ),
+      session.on(
+        'assistant.message_delta',
+        context.bind(requestContext, (event) => {
+          if (!writingReported && event.data.deltaContent.trim()) {
+            writingReported = true;
+            notifyProgress(onProgress, 'writing', this.logger);
+          }
+        }),
+      ),
     ];
 
     const abort = async () => {

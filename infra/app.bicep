@@ -28,6 +28,18 @@ param githubToken string
 @secure()
 param discordAllowedUserIds string = ''
 
+@description('GitHub App ID; credentials do not enable IssuePolicy.')
+param githubIssuesAppId string = '4968096'
+
+@description('Nonsecret version-pinned Key Vault key URI; never a raw private key.')
+@maxLength(256)
+param githubIssuesKeyId string = ''
+
+param githubIssuesInstallationId string = '163850423'
+
+@description('Managed-identity Azure Table endpoint from the separately deployed issue-storage scope.')
+param githubIssuesTableEndpoint string = ''
+
 var baseName = 'aspire-discord-${environmentName}'
 var compactName = 'aspirediscord${resourceSuffix}'
 var foundryEndpoint = 'https://aspire-discord-ai-${resourceSuffix}.openai.azure.com'
@@ -310,6 +322,30 @@ resource application 'Microsoft.App/containerApps@2025-07-01' = {
                   {
                     name: 'DISCORD_ALLOWED_USER_IDS'
                     secretRef: 'discord-allowed-users'
+                  }
+                ],
+            empty(githubIssuesKeyId)
+              ? []
+              : [
+                  {
+                    name: 'GITHUB_ISSUES_APP_ID'
+                    value: githubIssuesAppId
+                  }
+                  {
+                    name: 'GITHUB_ISSUES_KEY_ID'
+                    value: githubIssuesKeyId
+                  }
+                  {
+                    name: 'GITHUB_ISSUES_INSTALLATION_ID'
+                    value: githubIssuesInstallationId
+                  }
+                  {
+                    name: 'GITHUB_ISSUES_TABLE_ENDPOINT'
+                    value: githubIssuesTableEndpoint
+                  }
+                  {
+                    name: 'GITHUB_ISSUES_TABLE_NAME'
+                    value: 'IssueDrafts'
                   }
                 ]
           )
