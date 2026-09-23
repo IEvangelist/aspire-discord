@@ -12,6 +12,7 @@ import {
   type StoredIssueDraft,
 } from '../../src/issues/types.js';
 import { testLogger } from '../helpers/logger.js';
+import type { PreparedIssueFields } from '../../src/domain.js';
 
 const policy: IssuePolicy = {
   enabled: true,
@@ -98,12 +99,20 @@ function environment(activePolicy: IssuePolicy = policy) {
   };
 }
 
-async function requestPreview(controller: DiscordIssueController) {
+async function requestPreview(
+  controller: DiscordIssueController,
+  input: PreparedIssueFields = {
+    repository: 'microsoft/aspire',
+    title: 'Reported deployment failure',
+    body: '## Observed\nThe reporter sees deployment fail.\n## Reproduction\nNot provided.',
+  },
+  content = '<@999> Please file an issue about a deployment failure.',
+) {
   const replies: MessageCreateOptions[] = [];
   const message = {
     id: '111',
     author: { id: '123', bot: false },
-    content: '<@999> Please file an issue about a deployment failure.',
+    content,
     guildId: '789',
     channelId: '456',
     createdTimestamp: Date.now(),
@@ -115,7 +124,7 @@ async function requestPreview(controller: DiscordIssueController) {
       return { id: '900001' };
     },
   } as unknown as Message;
-  await controller.handleMessage(message, bot);
+  await controller.prepareDraft(message, bot, input);
   const preview = replies[0];
   const match = /Issue draft: ([a-f0-9-]{36}) v(\d+)\./u.exec(preview?.content ?? '');
   if (!preview || !match?.[1] || !match[2]) {
@@ -141,6 +150,23 @@ function confirmation(id: string, version: string, action = 'confirm', previewId
 }
 
 describe('conversation-to-issue publication', () => {
+  it('previews the prepared Testing / 1.2.3 fields without rewriting or publishing', async () => {
+    const app = environment();
+    const { preview, id } = await requestPreview(
+      app.controller(),
+      { repository: 'microsoft/aspire', title: 'Testing', body: '1.2.3' },
+      'aspire.dev',
+    );
+    expect(app.complete).not.toHaveBeenCalled();
+    expect(app.create).not.toHaveBeenCalled();
+    expect(JSON.parse(JSON.stringify(preview.embeds))).toEqual([
+      expect.objectContaining({
+        title: 'Testing',
+        description: `1.2.3\n\n<!-- aspire-discord-issue:${id}:1 -->`,
+      }),
+    ]);
+  });
+
   it('keeps revision identity and invalidates the old preview after a clarification', async () => {
     const app = environment();
     const { preview, id, version } = await requestPreview(app.controller());

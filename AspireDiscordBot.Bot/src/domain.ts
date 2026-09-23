@@ -11,7 +11,9 @@ export interface GroundedAnswer {
   readonly isGrounded: boolean;
   readonly notices?: readonly string[];
   readonly topScore: number;
-  readonly source?: 'github';
+  readonly source?: 'github' | 'conversation';
+  readonly requiresReply?: boolean;
+  readonly pendingIssue?: PendingIssueFields;
 }
 
 export type AnswerProgressPhase =
@@ -35,12 +37,29 @@ export interface AnswerDocument {
   readonly source: string;
 }
 
+export interface PendingIssueFields {
+  readonly repository?: string;
+  readonly title?: string;
+  readonly body?: string;
+}
+
+export interface PreparedIssueFields {
+  readonly repository: string;
+  readonly title: string;
+  readonly body: string;
+}
+
 export interface ConversationContext {
   readonly documents?: readonly AnswerDocument[];
   readonly history?: string;
   readonly images?: readonly AnswerImage[];
   readonly notices?: readonly string[];
   readonly questionSource?: string;
+  readonly pendingIssue?: PendingIssueFields;
+  readonly prepareIssueDraft?: (
+    input: PreparedIssueFields,
+    signal?: AbortSignal,
+  ) => Promise<{ readonly draftId: string; readonly version: number }>;
 }
 
 export interface VectorSearchResult {

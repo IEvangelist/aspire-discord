@@ -51,6 +51,11 @@ import {
 } from './text-context.js';
 import { UserRateLimiter } from './user-rate-limiter.js';
 import type { DiscordIssueController } from './issue-controller.js';
+import {
+  ConversationState,
+  conversationKey,
+  type ConversationActor,
+} from './conversation-state.js';
 
 const inlineEmbedRefreshMilliseconds = 750;
 
@@ -93,6 +98,8 @@ export class DiscordGateway {
   readonly #requests = new RequestDeduplicator();
   readonly #textLoader: SafeDiscordTextLoader;
   readonly #users: UserRateLimiter;
+  readonly #conversations = new ConversationState();
+  readonly #turns = new Map<string, WorkLimiter>();
   #commandsCleared = false;
   #started = false;
 
@@ -373,14 +380,12 @@ export class DiscordGateway {
     }
     if (!message.mentions.has(this.#client.user)) {
       const runtime = this.runtimeConfig.current();
-      if (
-        message.reference?.messageId &&
-        runtime.available &&
-        isUserAllowed(message.author.id, runtime.allowedUserIds)
-      ) {
+      if (!runtime.available || !isUserAllowed(message.author.id, runtime.allowedUserIds)) return;
+      if (!this.#conversations.get(this.#actor(message))?.requiresReply) {
+        if (!message.reference?.messageId) return;
         await this.issues?.handleMessage(message, this.#client.user, this.shutdownSignal);
+        return;
       }
-      return;
     }
     await observeDiscordMention(message, async (observation) => {
       try {
@@ -396,6 +401,62 @@ export class DiscordGateway {
   }
 
   async #processMention(message: Message, observation: DiscordRequestObservation): Promise<void> {
+    const runtime = this.runtimeConfig.current();
+    if (!runtime.available || !isUserAllowed(message.author.id, runtime.allowedUserIds)) {
+      await this.#processConversationTurn(message, observation);
+      return;
+    }
+    const key = conversationKey(this.#actor(message));
+    const turns = this.#turns.get(key) ?? new WorkLimiter(1, 2);
+    this.#turns.set(key, turns);
+    try {
+      await turns.run(
+        () => this.#processConversationTurn(message, observation),
+        this.#requestSignal(),
+      );
+    } catch (error) {
+      if (!(error instanceof WorkQueueFullError)) throw error;
+      this.logger.warn({ ...discordLogContext(message) }, 'Requester conversation queue is full.');
+      await message.reply(
+        answerPayload('I am still handling your previous messages. Please wait for my reply.'),
+      );
+      observation.complete('busy');
+    } finally {
+      if (turns.active === 0 && turns.queued === 0) this.#turns.delete(key);
+    }
+  }
+
+  #actor(message: Message): ConversationActor {
+    return { userId: message.author.id, guildId: message.guildId, channelId: message.channelId };
+  }
+
+  async #processConversationTurn(
+    message: Message,
+    observation: DiscordRequestObservation,
+  ): Promise<void> {
+    if (
+      this.#client.user &&
+      !message.mentions.has(this.#client.user) &&
+      !this.#conversations.get(this.#actor(message))?.requiresReply
+    ) {
+      const current = this.runtimeConfig.current();
+      if (
+        current.available &&
+        isUserAllowed(message.author.id, current.allowedUserIds) &&
+        message.reference?.messageId &&
+        (await this.issues?.handleMessage(message, this.#client.user, this.shutdownSignal))
+      ) {
+        this.#conversations.clear(this.#actor(message));
+        observation.complete('issue_handled');
+      } else {
+        this.logger.info(
+          discordLogContext(message),
+          'Ignored a queued message after conversation completion.',
+        );
+        observation.complete('unclassified');
+      }
+      return;
+    }
     const started = performance.now();
     const logContext = discordLogContext(message);
     const requestSignal = this.#requestSignal();
@@ -447,6 +508,7 @@ export class DiscordGateway {
       this.#client.user &&
       (await this.issues.handleMessage(message, this.#client.user, requestSignal))
     ) {
+      this.#conversations.clear(this.#actor(message));
       observation.complete('issue_handled');
       return;
     }
@@ -536,13 +598,31 @@ export class DiscordGateway {
           },
           'Handling Discord mention.',
         );
+        const previous = this.#conversations.get(this.#actor(message));
+        const bot = this.#client.user;
+        const issues = this.issues;
+        const history = [previous?.history, conversation?.history].filter(Boolean).join('\n\n');
+        const combined: ConversationContext | undefined =
+          conversation || previous || (issues && bot)
+            ? {
+                ...conversation,
+                ...(history ? { history } : {}),
+                ...(previous?.pendingIssue ? { pendingIssue: previous.pendingIssue } : {}),
+                ...(issues && bot
+                  ? {
+                      prepareIssueDraft: (input, signal) =>
+                        issues.prepareDraft(received, bot, input, signal),
+                    }
+                  : {}),
+              }
+            : undefined;
         return await this.answers.answer(
           question,
           requestSignal,
           async (update) => {
             await progress?.report(update);
           },
-          conversation,
+          combined,
         );
       }, requestSignal);
       const formatted = buildAnswerThread(
@@ -552,6 +632,7 @@ export class DiscordGateway {
       );
       await progress.stop();
       await response.edit(answerPayload(formatted.answerMessages[0]));
+      this.#conversations.remember(this.#actor(message), question, answer);
       await replyInChain(response, [
         ...formatted.answerMessages.slice(1),
         ...formatted.detailMessages,

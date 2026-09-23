@@ -5,9 +5,9 @@ import {
   issuePreview,
   type DiscordIssueServices,
 } from '../../src/discord/issue-controller.js';
-import type { IssueDraft, IssuePolicy } from '../../src/issues/types.js';
+import { IssuePolicyError, type IssueDraft, type IssuePolicy } from '../../src/issues/types.js';
 import { testLogger } from '../helpers/logger.js';
-import { IssueClarificationError } from '../../src/issues/drafting.js';
+import type { PreparedIssueFields } from '../../src/domain.js';
 
 const actor = { userId: '123', channelId: '456', guildId: '789' };
 const policy: IssuePolicy = {
@@ -33,6 +33,11 @@ const initial: IssueDraft = {
   createdAt: '2026-09-15T12:00:00Z',
   expiresAt: '2026-09-15T12:30:00Z',
   state: 'draft',
+};
+const prepared: PreparedIssueFields = {
+  repository: initial.repository,
+  title: initial.title,
+  body: initial.body,
 };
 
 function harness(activePolicy: IssuePolicy = policy) {
@@ -127,6 +132,40 @@ function button(action = 'confirm', userId = actor.userId) {
 }
 
 describe('Discord issue workflow', () => {
+  it('preserves the model-prepared Testing title and 1.2.3 body on a bare repository answer', async () => {
+    const { controller, workflow, generator } = harness({
+      ...policy,
+      allowedChannelIds: [],
+      allowedGuildIds: [actor.guildId],
+    });
+    const request = message('aspire.dev', { mention: false });
+    const input = { repository: 'microsoft/aspire', title: 'Testing', body: '1.2.3' };
+    workflow.create.mockResolvedValueOnce({ ...initial, ...input });
+    expect(await controller.prepareDraft(request.value, bot, input)).toEqual({
+      draftId: initial.id,
+      version: 1,
+    });
+    expect(generator.generate).not.toHaveBeenCalled();
+    expect(workflow.create).toHaveBeenCalledWith(
+      actor,
+      {
+        ...input,
+        sourceMessageIds: [request.value.id],
+        notices: expect.any(Array),
+      },
+      expect.any(AbortSignal),
+    );
+    expect(workflow.create).toHaveBeenCalledOnce();
+    expect(workflow.attachPreview).toHaveBeenCalledOnce();
+    expect(workflow.confirm).not.toHaveBeenCalled();
+    expect(request.reply).toHaveBeenCalledWith(
+      expect.objectContaining({ content: expect.stringContaining('Issue draft:') }),
+    );
+    expect(JSON.stringify(request.reply.mock.calls[0]?.[0].embeds)).toContain('"title":"Testing"');
+    expect(JSON.stringify(request.reply.mock.calls[0]?.[0].embeds)).toContain(
+      '"description":"1.2.3"',
+    );
+  });
   it('uses server-wide scope for new drafts, non-mention replies and buttons', async () => {
     const { controller, workflow } = harness({
       ...policy,
@@ -134,7 +173,7 @@ describe('Discord issue workflow', () => {
       allowedGuildIds: [actor.guildId],
     });
     const request = message('File an issue');
-    await controller.handleMessage(request.value, bot);
+    await controller.prepareDraft(request.value, bot, prepared);
     expect(workflow.create).toHaveBeenCalledOnce();
     const revision = message('Add the reproduction detail', {
       replyToPreview: true,
@@ -154,7 +193,9 @@ describe('Discord issue workflow', () => {
       });
       const request = message('File an issue');
       Object.defineProperty(request.value, 'guildId', { value: guildId });
-      await controller.handleMessage(request.value, bot);
+      await expect(controller.prepareDraft(request.value, bot, prepared)).rejects.toThrow(
+        IssuePolicyError,
+      );
       expect(workflow.create).not.toHaveBeenCalled();
       expect(generator.generate).not.toHaveBeenCalled();
       const click = button();
@@ -163,34 +204,99 @@ describe('Discord issue workflow', () => {
       expect(workflow.confirm).not.toHaveBeenCalled();
     }
   });
-  it('deduplicates requests and bounds disabled-policy rejection replies', async () => {
+  it('rejects disabled-policy drafting without reporting success or sending a preview', async () => {
     const controller = new DiscordIssueController(
       undefined,
       () => ({ ...policy, enabled: false }),
       testLogger,
     );
     const first = message('File an issue');
-    await controller.handleMessage(first.value, bot);
-    await controller.handleMessage(first.value, bot);
-    expect(first.reply).toHaveBeenCalledOnce();
-    const remaining = Array.from({ length: 7 }, () => message('File an issue'));
-    for (const request of remaining) await controller.handleMessage(request.value, bot);
-    expect(remaining.reduce((count, request) => count + request.reply.mock.calls.length, 0)).toBe(
-      5,
-    );
+    await expect(controller.prepareDraft(first.value, bot, prepared)).rejects.toThrow('disabled');
+    expect(first.reply).not.toHaveBeenCalled();
   });
-  it('asks for missing details and resumes a requester-owned clarification reply', async () => {
+
+  it('suppresses duplicate tool calls and rate-limits new draft requests', async () => {
+    const { controller, workflow, generator } = harness();
+    const first = message('aspire.dev', { mention: false });
+    await controller.prepareDraft(first.value, bot, prepared);
+    await expect(controller.prepareDraft(first.value, bot, prepared)).rejects.toThrow(
+      'already been processed',
+    );
+    expect(workflow.create).toHaveBeenCalledOnce();
+    expect(first.reply).toHaveBeenCalledOnce();
+    for (let index = 0; index < 5; index++) {
+      await controller.prepareDraft(message('aspire.dev').value, bot, prepared);
+    }
+    await expect(
+      controller.prepareDraft(message('aspire.dev').value, bot, prepared),
+    ).rejects.toThrow('Too many issue requests');
+    expect(workflow.create).toHaveBeenCalledTimes(6);
+    expect(workflow.confirm).not.toHaveBeenCalled();
+    expect(generator.generate).not.toHaveBeenCalled();
+  });
+
+  it('uses the current policy when preparing a draft', async () => {
+    const getPolicy = vi.fn(() => policy);
+    const { workflow, generator } = harness();
+    const controller = new DiscordIssueController({ workflow, generator }, getPolicy, testLogger);
+    await controller.prepareDraft(message('aspire.dev').value, bot, prepared);
+    getPolicy.mockReturnValue({ ...policy, allowedUserIds: [] });
+    await expect(
+      controller.prepareDraft(message('aspire.dev').value, bot, prepared),
+    ).rejects.toThrow('not authorized');
+    expect(workflow.create).toHaveBeenCalledOnce();
+  });
+
+  it('does not read cross-channel context or accept a bot as the requester', async () => {
+    const { controller, workflow } = harness();
+    const crossChannel = message('aspire.dev', { replyToPreview: true });
+    Object.defineProperty(crossChannel.value, 'reference', {
+      value: { messageId: 'preview', channelId: 'another-channel' },
+    });
+    await expect(controller.prepareDraft(crossChannel.value, bot, prepared)).rejects.toThrow(
+      'Cross-channel',
+    );
+    expect(crossChannel.fetchReference).not.toHaveBeenCalled();
+    const automated = message('aspire.dev');
+    Object.defineProperty(automated.value, 'author', {
+      value: { id: actor.userId, bot: true },
+    });
+    await expect(controller.prepareDraft(automated.value, bot, prepared)).rejects.toThrow(
+      'human requester',
+    );
+    expect(workflow.create).not.toHaveBeenCalled();
+  });
+
+  it.each(['create', 'attachPreview'] as const)(
+    'propagates %s failures instead of reporting a successful tool result',
+    async (operation) => {
+      const { controller, workflow } = harness();
+      workflow[operation].mockRejectedValueOnce(new IssuePolicyError('Draft action rejected.'));
+      await expect(
+        controller.prepareDraft(message('aspire.dev').value, bot, prepared),
+      ).rejects.toThrow('Draft action rejected');
+      expect(workflow.confirm).not.toHaveBeenCalled();
+    },
+  );
+
+  it('does not report success when preview delivery fails', async () => {
+    const { controller, workflow } = harness();
+    const request = message('aspire.dev');
+    request.reply.mockRejectedValueOnce(new Error('Discord unavailable'));
+    await expect(controller.prepareDraft(request.value, bot, prepared)).rejects.toThrow(
+      'Discord unavailable',
+    );
+    expect(workflow.attachPreview).not.toHaveBeenCalled();
+    expect(workflow.confirm).not.toHaveBeenCalled();
+  });
+  it('resumes a requester-owned legacy clarification reply after restart', async () => {
     const { controller, generator, workflow } = harness();
-    generator.generate.mockRejectedValueOnce(new IssueClarificationError('Which repository?'));
     const first = message('File an issue about the deployment failure');
-    await controller.handleMessage(first.value, bot);
-    const clarificationContent = first.reply.mock.calls[0]?.[0].content;
-    expect(clarificationContent).toContain('[Issue drafting clarification]');
     const followup = message('microsoft/aspire', { mention: false, replyToPreview: true });
     const clarificationMessage = {
       id: 'clarification',
       author: bot,
-      content: clarificationContent ?? '',
+      content: 'Which repository?\n[Issue drafting clarification]',
       reference: { messageId: '111' },
       fetchReference: async () => first.value,
     };
@@ -207,11 +313,11 @@ describe('Discord issue workflow', () => {
     expect(workflow.confirm).not.toHaveBeenCalled();
   });
 
-  it('drafts a natural-language request and binds approval only after preview delivery', async () => {
+  it('binds prepared fields for approval only after preview delivery', async () => {
     const { controller, workflow, generator } = harness();
     const request = message('<@999> Please file an issue about this deployment failure.');
-    expect(await controller.handleMessage(request.value, bot)).toBe(true);
-    expect(generator.generate).toHaveBeenCalledOnce();
+    await controller.prepareDraft(request.value, bot, prepared);
+    expect(generator.generate).not.toHaveBeenCalled();
     expect(workflow.create).toHaveBeenCalledOnce();
     expect(workflow.confirm).not.toHaveBeenCalled();
     expect(workflow.attachPreview).toHaveBeenCalledWith(
@@ -232,13 +338,16 @@ describe('Discord issue workflow', () => {
     );
   });
 
-  it('leaves ordinary questions on the existing answer path', async () => {
-    const { controller, workflow, generator } = harness();
-    const request = message('<@999> How do I use Redis?');
-    expect(await controller.handleMessage(request.value, bot)).toBe(false);
-    expect(workflow.create).not.toHaveBeenCalled();
-    expect(generator.generate).not.toHaveBeenCalled();
-  });
+  it.each(['<@999> How do I use Redis?', '<@999> create a test issue', 'create the issue'])(
+    'leaves every non-reply on the model answer path: %s',
+    async (content) => {
+      const { controller, workflow, generator } = harness();
+      const request = message(content);
+      expect(await controller.handleMessage(request.value, bot)).toBe(false);
+      expect(workflow.create).not.toHaveBeenCalled();
+      expect(generator.generate).not.toHaveBeenCalled();
+    },
+  );
 
   it('handles revisions by reply without requiring another mention', async () => {
     const { controller, workflow } = harness();
@@ -288,13 +397,14 @@ describe('Discord issue workflow', () => {
   it('rejects unauthorized callers without reading their references or generating a draft', async () => {
     const { controller, workflow, generator } = harness();
     const request = message('File an issue', { userId: '666', replyToPreview: true });
-    expect(await controller.handleMessage(request.value, bot)).toBe(true);
+    expect(await controller.handleMessage(request.value, bot)).toBe(false);
+    await expect(controller.prepareDraft(request.value, bot, prepared)).rejects.toThrow(
+      'not authorized',
+    );
     expect(request.fetchReference).not.toHaveBeenCalled();
     expect(workflow.create).not.toHaveBeenCalled();
     expect(generator.generate).not.toHaveBeenCalled();
-    expect(request.reply).toHaveBeenCalledWith(
-      expect.objectContaining({ content: expect.stringContaining('not authorized') }),
-    );
+    expect(request.reply).not.toHaveBeenCalled();
   });
 
   it('publishes through an authenticated button and returns the GitHub URL', async () => {
@@ -343,10 +453,10 @@ describe('Discord issue workflow', () => {
   it('reports unconfigured or disabled filing rather than pretending to create an issue', async () => {
     const controller = new DiscordIssueController(undefined, () => policy, testLogger);
     const request = message('File an issue');
-    await controller.handleMessage(request.value, bot);
-    expect(request.reply).toHaveBeenCalledWith(
-      expect.objectContaining({ content: expect.stringContaining('Key Vault signing key') }),
+    await expect(controller.prepareDraft(request.value, bot, prepared)).rejects.toThrow(
+      'Key Vault signing key',
     );
+    expect(request.reply).not.toHaveBeenCalled();
     expect(controller.status()).toEqual({ configured: false, enabled: true });
   });
 

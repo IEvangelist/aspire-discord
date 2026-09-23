@@ -26,6 +26,10 @@ describe('issue request intent', () => {
     'I tried to open a connection and got this issue.',
     'Does create resource cause an issue?',
     'Please open the dashboard to explain the issue.',
+    'Can you create a test AppHost without this issue?',
+    'Can you create a test that reproduces the issue?',
+    'Could you please create a sample app that avoids this bug?',
+    'Do not create a test issue.',
     'yes',
   ])('does not treat %s as a filing request', (text) => expect(isIssueRequest(text)).toBe(false));
 });

@@ -72,13 +72,17 @@ export function buildAnswerThread(
   }
 
   detailSections.push(
-    answer.source === 'github'
-      ? answer.isGrounded
-        ? '-# Live GitHub evidence from the configured Aspire repositories; see report coverage and limits.'
-        : '-# GitHub lookup needs clarification or is unavailable; no documentation match is required.'
-      : answer.isGrounded
-        ? '-# Grounded in microsoft/aspire & aspire.dev'
-        : '-# No matching coverage found in microsoft/aspire or aspire.dev',
+    answer.source === 'conversation'
+      ? answer.requiresReply
+        ? '-# Waiting for your reply in this conversation. Nothing has been published.'
+        : '-# Nothing is published without approval of the issue preview.'
+      : answer.source === 'github'
+        ? answer.isGrounded
+          ? '-# Live GitHub evidence from the configured Aspire repositories; see report coverage and limits.'
+          : '-# GitHub lookup needs clarification or is unavailable; no documentation match is required.'
+        : answer.isGrounded
+          ? '-# Grounded in microsoft/aspire & aspire.dev'
+          : '-# No matching coverage found in microsoft/aspire or aspire.dev',
   );
 
   const [firstAnswer = 'Sorry - I could not format that answer.', ...answerRest] = splitMarkdown(

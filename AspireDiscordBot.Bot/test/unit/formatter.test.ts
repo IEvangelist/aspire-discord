@@ -2,6 +2,18 @@ import { describe, expect, it } from 'vitest';
 import { buildAnswerThread } from '../../src/discord/formatter.js';
 
 describe('buildAnswerThread', () => {
+  it('renders a follow-up question as conversation rather than missing documentation', () => {
+    const result = buildAnswerThread('create issue', {
+      answer: 'Which repository?',
+      citations: [],
+      isGrounded: false,
+      topScore: 0,
+      source: 'conversation',
+      requiresReply: true,
+    });
+    expect(result.detailMessages[0].content).toContain('Waiting for your reply');
+    expect(result.detailMessages[0].content).not.toContain('No matching coverage');
+  });
   it('never labels a failed or clarification-only GitHub lookup as missing documentation coverage', () => {
     const formatted = buildAnswerThread('Issues from a user?', {
       answer: 'Which GitHub username?',

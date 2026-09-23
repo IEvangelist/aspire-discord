@@ -49,6 +49,8 @@ interface MessageOptions {
   readonly mentioned?: boolean;
   readonly replyChain?: ReplyChain;
   readonly userId?: string;
+  readonly channelId?: string;
+  readonly guildId?: string | null;
 }
 
 function createClient(
@@ -138,9 +140,9 @@ function createMessage(options: MessageOptions = {}) {
     },
     content: options.content ?? '<@bot> How do I add Redis?',
     createdTimestamp: 100,
-    channelId: 'channel',
+    channelId: options.channelId ?? 'channel',
     embeds: [],
-    guildId: 'guild',
+    guildId: options.guildId === undefined ? 'guild' : options.guildId,
     id: options.id ?? 'message',
     mentions: { has: () => options.mentioned ?? true },
     reference: null,
@@ -211,6 +213,119 @@ function replyContent(call: ReplyCall): string {
 }
 
 describe('Discord gateway behavior', () => {
+  it('does not consume a queued bare message after an earlier turn completes the pending task', async () => {
+    const client = createClient();
+    const answers = createAnswers();
+    const captured = createCapturingLogger();
+    const pending = Promise.withResolvers<GroundedAnswer>();
+    answers.answer
+      .mockResolvedValueOnce({
+        answer: 'Which repository?',
+        citations: [],
+        isGrounded: false,
+        topScore: 0,
+        requiresReply: true,
+        pendingIssue: { title: 'Testing', body: '1.2.3' },
+      })
+      .mockImplementationOnce(() => pending.promise);
+    const gateway = new DiscordGateway(
+      createTestConfig({ discord: { mentionEnabled: true, token: 'token' } }),
+      answers.service,
+      captured.logger,
+      client.client,
+    );
+    await gateway.start();
+    const first = createMessage({ id: 'first' });
+    emit(client.client, first.message);
+    await vi.waitFor(() => expect(first.chain.nodes[0]?.edit).toHaveBeenCalled());
+    const second = createMessage({ id: 'second', content: 'aspire.dev', mentioned: false });
+    emit(client.client, second.message);
+    await vi.waitFor(() => expect(answers.answer).toHaveBeenCalledTimes(2));
+    const unrelated = createMessage({
+      id: 'after-completion',
+      content: 'Something else for the channel',
+      mentioned: false,
+    });
+    emit(client.client, unrelated.message);
+    pending.resolve({ answer: 'Preview ready.', citations: [], isGrounded: false, topScore: 0 });
+    await vi.waitFor(() =>
+      expect(captured.entries).toContainEqual(
+        expect.objectContaining({
+          msg: 'Ignored a queued message after conversation completion.',
+        }),
+      ),
+    );
+    expect(answers.answer).toHaveBeenCalledTimes(2);
+    expect(unrelated.reply).not.toHaveBeenCalled();
+    await gateway.stop();
+  });
+  it.each([false, true])(
+    'continues the same requester pending draft from a bare or mentioned repository reply (mention=%s)',
+    async (mentioned) => {
+      const client = createClient();
+      const answers = createAnswers();
+      answers.answer.mockResolvedValueOnce({
+        answer: 'Which repository?',
+        citations: [],
+        isGrounded: false,
+        topScore: 0,
+        source: 'conversation',
+        requiresReply: true,
+        pendingIssue: { title: 'Testing', body: '1.2.3' },
+      });
+      const gateway = new DiscordGateway(
+        createTestConfig({ discord: { mentionEnabled: true, token: 'token' } }),
+        answers.service,
+        testLogger,
+        client.client,
+      );
+      await gateway.start();
+      const initial = createMessage({
+        id: 'create-1',
+        content: '<@bot> create an issue. Use the subject Testing and the desc 1.2.3',
+      });
+      emit(client.client, initial.message);
+      await vi.waitFor(() => expect(initial.chain.nodes[0]?.edit).toHaveBeenCalled());
+      const otherUser = createMessage({
+        id: 'other-user',
+        content: 'aspire.dev',
+        mentioned: false,
+        userId: 'other',
+      });
+      const otherChannel = createMessage({
+        id: 'other-channel',
+        content: 'aspire.dev',
+        mentioned: false,
+        channelId: 'other',
+      });
+      const otherGuild = createMessage({
+        id: 'other-guild',
+        content: 'aspire.dev',
+        mentioned: false,
+        guildId: 'other',
+      });
+      emit(client.client, otherUser.message);
+      emit(client.client, otherChannel.message);
+      emit(client.client, otherGuild.message);
+      const followup = createMessage({
+        id: 'repo-2',
+        content: mentioned ? '<@bot> aspire.dev' : 'aspire.dev',
+        mentioned,
+      });
+      emit(client.client, followup.message);
+      await vi.waitFor(() => expect(answers.answer).toHaveBeenCalledTimes(2));
+      expect(answers.answer.mock.calls[1]?.[0]).toBe('aspire.dev');
+      expect(answers.answer.mock.calls[1]?.[3]).toMatchObject({
+        pendingIssue: { title: 'Testing', body: '1.2.3' },
+        history: expect.stringContaining('subject Testing'),
+      });
+      expect(otherUser.reply).not.toHaveBeenCalled();
+      expect(otherChannel.reply).not.toHaveBeenCalled();
+      expect(otherGuild.reply).not.toHaveBeenCalled();
+      await gateway.stop();
+    },
+  );
+
   it('keeps ordinary questions in Q&A when issue services are present but disabled', async () => {
     const harness = createClient();
     const answers = createAnswers();
@@ -242,7 +357,23 @@ describe('Discord gateway behavior', () => {
     const harness = createClient();
     const answers = createAnswers();
     const issues = new DiscordIssueController(undefined, () => disabledIssuePolicy, testLogger);
-    const dispatch = vi.spyOn(issues, 'handleMessage');
+    const dispatch = vi
+      .spyOn(issues, 'prepareDraft')
+      .mockResolvedValue({ draftId: 'draft', version: 1 });
+    answers.answer.mockImplementation(async (_question, signal, _progress, conversation) => {
+      if (!conversation?.prepareIssueDraft) throw new Error('Expected trusted draft capability.');
+      await conversation.prepareIssueDraft(
+        { repository: 'microsoft/aspire', title: 'Testing', body: '1.2.3' },
+        signal,
+      );
+      return {
+        answer: 'Review the preview.',
+        citations: [],
+        isGrounded: false,
+        topScore: 0,
+        source: 'conversation',
+      };
+    });
     const gateway = new DiscordGateway(
       createTestConfig({
         discord: {
@@ -290,15 +421,31 @@ describe('Discord gateway behavior', () => {
     expect(denied.reply).not.toHaveBeenCalled();
     expect(dispatch).toHaveBeenCalledOnce();
     expect(allowed.reply).toHaveBeenCalledOnce();
-    expect(answers.answer).not.toHaveBeenCalled();
+    expect(answers.answer).toHaveBeenCalledOnce();
     await gateway.stop();
   });
 
-  it('routes issue messages and buttons without entering the documentation answer pipeline', async () => {
+  it('routes tool-selected previews and human buttons through separate trusted capabilities', async () => {
     const harness = createClient();
     const answers = createAnswers();
     const issues = new DiscordIssueController(undefined, () => disabledIssuePolicy, testLogger);
-    const handleMessage = vi.spyOn(issues, 'handleMessage').mockResolvedValue(true);
+    const prepareDraft = vi
+      .spyOn(issues, 'prepareDraft')
+      .mockResolvedValue({ draftId: 'draft', version: 1 });
+    answers.answer.mockImplementation(async (_question, signal, _progress, conversation) => {
+      if (!conversation?.prepareIssueDraft) throw new Error('Expected trusted draft capability.');
+      await conversation.prepareIssueDraft(
+        { repository: 'microsoft/aspire', title: 'Testing', body: '1.2.3' },
+        signal,
+      );
+      return {
+        answer: 'Review the preview.',
+        citations: [],
+        isGrounded: false,
+        topScore: 0,
+        source: 'conversation',
+      };
+    });
     const handleButton = vi.spyOn(issues, 'handleButton').mockResolvedValue(undefined);
     const gateway = new DiscordGateway(
       createTestConfig({ discord: { mentionEnabled: true, token: 'token' } }),
@@ -319,10 +466,10 @@ describe('Discord gateway behavior', () => {
     };
     (harness.client as unknown as EventEmitter).emit(Events.InteractionCreate, interaction);
     await vi.waitFor(() => {
-      expect(handleMessage).toHaveBeenCalledOnce();
+      expect(prepareDraft).toHaveBeenCalledOnce();
       expect(handleButton).toHaveBeenCalledWith(interaction, undefined);
     });
-    expect(answers.answer).not.toHaveBeenCalled();
+    expect(answers.answer).toHaveBeenCalledOnce();
     await gateway.stop();
   });
 

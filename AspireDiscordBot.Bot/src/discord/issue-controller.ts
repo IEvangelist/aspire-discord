@@ -12,9 +12,9 @@ import {
   type User,
 } from 'discord.js';
 import type { Logger } from 'pino';
+import type { PreparedIssueFields } from '../domain.js';
 import {
   IssueClarificationError,
-  isIssueRequest,
   type IssueDraftGenerator,
   type IssueContext,
 } from '../issues/drafting.js';
@@ -76,28 +76,76 @@ export class DiscordIssueController {
     return { configured: Boolean(this.services), enabled: this.getPolicy().enabled };
   }
 
+  public async prepareDraft(
+    message: Message,
+    bot: User,
+    input: PreparedIssueFields,
+    signal?: AbortSignal,
+  ): Promise<{ draftId: string; version: number }> {
+    return await this.#observe(message.author.id, message.channelId, message.id, async () => {
+      try {
+        if (message.author.bot) {
+          throw new IssuePolicyError('Only a human requester can prepare an issue draft.');
+        }
+        const actor = this.#authorize(message.author.id, message.guildId, message.channelId);
+        const { workflow } = this.#configured();
+        if (message.reference?.channelId && message.reference.channelId !== message.channelId) {
+          throw new IssuePolicyError(
+            'Please use the original channel or thread. Cross-channel issue context is not supported.',
+          );
+        }
+        if (!this.#requests.claim(`message:${message.id}`)) {
+          throw new IssuePolicyError(
+            'This message has already been processed for issue drafting. Review the existing preview.',
+          );
+        }
+        this.#rateLimit(actor.userId);
+        const deadline = AbortSignal.timeout(120_000);
+        const combined = signal ? AbortSignal.any([signal, deadline]) : deadline;
+        return await this.#limiter.run(async () => {
+          const context = await this.#context(message, bot);
+          const draft = await workflow.create(
+            actor,
+            {
+              repository: input.repository,
+              title: input.title,
+              body: input.body,
+              sourceMessageIds: [
+                message.id,
+                ...context.sourceMessageIds.filter((id) => id !== message.id).slice(0, 99),
+              ],
+              notices: [...context.notices],
+            },
+            combined,
+          );
+          await this.#respond(message, actor, draft, combined);
+          this.#recordOutcome(draft);
+          return { draftId: draft.id, version: draft.version };
+        }, combined);
+      } catch (error) {
+        this.#logFailure(error);
+        if (error instanceof WorkQueueFullError) {
+          throw new IssuePolicyError('The issue workflow is busy. Please try again shortly.');
+        }
+        throw error;
+      }
+    });
+  }
+
   public async handleMessage(message: Message, bot: User, signal?: AbortSignal): Promise<boolean> {
-    const mentioned = message.mentions.has(bot);
-    const requested = mentioned && isIssueRequest(message.content);
+    if (!message.reference?.messageId) {
+      return false;
+    }
     let reference: DraftReference | undefined;
     let clarification: Message | undefined;
     const policy = this.getPolicy();
     if (
-      message.reference?.messageId &&
       !message.author.bot &&
       policy.enabled &&
       policy.allowedUserIds.includes(message.author.id) &&
       isIssueLocationAllowed(policy, message.guildId, message.channelId)
     ) {
       if (message.reference.channelId && message.reference.channelId !== message.channelId) {
-        if (requested) {
-          await message.reply(
-            textReply(
-              'Please use the original channel or thread. Cross-channel issue context is not supported.',
-            ),
-          );
-          return true;
-        }
         return false;
       }
       const referenced = await message.fetchReference().catch((error: unknown) => {
@@ -129,7 +177,7 @@ export class DiscordIssueController {
         }
       }
     }
-    if (!requested && !reference && !clarification) {
+    if (!reference && !clarification) {
       return false;
     }
     if (!this.#requests.claim(`message:${message.id}`)) {
@@ -225,7 +273,10 @@ export class DiscordIssueController {
               combined,
             );
           }
-          const evidence = await this.#context(clarification ?? message, bot);
+          if (!clarification) {
+            throw new IssuePolicyError('Reply to the original issue preview or clarification.');
+          }
+          const evidence = await this.#context(clarification, bot);
           const input = await services.generator.generate(
             request,
             evidence,
@@ -399,13 +450,13 @@ export class DiscordIssueController {
     };
   }
 
-  async #observe(
+  async #observe<T>(
     userId: string,
     channelId: string,
     eventId: string,
-    execute: () => Promise<void>,
-  ): Promise<void> {
-    await tracer.startActiveSpan(
+    execute: () => Promise<T>,
+  ): Promise<T> {
+    return await tracer.startActiveSpan(
       'process discord issue request',
       {
         kind: SpanKind.CONSUMER,
@@ -426,7 +477,7 @@ export class DiscordIssueController {
             { discordEventId: eventId, discordUserId: userId, discordChannelId: channelId },
             'Received Discord issue action.',
           );
-          await execute();
+          return await execute();
         } catch (error) {
           span.setStatus({ code: SpanStatusCode.ERROR });
           span.setAttribute('error.type', error instanceof Error ? error.name : 'Error');

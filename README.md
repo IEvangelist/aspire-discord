@@ -171,30 +171,39 @@ The resource graph includes dashboard commands backed by the ingestion API:
 
 ## Agent behavior
 
-Technical questions follow this bounded pipeline. After the same input safety guard, explicit
-GitHub read requests use the live repository workflow below instead of the documentation gate:
+The production gateway uses one bounded Copilot conversation agent to select capabilities. It does
+not classify natural-language requests with issue/read keyword matchers before the model sees tools.
 
 1. Deterministic input guard rejects prompt injection, jailbreaks, extraction attempts, empty input,
    and questions over 2,000 characters.
-2. User-provided links are extracted before retrieval. Supported GitHub issue, PR, commit,
-   latest-release, and file links are routed through repository-scoped read tools. Other links must
-   use HTTPS and match an exact administrator-approved host.
-3. Current-version questions resolve the live GitHub latest release. They fail closed if that
-   authoritative lookup is unavailable.
-4. The question and bounded linked context are searched against `aspire_docs`.
-5. Historical versioned `whats-new` pages are excluded from the index and filtered from old index
-   generations. Current docs, current source, and evergreen guidance take precedence.
-6. A minimum similarity score gates unrelated or uncovered questions before model inference.
-7. The agent receives a per-question tool budget and can query:
+2. The agent receives the current request, bounded requester history, and pending draft fields.
+3. It selects read-only documentation, API, GitHub, activity-report, or allowlisted-link tools:
    - `search_docs`
    - `search_api`
    - repository-scoped GitHub code, file, tree, commit, issue, PR, and release tools
-8. Tool and linked output is bounded, sanitized, labeled untrusted, and registered with citations.
-9. The final answer is checked for instruction leakage or successful persona manipulation.
+4. `prepare_issue_draft` accepts typed repository/title/body fields. Missing fields produce one
+   focused clarification; supplied title/body text is preserved instead of rewritten as a bug report.
+   This tool can deliver a durable preview, never publish it.
+5. `ask_clarification` records a question; `cancel_pending_request` clears an unfinished conversation.
+6. Tool and linked output is bounded, sanitized, labeled untrusted, and registered with citations.
+   Technical answers still require retrieved evidence; historical release pages are not current facts.
+7. User/server/repository authorization, rate limits, duplicate protection, and exact requester
+   approval before publication are enforced in code, independently of model decisions.
 
 The Copilot SDK runs in **`empty` mode**. Ambient shell, filesystem, Git, memory, skills, plugins,
 schedule, and cross-session retrieval features are disabled. Every allowed tool is explicitly
-registered and read-only.
+registered. Its only non-read capability prepares an issue preview; no publishing or approval tool
+is exposed to the model.
+
+### Follow-up continuity
+
+Short replies such as `aspire.dev` continue the pending task, with or without another mention, only
+for the same requester in the same server and channel/thread. Other people's messages are not
+consumed as answers. Per-requester turns are serialized to avoid racing two draft continuations.
+Recent conversation context is redacted and bounded to 8,000 characters, 500 conversations and
+ten minutes in memory. Completion, cancellation or expiry stops passive follow-up capture.
+Conversation memory is not durable across restart; already-created previews and publication state
+remain durable in Azure Tables, and direct replies to those previews retain their existing controls.
 
 ## GitHub MCP
 
@@ -228,8 +237,9 @@ GitHub read requests do not require a match in the documentation index. For exam
 `@Aspirey Bot look at issue reports from afscrome this month` queries authored issues in both
 `microsoft/aspire` and `microsoft/aspire.dev`, including open and closed reports, and returns
 counts and links. PR reports and broader user-activity requests use the same repository allowlist.
-Relative dates are explicitly interpreted in UTC; an omitted date range defaults to the last
-30 days. Invalid/ambiguous usernames or unsupported date ranges request clarification.
+The agent converts relative dates using the current UTC date into validated date arguments.
+Invalid/ambiguous usernames or unsupported date ranges request clarification; an activity report
+must supply an explicit bounded date window rather than silently interpreting an unsupported filter.
 
 Reports distinguish issue/PR authorship from comments, reviews and commits. They state the
 categories, pagination, sample and API limitations rather than claiming to enumerate every GitHub

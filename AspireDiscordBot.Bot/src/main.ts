@@ -1,6 +1,6 @@
 import { setTimeout as delay } from 'node:timers/promises';
 import type { Logger } from 'pino';
-import { GroundedAnswerService } from './agent/answer-service.js';
+import { ConversationAnswerService } from './agent/conversation-service.js';
 import { AzureSearchStore } from './agent/azure-search-store.js';
 import { CopilotRuntime } from './agent/copilot-runtime.js';
 import { OpenAiEmbeddingModel } from './agent/embeddings.js';
@@ -16,7 +16,6 @@ import type { TelemetryHandle } from './telemetry.js';
 import { startRuntimeConfig } from './runtime-config.js';
 import { createIssueController } from './issues/setup.js';
 import { GitHubActivityReader } from './agent/github-activity.js';
-import { GitHubReadService } from './agent/github-read-service.js';
 
 export async function main(telemetry: TelemetryHandle): Promise<void> {
   const config = loadConfig();
@@ -32,21 +31,15 @@ export async function main(telemetry: TelemetryHandle): Promise<void> {
   const copilot = new CopilotRuntime(config, logger);
   const githubMcp = new GitHubMcpClient(config.githubMcp, logger);
   const questionContext = new QuestionContextResolver(config.linkContext, githubMcp, logger);
-  const answers = new GroundedAnswerService(
+  const answers = new ConversationAnswerService(
     config,
     embeddings,
     vectorStore,
     copilot,
     githubMcp,
+    new GitHubActivityReader(config.githubMcp, logger),
     logger,
     questionContext,
-    new GitHubReadService(
-      new GitHubActivityReader(config.githubMcp, logger),
-      githubMcp,
-      copilot,
-      logger,
-      config.agent.maxToolCalls,
-    ),
   );
   const discord = new DiscordGateway(
     config,

@@ -4,7 +4,7 @@ setTimeout(fail, 90_000);
 (async () => {
   const { loadConfig } = await import('./dist/src/config.js');
   const { GitHubActivityReader } = await import('./dist/src/agent/github-activity.js');
-  const { GitHubReadService } = await import('./dist/src/agent/github-read-service.js');
+  const { ConversationAnswerService } = await import('./dist/src/agent/conversation-service.js');
   const config = loadConfig();
   if (config.discord.token || !config.githubMcp.token || !config.issues.keyId || !config.issues.tableEndpoint) throw Error();
   const logger = Object.fromEntries(['info', 'warn', 'error', 'debug', 'trace', 'fatal'].map(k => [k, () => {}]));
@@ -14,8 +14,19 @@ setTimeout(fail, 90_000);
   });
   const reader = new GitHubActivityReader(config.githubMcp, logger, boundedFetch);
   const forbidden = () => { throw Error(); };
-  const service = new GitHubReadService(reader, { createTools: forbidden }, { complete: forbidden }, logger, 1);
-  const answer = await service.tryAnswer('look at issue reports from afscrome this month', AbortSignal.timeout(65_000));
+  const runtime = { complete: async (_prompt, tools) => {
+    const now = new Date();
+    const tool = tools.find(t => t.name === 'get_github_activity');
+    await tool.handler({
+      kind: 'issues', username: 'afscrome',
+      since: new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString().slice(0, 10),
+      until: now.toISOString().slice(0, 10),
+    }, {});
+    return '';
+  } };
+  const service = new ConversationAnswerService(config, { embed: forbidden },
+    { searchDocs: forbidden, searchApi: forbidden }, runtime, { createTools: () => [] }, reader, logger);
+  const answer = await service.answer('look at issue reports from afscrome this month', AbortSignal.timeout(65_000));
   if (answer?.source !== 'github' || !answer.isGrounded || /NOT_COVERED|partial:/i.test(answer.answer)) throw Error();
   for (const repo of ['microsoft/aspire', 'microsoft/aspire.dev']) {
     if (!answer.answer.includes(repo) || !answer.citations.some(c => c.repo === repo)) throw Error();

@@ -225,8 +225,8 @@ const source = require('node:fs').readFileSync(process.argv[1], 'utf8').replaceA
     };
     class Reader { constructor() {} }
     class Service {
-      constructor(reader, github, runtime) { this.runtime = runtime; }
-      async tryAnswer(question) {
+      constructor(config, embeddings, store, runtime) { this.runtime = runtime; }
+      async answer(question) {
         assert.equal(question, 'look at issue reports from afscrome this month');
         if (scenario === 'model') return this.runtime.complete();
         return {
@@ -269,7 +269,7 @@ const source = require('node:fs').readFileSync(process.argv[1], 'utf8').replaceA
       load: async name => {
         if (name.endsWith('/config.js')) return { loadConfig: () => config };
         if (name.endsWith('/github-activity.js')) return { GitHubActivityReader: Reader };
-        if (name.endsWith('/github-read-service.js')) return { GitHubReadService: Service };
+        if (name.endsWith('/conversation-service.js')) return { ConversationAnswerService: Service };
         if (name.endsWith('/github-mcp.js')) return { GitHubMcpClient };
         if (name.endsWith('/citations.js')) return { CitationRegistry };
         if (name.endsWith('/tool-budget.js')) return { ToolBudget };
