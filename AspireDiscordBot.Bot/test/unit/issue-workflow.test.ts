@@ -132,6 +132,56 @@ function fixture() {
 }
 
 describe('IssueWorkflow drafts and authorization', () => {
+  it('supports server-wide drafts but binds approval to the original channel and current server permission', async () => {
+    const { workflow, setPolicy, publisher } = fixture();
+    setPolicy({ ...policy, allowedChannelIds: [], allowedGuildIds: [actor.guildId] });
+    const threadActor = { ...actor, channelId: 'new-thread' };
+    const draft = await workflow.create(threadActor, input);
+    await workflow.attachPreview(threadActor, draft.id, draft.version, 'preview-1');
+    await expect(
+      workflow.confirm(
+        { ...threadActor, channelId: 'other-thread' },
+        draft.id,
+        draft.version,
+        'preview-1',
+      ),
+    ).rejects.toBeInstanceOf(IssuePolicyError);
+    await expect(
+      workflow.confirm(
+        { ...threadActor, guildId: 'other-guild' },
+        draft.id,
+        draft.version,
+        'preview-1',
+      ),
+    ).rejects.toBeInstanceOf(IssuePolicyError);
+    await expect(
+      workflow.confirm(
+        { ...threadActor, userId: 'another-user' },
+        draft.id,
+        draft.version,
+        'preview-1',
+      ),
+    ).rejects.toBeInstanceOf(IssuePolicyError);
+    expect(publisher.create).not.toHaveBeenCalled();
+    setPolicy({ ...policy, allowedChannelIds: [], allowedGuildIds: [] });
+    await expect(
+      workflow.confirm(threadActor, draft.id, draft.version, 'preview-1'),
+    ).rejects.toBeInstanceOf(IssuePolicyError);
+    setPolicy({ ...policy, allowedChannelIds: [], allowedGuildIds: [actor.guildId] });
+    await expect(
+      workflow.confirm(threadActor, draft.id, draft.version, 'preview-1'),
+    ).resolves.toMatchObject({ state: 'published' });
+  });
+  it('rejects DMs and unapproved servers before inspecting GitHub for server-wide policies', async () => {
+    for (const guildId of ['', 'other-guild']) {
+      const { workflow, setPolicy, publisher } = fixture();
+      setPolicy({ ...policy, allowedChannelIds: [], allowedGuildIds: [actor.guildId] });
+      await expect(workflow.create({ ...actor, guildId }, input)).rejects.toBeInstanceOf(
+        IssuePolicyError,
+      );
+      expect(publisher.inspect).not.toHaveBeenCalled();
+    }
+  });
   it('supports a numeric test clock and a shorter bounded draft lifetime', async () => {
     const { store, publisher, logger } = fixture();
     const workflow = new IssueWorkflow(store, publisher, () => policy, logger, {

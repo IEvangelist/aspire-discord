@@ -31,6 +31,7 @@ import { WorkLimiter, WorkQueueFullError } from '../work-limiter.js';
 import { readThreadContext } from './context-reader.js';
 import { UserRateLimiter } from './user-rate-limiter.js';
 import { RequestDeduplicator } from './request-deduplicator.js';
+import { isIssueLocationAllowed } from '../issues/policy.js';
 
 type Workflow = Pick<
   IssueWorkflow,
@@ -86,7 +87,7 @@ export class DiscordIssueController {
       !message.author.bot &&
       policy.enabled &&
       policy.allowedUserIds.includes(message.author.id) &&
-      policy.allowedChannelIds.includes(message.channelId)
+      isIssueLocationAllowed(policy, message.guildId, message.channelId)
     ) {
       if (message.reference.channelId && message.reference.channelId !== message.channelId) {
         if (requested) {
@@ -337,7 +338,7 @@ export class DiscordIssueController {
     if (
       !guildId ||
       !policy.allowedUserIds.includes(userId) ||
-      !policy.allowedChannelIds.includes(channelId)
+      !isIssueLocationAllowed(policy, guildId, channelId)
     ) {
       throw new IssuePolicyError(
         'You are not authorized to file issues in this channel. Filing access is separate from answering questions.',

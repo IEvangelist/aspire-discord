@@ -413,6 +413,14 @@ singleton cutover, rollback, and superseded-slot cleanup remain in place.
 Secret ARM parameters use an owner-protected local file that is removed on success
 or failure rather than secret command-line arguments.
 
+Issue policy may explicitly allow all channels and threads of selected Discord servers using
+`allowedGuildIds`. For example, an approved policy for the current server can set
+`allowedGuildIds: ["1361488941836140614"]` and `allowedChannelIds: []`. This includes future
+channels/threads the bot can access, but never DMs or other servers. Existing channel-only policies
+remain unchanged; an empty channel list without explicit server IDs still denies access.
+The user and repository allowlists, exact-preview approval, original-channel draft binding, and
+fresh-policy checks immediately before publication remain mandatory.
+
 Credentials do **not** activate issue filing. Leave
 `AspireDiscord:Discord:IssuePolicy` absent or disabled during rollout. Activation is
 a separate, explicitly approved App Configuration policy change with nonempty

@@ -51,7 +51,7 @@ function durableTestStore(): IssueDraftStore {
   };
 }
 
-function environment() {
+function environment(activePolicy: IssuePolicy = policy) {
   let now = Date.now();
   const store = durableTestStore();
   const create = vi.fn<IssuePublisher['create']>(
@@ -80,9 +80,11 @@ function environment() {
     new DiscordIssueController(
       {
         generator,
-        workflow: new IssueWorkflow(store, publisher, () => policy, testLogger, { now: () => now }),
+        workflow: new IssueWorkflow(store, publisher, () => activePolicy, testLogger, {
+          now: () => now,
+        }),
       },
-      () => policy,
+      () => activePolicy,
       testLogger,
     );
   return {
@@ -200,26 +202,29 @@ describe('conversation-to-issue publication', () => {
     expect(app.create).toHaveBeenCalledOnce();
   });
 
-  it('survives a bot restart and publishes the exact preview only once', async () => {
-    const app = environment();
-    const { preview, id, version } = await requestPreview(app.controller());
-    expect(app.create).not.toHaveBeenCalled();
-    const click = confirmation(id, version);
-    await app.controller().handleButton(click.interaction);
-    expect(app.create).toHaveBeenCalledOnce();
-    const [repo, title, body] = app.create.mock.calls[0] ?? [];
-    expect(repo).toBe('microsoft/aspire');
-    expect(JSON.stringify(preview.embeds)).toContain(JSON.stringify(body).slice(1, -1));
-    expect(title).toBe('Reported deployment failure');
-    expect(body).toContain(`<!-- aspire-discord-issue:${id}:1 -->`);
-    expect(click.editReply).toHaveBeenCalledWith(
-      expect.objectContaining({
-        content: 'GitHub issue created: https://github.com/microsoft/aspire/issues/42',
-      }),
-    );
-    await app.controller().handleButton(confirmation(id, version).interaction);
-    expect(app.create).toHaveBeenCalledOnce();
-  });
+  it.each([policy, { ...policy, allowedChannelIds: [], allowedGuildIds: ['789'] }])(
+    'survives restart and publishes the exact preview only once under policy %j',
+    async (activePolicy) => {
+      const app = environment(activePolicy);
+      const { preview, id, version } = await requestPreview(app.controller());
+      expect(app.create).not.toHaveBeenCalled();
+      const click = confirmation(id, version);
+      await app.controller().handleButton(click.interaction);
+      expect(app.create).toHaveBeenCalledOnce();
+      const [repo, title, body] = app.create.mock.calls[0] ?? [];
+      expect(repo).toBe('microsoft/aspire');
+      expect(JSON.stringify(preview.embeds)).toContain(JSON.stringify(body).slice(1, -1));
+      expect(title).toBe('Reported deployment failure');
+      expect(body).toContain(`<!-- aspire-discord-issue:${id}:1 -->`);
+      expect(click.editReply).toHaveBeenCalledWith(
+        expect.objectContaining({
+          content: 'GitHub issue created: https://github.com/microsoft/aspire/issues/42',
+        }),
+      );
+      await app.controller().handleButton(confirmation(id, version).interaction);
+      expect(app.create).toHaveBeenCalledOnce();
+    },
+  );
 
   it('reconciles an uncertain GitHub response after restart without resubmitting', async () => {
     const app = environment();

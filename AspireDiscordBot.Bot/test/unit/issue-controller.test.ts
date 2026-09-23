@@ -35,7 +35,7 @@ const initial: IssueDraft = {
   state: 'draft',
 };
 
-function harness() {
+function harness(activePolicy: IssuePolicy = policy) {
   const workflow = {
     create: vi.fn<DiscordIssueServices['workflow']['create']>(async () => initial),
     get: vi.fn<DiscordIssueServices['workflow']['get']>(async () => ({
@@ -75,7 +75,11 @@ function harness() {
       notices: initial.notices,
     })),
   };
-  const controller = new DiscordIssueController({ workflow, generator }, () => policy, testLogger);
+  const controller = new DiscordIssueController(
+    { workflow, generator },
+    () => activePolicy,
+    testLogger,
+  );
   return { controller, workflow, generator };
 }
 
@@ -123,6 +127,42 @@ function button(action = 'confirm', userId = actor.userId) {
 }
 
 describe('Discord issue workflow', () => {
+  it('uses server-wide scope for new drafts, non-mention replies and buttons', async () => {
+    const { controller, workflow } = harness({
+      ...policy,
+      allowedChannelIds: [],
+      allowedGuildIds: [actor.guildId],
+    });
+    const request = message('File an issue');
+    await controller.handleMessage(request.value, bot);
+    expect(workflow.create).toHaveBeenCalledOnce();
+    const revision = message('Add the reproduction detail', {
+      replyToPreview: true,
+      mention: false,
+    });
+    expect(await controller.handleMessage(revision.value, bot)).toBe(true);
+    expect(workflow.revise).toHaveBeenCalledOnce();
+    await controller.handleButton(button().interaction);
+    expect(workflow.confirm).toHaveBeenCalledOnce();
+  });
+  it('rejects other servers and DMs even for an approved user in server-wide mode', async () => {
+    for (const guildId of [null, 'unapproved']) {
+      const { controller, workflow, generator } = harness({
+        ...policy,
+        allowedChannelIds: [],
+        allowedGuildIds: [actor.guildId],
+      });
+      const request = message('File an issue');
+      Object.defineProperty(request.value, 'guildId', { value: guildId });
+      await controller.handleMessage(request.value, bot);
+      expect(workflow.create).not.toHaveBeenCalled();
+      expect(generator.generate).not.toHaveBeenCalled();
+      const click = button();
+      Object.defineProperty(click.value, 'guildId', { value: guildId });
+      await controller.handleButton(click.interaction);
+      expect(workflow.confirm).not.toHaveBeenCalled();
+    }
+  });
   it('deduplicates requests and bounds disabled-policy rejection replies', async () => {
     const controller = new DiscordIssueController(
       undefined,

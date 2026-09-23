@@ -35,7 +35,8 @@ describe('runtime configuration', () => {
           JSON.stringify({
             enabled: true,
             allowedUserIds: ['123'],
-            allowedChannelIds: ['456'],
+            allowedChannelIds: [],
+            allowedGuildIds: ['789'],
             allowedRepositories: ['microsoft/aspire'],
           }),
         ],
@@ -47,6 +48,7 @@ describe('runtime configuration', () => {
       { client: remote },
     );
     expect(currentIssuePolicy(runtime.current()).enabled).toBe(true);
+    expect(currentIssuePolicy(runtime.current()).allowedGuildIds).toEqual(['789']);
     remote.values.set(runtimeConfigKeys.issuePolicy, '{bad json');
     await runtime.refresh();
     expect(runtime.current().available).toBe(true);

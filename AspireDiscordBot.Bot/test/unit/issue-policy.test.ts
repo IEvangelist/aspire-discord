@@ -3,6 +3,7 @@ import {
   currentIssuePolicy,
   disabledIssuePolicy,
   parseIssuePolicy,
+  isIssueLocationAllowed,
 } from '../../src/issues/policy.js';
 import type { RuntimeConfigSnapshot } from '../../src/runtime-config.js';
 
@@ -25,6 +26,35 @@ describe('issue filing policy', () => {
     for (const key of ['allowedUserIds', 'allowedChannelIds', 'allowedRepositories']) {
       expect(() => parseIssuePolicy({ ...policy, [key]: [] })).toThrow();
     }
+  });
+  it('allows every current and future channel or thread only in explicitly approved servers', () => {
+    const guildPolicy = parseIssuePolicy({
+      ...policy,
+      allowedChannelIds: [],
+      allowedGuildIds: ['123456'],
+    });
+    for (const channel of ['789', '998877', '554433']) {
+      expect(isIssueLocationAllowed(guildPolicy, '123456', channel)).toBe(true);
+      expect(isIssueLocationAllowed(guildPolicy, '654321', channel)).toBe(false);
+      expect(isIssueLocationAllowed(guildPolicy, null, channel)).toBe(false);
+    }
+    expect(isIssueLocationAllowed(guildPolicy, '', '789')).toBe(false);
+    expect(isIssueLocationAllowed(guildPolicy, '123456', '')).toBe(false);
+    expect(isIssueLocationAllowed(parseIssuePolicy(policy), '123456', '789')).toBe(true);
+    expect(isIssueLocationAllowed(parseIssuePolicy(policy), '123456', '998877')).toBe(false);
+    for (const invalid of [[], ['*'], [''], [123456], ['not-a-server']]) {
+      expect(() =>
+        parseIssuePolicy({ ...policy, allowedChannelIds: [], allowedGuildIds: invalid }),
+      ).toThrow();
+    }
+    expect(() =>
+      parseIssuePolicy({
+        ...policy,
+        allowedChannelIds: [],
+        allowedGuildIds: ['123456'],
+        allowedUserIds: [],
+      }),
+    ).toThrow();
   });
 
   it('requires fresh validated runtime configuration and existing bot access', () => {

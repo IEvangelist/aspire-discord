@@ -15,6 +15,7 @@ const policySchema = z
     enabled: z.boolean(),
     allowedUserIds: identifiers,
     allowedChannelIds: identifiers,
+    allowedGuildIds: identifiers.optional(),
     allowedRepositories: z
       .array(
         z
@@ -28,16 +29,31 @@ const policySchema = z
     (value) =>
       !value.enabled ||
       (value.allowedUserIds.length > 0 &&
-        value.allowedChannelIds.length > 0 &&
+        (value.allowedChannelIds.length > 0 || (value.allowedGuildIds?.length ?? 0) > 0) &&
         value.allowedRepositories.length > 0),
-    'Enabled issue filing requires explicit users, channels, and repositories.',
+    'Enabled issue filing requires explicit users, channels or servers, and repositories.',
   );
 
 export function parseIssuePolicy(value: unknown): IssuePolicy {
   if (value === undefined) {
     return disabledIssuePolicy;
   }
-  return policySchema.parse(typeof value === 'string' ? JSON.parse(value) : value);
+  const { allowedGuildIds, ...policy } = policySchema.parse(
+    typeof value === 'string' ? JSON.parse(value) : value,
+  );
+  return { ...policy, ...(allowedGuildIds === undefined ? {} : { allowedGuildIds }) };
+}
+
+export function isIssueLocationAllowed(
+  policy: IssuePolicy,
+  guildId: string | null,
+  channelId: string,
+): boolean {
+  return Boolean(
+    guildId &&
+    channelId &&
+    (policy.allowedGuildIds?.includes(guildId) || policy.allowedChannelIds.includes(channelId)),
+  );
 }
 
 export function currentIssuePolicy(snapshot: RuntimeConfigSnapshot, now = Date.now()): IssuePolicy {

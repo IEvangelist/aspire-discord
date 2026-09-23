@@ -217,18 +217,20 @@ function ConvertTo-IssuePolicyJson {
             throw 'IssuePolicyJson must be a JSON object.'
         }
         $keys = @('enabled', 'allowedUserIds', 'allowedChannelIds', 'allowedRepositories')
+        $allowedKeys = $keys + @('allowedGuildIds')
         $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
         foreach ($property in $root.EnumerateObject()) {
-            if ($keys -cnotcontains $property.Name -or -not $seen.Add($property.Name)) {
+            if ($allowedKeys -cnotcontains $property.Name -or -not $seen.Add($property.Name)) {
                 throw 'IssuePolicyJson contains an unknown or duplicate property.'
             }
         }
-        if ($seen.Count -ne $keys.Count -or $root.GetProperty('enabled').ValueKind -notin @(
+        if (@($keys | Where-Object { -not $seen.Contains($_) }).Count -gt 0 -or $root.GetProperty('enabled').ValueKind -notin @(
             [Text.Json.JsonValueKind]::True, [Text.Json.JsonValueKind]::False)) {
             throw 'IssuePolicyJson requires enabled (boolean), allowedUserIds, allowedChannelIds, and allowedRepositories.'
         }
         $policy = [ordered]@{ enabled = $root.GetProperty('enabled').GetBoolean() }
-        foreach ($key in $keys | Select-Object -Skip 1) {
+        foreach ($key in $allowedKeys | Select-Object -Skip 1) {
+            if (-not $seen.Contains($key)) { continue }
             $array = $root.GetProperty($key)
             if ($array.ValueKind -ne [Text.Json.JsonValueKind]::Array) {
                 throw "IssuePolicyJson $key must be an array of strings."
@@ -257,10 +259,14 @@ function ConvertTo-IssuePolicyJson {
                     $values.Add($entry)
                 }
             }
-            if ($policy.enabled -and $values.Count -eq 0) {
+            if ($policy.enabled -and $key -in @('allowedUserIds', 'allowedRepositories') -and $values.Count -eq 0) {
                 throw "IssuePolicyJson $key must not be empty when enabled."
             }
             $policy[$key] = @($values.ToArray())
+        }
+        if ($policy.enabled -and $policy.allowedChannelIds.Count -eq 0 -and
+            (-not $seen.Contains('allowedGuildIds') -or $policy.allowedGuildIds.Count -eq 0)) {
+            throw 'IssuePolicyJson requires at least one explicit channel or server when enabled.'
         }
         return $policy | ConvertTo-Json -Depth 5 -Compress
     }

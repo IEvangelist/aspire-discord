@@ -8,6 +8,7 @@ export interface IssuePolicy {
   readonly enabled: boolean;
   readonly allowedUserIds: readonly string[];
   readonly allowedChannelIds: readonly string[];
+  readonly allowedGuildIds?: readonly string[];
   readonly allowedRepositories: readonly string[];
 }
 

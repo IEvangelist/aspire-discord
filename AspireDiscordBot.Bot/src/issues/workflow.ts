@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { metrics, SpanStatusCode, trace } from '@opentelemetry/api';
 import type { Logger } from 'pino';
 import { assertSafeIssueContent } from './drafting.js';
+import { isIssueLocationAllowed } from './policy.js';
 import {
   IssueConflictError,
   IssuePolicyError,
@@ -386,12 +387,12 @@ export class IssueWorkflow {
       !identifierPattern.test(actor.channelId) ||
       !policy.enabled ||
       policy.allowedUserIds.length === 0 ||
-      policy.allowedChannelIds.length === 0 ||
       policy.allowedRepositories.length === 0 ||
       !policy.allowedUserIds.every((id) => identifierPattern.test(id)) ||
       !policy.allowedChannelIds.every((id) => identifierPattern.test(id)) ||
+      !(policy.allowedGuildIds ?? []).every((id) => identifierPattern.test(id)) ||
       !policy.allowedUserIds.includes(actor.userId) ||
-      !policy.allowedChannelIds.includes(actor.channelId)
+      !isIssueLocationAllowed(policy, actor.guildId, actor.channelId)
     ) {
       throw new IssuePolicyError('Issue creation is not enabled for this user and channel.');
     }

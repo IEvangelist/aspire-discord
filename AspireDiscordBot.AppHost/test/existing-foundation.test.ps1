@@ -291,3 +291,24 @@ const source = require('node:fs').readFileSync(process.argv[1], 'utf8').replaceA
 & node -e $probeTests (Join-Path $repoRoot 'infra\verify-staged-features.cjs')
 if ($LASTEXITCODE -ne 0) { throw 'Offline staged feature probe checks failed.' }
 Write-Output 'Foundation and parameter-file regression checks passed.'
+$policyAst = [System.Management.Automation.Language.Parser]::ParseFile(
+    (Join-Path $repoRoot 'infra\set-runtime-config.ps1'), [ref]$tokens, [ref]$errors)
+if ($errors.Count) { throw 'Policy helper contains syntax errors.' }
+$policyFunction = $policyAst.Find({ param($node)
+    $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+    $node.Name -eq 'ConvertTo-IssuePolicyJson'
+}, $true)
+Invoke-Expression $policyFunction.Extent.Text
+$policyText = '{"enabled":true,"allowedUserIds":["123"],"allowedChannelIds":[],"allowedGuildIds":["789"],"allowedRepositories":["microsoft/aspire"]}'
+$policyResult = ConvertTo-IssuePolicyJson $policyText | ConvertFrom-Json
+if ($policyResult.allowedGuildIds[0] -ne '789' -or $policyResult.allowedChannelIds.Count -ne 0) {
+    throw 'Explicit server-wide policy was not preserved.'
+}
+foreach ($invalid in @(
+    $policyText.Replace('["789"]','[]'),
+    $policyText.Replace('["789"]','["*"]'),
+    $policyText.Replace('"allowedGuildIds":["789"],',''),
+    $policyText.Replace('["123"]','[]'),
+    $policyText.Replace('["microsoft/aspire"]','[]')
+)) { Assert-Fails { ConvertTo-IssuePolicyJson $invalid } }
+Write-Output 'Server-wide issue policy regression checks passed.'
