@@ -1,4 +1,10 @@
-import type { ButtonInteraction, Message, MessageCreateOptions, User } from 'discord.js';
+import type {
+  ButtonInteraction,
+  Message,
+  MessageCreateOptions,
+  MessageEditOptions,
+  User,
+} from 'discord.js';
 import { describe, expect, it, vi } from 'vitest';
 import { DiscordIssueController } from '../../src/discord/issue-controller.js';
 import { IssueDraftGenerator } from '../../src/issues/drafting.js';
@@ -93,6 +99,9 @@ function environment(activePolicy: IssuePolicy = policy) {
     create,
     reconcile,
     complete,
+    setPolicy: (next: IssuePolicy) => {
+      activePolicy = next;
+    },
     advance: (milliseconds: number) => {
       now += milliseconds;
     },
@@ -107,8 +116,19 @@ async function requestPreview(
     body: '## Observed\nThe reporter sees deployment fail.\n## Reproduction\nNot provided.',
   },
   content = '<@999> Please file an issue about a deployment failure.',
+  delivery: 'reply' | 'edit' = 'reply',
 ) {
-  const replies: MessageCreateOptions[] = [];
+  const previews: (MessageCreateOptions | MessageEditOptions)[] = [];
+  const reply = vi.fn(async (payload: MessageCreateOptions) => {
+    previews.push(payload);
+    return { id: '900001' };
+  });
+  const progress = {
+    id: '900001',
+    edit: vi.fn(async (payload: MessageEditOptions) => {
+      previews.push(payload);
+    }),
+  };
   const message = {
     id: '111',
     author: { id: '123', bot: false },
@@ -119,18 +139,21 @@ async function requestPreview(
     channel: { isThread: () => false },
     mentions: { has: () => true },
     reference: null,
-    reply: async (payload: MessageCreateOptions) => {
-      replies.push(payload);
-      return { id: '900001' };
-    },
+    reply,
   } as unknown as Message;
-  await controller.prepareDraft(message, bot, input);
-  const preview = replies[0];
+  const receipt = await controller.prepareDraft(
+    message,
+    bot,
+    input,
+    undefined,
+    delivery === 'edit' ? progress : undefined,
+  );
+  const preview = previews[0];
   const match = /Issue draft: ([a-f0-9-]{36}) v(\d+)\./u.exec(preview?.content ?? '');
   if (!preview || !match?.[1] || !match[2]) {
     throw new Error(`A complete draft preview was expected: ${String(preview?.content)}`);
   }
-  return { preview, id: match[1], version: match[2] };
+  return { preview, id: match[1], version: match[2], reply, progress, receipt };
 }
 
 function confirmation(id: string, version: string, action = 'confirm', previewId = '900001') {
@@ -152,13 +175,18 @@ function confirmation(id: string, version: string, action = 'confirm', previewId
 describe('conversation-to-issue publication', () => {
   it('previews the prepared Testing / 1.2.3 fields without rewriting or publishing', async () => {
     const app = environment();
-    const { preview, id } = await requestPreview(
+    const { preview, id, reply, progress, receipt } = await requestPreview(
       app.controller(),
       { repository: 'microsoft/aspire', title: 'Testing', body: '1.2.3' },
       'aspire.dev',
+      'edit',
     );
     expect(app.complete).not.toHaveBeenCalled();
     expect(app.create).not.toHaveBeenCalled();
+    expect(reply).not.toHaveBeenCalled();
+    expect(progress.edit).toHaveBeenCalledOnce();
+    expect(receipt).toEqual({ draftId: id, version: 1 });
+    expect(preview.files ?? []).toHaveLength(0);
     expect(JSON.parse(JSON.stringify(preview.embeds))).toEqual([
       expect.objectContaining({
         title: 'Testing',
@@ -167,9 +195,46 @@ describe('conversation-to-issue publication', () => {
     ]);
   });
 
+  it('publishes the entire approved 3500-character body and opaque marker from the edited preview', async () => {
+    const app = environment();
+    const input = {
+      repository: 'microsoft/aspire',
+      title: 'Reported deployment failure',
+      body: `${'Observed deployment failure on Windows.\n'.repeat(100).slice(0, 3_499)}!`,
+    };
+    const { preview, id, version, reply, progress } = await requestPreview(
+      app.controller(),
+      input,
+      undefined,
+      'edit',
+    );
+    const embed = preview.embeds?.[0];
+    const displayed = embed && 'toJSON' in embed ? embed.toJSON() : embed;
+    expect(input.body).toHaveLength(3_500);
+    expect(displayed?.title).toBe(input.title);
+    expect(displayed?.description).toBe(`${input.body}\n\n<!-- aspire-discord-issue:${id}:1 -->`);
+    expect(preview.files ?? []).toHaveLength(0);
+    expect(reply).not.toHaveBeenCalled();
+    expect(progress.edit).toHaveBeenCalledOnce();
+    expect(app.create).not.toHaveBeenCalled();
+    await app.controller().handleButton(confirmation(id, version).interaction);
+    expect(app.create).toHaveBeenCalledExactlyOnceWith(
+      input.repository,
+      input.title,
+      displayed?.description,
+      expect.any(AbortSignal),
+      expect.any(Function),
+    );
+  });
+
   it('keeps revision identity and invalidates the old preview after a clarification', async () => {
     const app = environment();
-    const { preview, id, version } = await requestPreview(app.controller());
+    const { preview, id, version, progress } = await requestPreview(
+      app.controller(),
+      undefined,
+      undefined,
+      'edit',
+    );
     const previewMessage = { id: '900001', author: bot, content: preview.content };
     const clarificationReplies: MessageCreateOptions[] = [];
     const revisionFields = {
@@ -214,6 +279,8 @@ describe('conversation-to-issue publication', () => {
     } as unknown as Message;
     await app.controller().handleMessage(followup, bot);
     expect(updatedReplies[0]?.content).toContain(`Issue draft: ${id} v2.`);
+    expect(updatedReplies[0]?.files ?? []).toHaveLength(0);
+    expect(progress.edit).toHaveBeenCalledOnce();
     expect(app.complete).toHaveBeenLastCalledWith(
       expect.stringContaining('"previousDraft":{"repository":"microsoft/aspire"'),
       [],
@@ -228,18 +295,34 @@ describe('conversation-to-issue publication', () => {
     expect(app.create).toHaveBeenCalledOnce();
   });
 
-  it.each([policy, { ...policy, allowedChannelIds: [], allowedGuildIds: ['789'] }])(
-    'survives restart and publishes the exact preview only once under policy %j',
-    async (activePolicy) => {
+  it.each(
+    [policy, { ...policy, allowedChannelIds: [], allowedGuildIds: ['789'] }].flatMap(
+      (activePolicy) =>
+        (['reply', 'edit'] as const).map((delivery) => ({ activePolicy, delivery })),
+    ),
+  )(
+    'survives restart and publishes the exact preview only once: %j',
+    async ({ activePolicy, delivery }) => {
       const app = environment(activePolicy);
-      const { preview, id, version } = await requestPreview(app.controller());
+      const { preview, id, version, reply, progress } = await requestPreview(
+        app.controller(),
+        undefined,
+        undefined,
+        delivery,
+      );
       expect(app.create).not.toHaveBeenCalled();
+      expect(reply).toHaveBeenCalledTimes(delivery === 'reply' ? 1 : 0);
+      expect(progress.edit).toHaveBeenCalledTimes(delivery === 'edit' ? 1 : 0);
+      expect(preview.files ?? []).toHaveLength(0);
       const click = confirmation(id, version);
       await app.controller().handleButton(click.interaction);
       expect(app.create).toHaveBeenCalledOnce();
       const [repo, title, body] = app.create.mock.calls[0] ?? [];
       expect(repo).toBe('microsoft/aspire');
-      expect(JSON.stringify(preview.embeds)).toContain(JSON.stringify(body).slice(1, -1));
+      const embed = preview.embeds?.[0];
+      const displayed = embed && 'toJSON' in embed ? embed.toJSON() : embed;
+      expect(body).toBe(displayed?.description);
+      expect(title).toBe(displayed?.title);
       expect(title).toBe('Reported deployment failure');
       expect(body).toContain(`<!-- aspire-discord-issue:${id}:1 -->`);
       expect(click.editReply).toHaveBeenCalledWith(
@@ -251,6 +334,42 @@ describe('conversation-to-issue publication', () => {
       expect(app.create).toHaveBeenCalledOnce();
     },
   );
+
+  it('rejects another authorized requester and a copied button on a different message', async () => {
+    const app = environment({ ...policy, allowedUserIds: ['123', '124'] });
+    const { id, version } = await requestPreview(app.controller(), undefined, undefined, 'edit');
+    const otherRequester = confirmation(id, version);
+    Object.defineProperty(otherRequester.interaction, 'user', { value: { id: '124' } });
+    await app.controller().handleButton(otherRequester.interaction);
+    expect(app.create).not.toHaveBeenCalled();
+    const copiedButton = confirmation(id, version, 'confirm', '900099');
+    await app.controller().handleButton(copiedButton.interaction);
+    expect(app.create).not.toHaveBeenCalled();
+    await app.controller().handleButton(confirmation(id, version).interaction);
+    expect(app.create).toHaveBeenCalledOnce();
+  });
+
+  it('enforces the current policy and expiry when approving an edited preview', async () => {
+    const app = environment();
+    const { id, version } = await requestPreview(app.controller(), undefined, undefined, 'edit');
+    app.setPolicy({ ...policy, allowedUserIds: [] });
+    await app.controller().handleButton(confirmation(id, version).interaction);
+    expect(app.create).not.toHaveBeenCalled();
+    app.setPolicy(policy);
+    app.advance(31 * 60_000);
+    await app.controller().handleButton(confirmation(id, version).interaction);
+    expect(app.create).not.toHaveBeenCalled();
+  });
+
+  it('claims an edited preview through ETag only once for concurrent confirmations', async () => {
+    const app = environment();
+    const { id, version } = await requestPreview(app.controller(), undefined, undefined, 'edit');
+    await Promise.all([
+      app.controller().handleButton(confirmation(id, version).interaction),
+      app.controller().handleButton(confirmation(id, version).interaction),
+    ]);
+    expect(app.create).toHaveBeenCalledOnce();
+  });
 
   it('reconciles an uncertain GitHub response after restart without resubmitting', async () => {
     const app = environment();

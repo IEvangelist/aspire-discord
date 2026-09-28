@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ConversationState } from '../../src/discord/conversation-state.js';
+import { ConversationState, combineSourceContext } from '../../src/discord/conversation-state.js';
 import type { GroundedAnswer } from '../../src/domain.js';
 
 const actor = { userId: '123', guildId: '789', channelId: '456' };
@@ -13,6 +13,42 @@ const clarification: GroundedAnswer = {
   pendingIssue: { title: 'Testing', body: '1.2.3' },
 };
 describe('requester conversation continuity', () => {
+  it('preserves redacted report evidence separately from requester instructions until the pending task ends', () => {
+    const state = new ConversationState();
+    state.remember(
+      actor,
+      'Draft the OP report',
+      clarification,
+      '[Original poster]\ntrack-telemetry.ps1 runs after every tool. password=secret-value',
+    );
+    const pending = state.get(actor);
+    expect(pending?.sourceContext).toContain('track-telemetry.ps1');
+    expect(pending?.sourceContext).not.toContain('secret-value');
+    expect(pending?.history).not.toContain('[Original poster]');
+    state.remember(actor, 'microsoft/aspire', {
+      ...clarification,
+      pendingIssue: { repository: 'microsoft/aspire' },
+    });
+    expect(state.get(actor)?.sourceContext).toContain('track-telemetry.ps1');
+    expect(state.get({ ...actor, userId: 'other' })).toBeUndefined();
+    state.remember(actor, 'done', {
+      answer: 'Preview ready.',
+      citations: [],
+      isGrounded: false,
+      topScore: 0,
+      requiresReply: false,
+    });
+    expect(state.get(actor)?.sourceContext).toBeUndefined();
+  });
+  it('combines report evidence within bounds without repeatedly duplicating it', () => {
+    expect(combineSourceContext('report', 'report')).toBe('report');
+    expect(combineSourceContext('report', 'report plus followup')).toBe('report plus followup');
+    expect(combineSourceContext('report', '')).toBe('report');
+    const combined = combineSourceContext('a'.repeat(8_000), 'b'.repeat(8_000));
+    expect(combined.length).toBeLessThanOrEqual(8_000);
+    expect(combined).toContain('aaaa');
+    expect(combined).toContain('bbbb');
+  });
   it('keeps explicit fields and request context for the same requester/channel/server only', () => {
     const state = new ConversationState();
     state.remember(actor, 'Create an issue. Subject Testing and desc 1.2.3', clarification);

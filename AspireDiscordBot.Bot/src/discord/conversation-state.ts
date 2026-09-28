@@ -9,6 +9,7 @@ export interface ConversationActor {
 
 export interface PendingConversation {
   readonly history: string;
+  readonly sourceContext?: string;
   readonly requiresReply: boolean;
   readonly pendingIssue?: PendingIssueFields;
 }
@@ -35,6 +36,7 @@ export class ConversationState {
     if (entry && entry.expiresAt > this.now()) {
       return {
         history: entry.history,
+        ...(entry.sourceContext ? { sourceContext: entry.sourceContext } : {}),
         requiresReply: entry.requiresReply,
         ...(entry.pendingIssue ? { pendingIssue: { ...entry.pendingIssue } } : {}),
       };
@@ -43,7 +45,12 @@ export class ConversationState {
     return undefined;
   }
 
-  public remember(actor: ConversationActor, question: string, answer: GroundedAnswer): void {
+  public remember(
+    actor: ConversationActor,
+    question: string,
+    answer: GroundedAnswer,
+    sourceContext?: string,
+  ): void {
     const previous = this.get(actor);
     const latest = `Requester: ${redactSensitiveText(question)}\nAspirey: ${redactSensitiveText(answer.answer)}`;
     const history = truncateAtGrapheme(
@@ -60,6 +67,15 @@ export class ConversationState {
       requiresReply: answer.requiresReply === true,
       expiresAt: this.now() + this.lifetimeMs,
       ...(answer.pendingIssue ? { pendingIssue: { ...answer.pendingIssue } } : {}),
+      ...((answer.requiresReply || answer.pendingIssue) &&
+      (sourceContext || previous?.sourceContext)
+        ? {
+            sourceContext: truncateAtGrapheme(
+              redactSensitiveText(sourceContext || previous?.sourceContext || ''),
+              8_000,
+            ),
+          }
+        : {}),
     });
     while (this.#entries.size > this.maximumEntries) {
       const oldest = this.#entries.keys().next().value;
@@ -70,4 +86,10 @@ export class ConversationState {
   public clear(actor: ConversationActor): void {
     this.#entries.delete(conversationKey(actor));
   }
+}
+
+export function combineSourceContext(previous = '', current = ''): string {
+  if (!previous || current.includes(previous)) return truncateAtGrapheme(current, 8_000);
+  if (!current || previous.includes(current)) return truncateAtGrapheme(previous, 8_000);
+  return truncateAtGrapheme(`${previous.slice(0, 4_000)}\n\n${current.slice(-3_998)}`, 8_000);
 }

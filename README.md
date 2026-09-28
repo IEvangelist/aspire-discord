@@ -181,10 +181,24 @@ not classify natural-language requests with issue/read keyword matchers before t
    - `search_docs`
    - `search_api`
    - repository-scoped GitHub code, file, tree, commit, issue, PR, and release tools
-4. `prepare_issue_draft` accepts typed repository/title/body fields. Missing fields produce one
-   focused clarification; supplied title/body text is preserved instead of rewritten as a bug report.
+4. `prepare_issue_draft` accepts typed repository/title/body fields. When the requester asks to
+   draft from a report or discussion, the agent proposes a concise title and structured description
+   from that context, including another participant's reported observations. Unknowns and uncertainty
+   remain explicit; the draft never claims reproduction or invents versions. Explicit title/body
+   overrides are preserved. The agent selects the obvious repository from the affected component:
+   product/runtime/tooling defects target `microsoft/aspire`; documentation/site defects target
+   `microsoft/aspire.dev`. An explicit requester choice takes precedence. Only genuinely ambiguous
+   reports need a repository question, retaining proposed fields instead of asking for the report again.
+   When useful, a few focused read-only source, documentation, issue or PR lookups enrich the description.
+   Reported behavior stays separate from source-backed findings, hypotheses and unknowns. The optional
+   `investigation` field requires citations from this turn's actual tool results; the preview converts
+   them into portable source links inside an "Investigation (read-only)" section. Failed or inconclusive
+   lookups must not become claims of reproduction, a confirmed root cause, or an exhaustive duplicate
+   search. Simple test issues and explicitly verbatim bodies do not require investigation.
    This tool can deliver a durable preview, never publish it.
-5. `ask_clarification` records a question; `cancel_pending_request` clears an unfinished conversation.
+5. `ask_clarification` asks for genuinely missing information; `acknowledge_feedback` responds briefly
+   to frustration or thanks without a documentation search or another clarification loop.
+   `cancel_pending_request` clears an unfinished conversation.
 6. Tool and linked output is bounded, sanitized, labeled untrusted, and registered with citations.
    Technical answers still require retrieved evidence; historical release pages are not current facts.
 7. User/server/repository authorization, rate limits, duplicate protection, and exact requester
@@ -201,9 +215,18 @@ Short replies such as `aspire.dev` continue the pending task, with or without an
 for the same requester in the same server and channel/thread. Other people's messages are not
 consumed as answers. Per-requester turns are serialized to avoid racing two draft continuations.
 Recent conversation context is redacted and bounded to 8,000 characters, 500 conversations and
-ten minutes in memory. Completion, cancellation or expiry stops passive follow-up capture.
+ten minutes in memory. Bounded report context (up to 8,000 additional characters) is retained
+separately from requester instructions while a task is pending; it never supplies authorization.
+Completion, cancellation or expiry stops passive follow-up capture. A feedback acknowledgment
+also stops passive capture while retaining pending fields for an explicit mention to resume.
 Conversation memory is not durable across restart; already-created previews and publication state
 remain durable in Azure Tables, and direct replies to those previews retain their existing controls.
+
+Clarifications and acknowledgments use a single short reply without repeating the request or adding
+another status message. Successful issue preparation replaces the progress reply with one preview:
+the complete outgoing title/body, repository visibility, limitations, duplicates and approval controls.
+There is no duplicate body attachment or separate "preview ready" reply. Only the requester can
+publish that exact version; a plain "yes" is not approval.
 
 ## GitHub MCP
 

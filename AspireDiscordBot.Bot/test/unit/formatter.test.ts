@@ -11,8 +11,8 @@ describe('buildAnswerThread', () => {
       source: 'conversation',
       requiresReply: true,
     });
-    expect(result.detailMessages[0].content).toContain('Waiting for your reply');
-    expect(result.detailMessages[0].content).not.toContain('No matching coverage');
+    expect(result.answerMessages).toEqual(['Which repository?']);
+    expect(result.detailMessages).toEqual([]);
   });
   it('never labels a failed or clarification-only GitHub lookup as missing documentation coverage', () => {
     const formatted = buildAnswerThread('Issues from a user?', {
@@ -22,8 +22,8 @@ describe('buildAnswerThread', () => {
       topScore: 0,
       source: 'github',
     });
-    expect(formatted.detailMessages[0].content).toContain('GitHub lookup');
-    expect(formatted.detailMessages[0].content).not.toContain('No matching coverage');
+    expect(formatted.detailMessages[0]?.content).toContain('GitHub lookup');
+    expect(formatted.detailMessages[0]?.content).not.toContain('No matching coverage');
   });
   it('keeps GitHub report citations in valid five-button rows', () => {
     const formatted = buildAnswerThread('Issue reports', {
@@ -38,8 +38,8 @@ describe('buildAnswerThread', () => {
         url: `https://github.com/microsoft/aspire/issues/${String(index + 1)}`,
       })),
     });
-    expect(formatted.detailMessages[0].components).toHaveLength(5);
-    expect(formatted.detailMessages[0].components?.map((row) => row.components.length)).toEqual([
+    expect(formatted.detailMessages[0]?.components).toHaveLength(5);
+    expect(formatted.detailMessages[0]?.components?.map((row) => row.components.length)).toEqual([
       5, 5, 5, 5, 2,
     ]);
   });
@@ -62,12 +62,12 @@ describe('buildAnswerThread', () => {
     expect(formatted.answerMessages[0]).toContain('### ❓ How?');
     expect(formatted.answerMessages[0]).toContain('Use the documented API. [1]');
     expect(formatted.answerMessages[0]).not.toContain('Grounded sources');
-    expect(formatted.detailMessages[0].content).toContain('1 grounded source');
-    expect(formatted.detailMessages[0].content).not.toContain('[API (reference)]');
-    expect(formatted.detailMessages[0].content).toContain(
+    expect(formatted.detailMessages[0]?.content).toContain('1 grounded source');
+    expect(formatted.detailMessages[0]?.content).not.toContain('[API (reference)]');
+    expect(formatted.detailMessages[0]?.content).toContain(
       'Grounded in microsoft/aspire & aspire.dev',
     );
-    expect(formatted.detailMessages[0].components?.[0]?.toJSON()).toMatchObject({
+    expect(formatted.detailMessages[0]?.components?.[0]?.toJSON()).toMatchObject({
       components: [
         {
           label: '[1] API [reference]',
@@ -97,11 +97,11 @@ describe('buildAnswerThread', () => {
     const expanded = buildAnswerThread('How?', answer, 'expanded');
     const hidden = buildAnswerThread('How?', answer, 'hidden');
 
-    expect(expanded.detailMessages[0].content).toContain('**Grounded sources**');
-    expect(expanded.detailMessages[0].content).toContain('[API reference]');
-    expect(expanded.detailMessages[0].components).toBeUndefined();
-    expect(hidden.detailMessages[0].content).not.toContain('Grounded sources');
-    expect(hidden.detailMessages[0].components).toBeUndefined();
+    expect(expanded.detailMessages[0]?.content).toContain('**Grounded sources**');
+    expect(expanded.detailMessages[0]?.content).toContain('[API reference]');
+    expect(expanded.detailMessages[0]?.components).toBeUndefined();
+    expect(hidden.detailMessages[0]?.content).not.toContain('Grounded sources');
+    expect(hidden.detailMessages[0]?.components).toBeUndefined();
   });
 
   it('does not let an invalid citation URL break a collapsed answer', () => {
@@ -120,8 +120,8 @@ describe('buildAnswerThread', () => {
     });
 
     expect(formatted.answerMessages[0]).toContain('Use the documented API. [1]');
-    expect(formatted.detailMessages[0].content).toContain('source links unavailable');
-    expect(formatted.detailMessages[0].components).toBeUndefined();
+    expect(formatted.detailMessages[0]?.content).toContain('source links unavailable');
+    expect(formatted.detailMessages[0]?.components).toBeUndefined();
   });
 
   it('renders ungrounded status as a separate reply without a sources section', () => {
@@ -133,8 +133,8 @@ describe('buildAnswerThread', () => {
     });
 
     expect(formatted.answerMessages[0]).not.toContain('Grounded sources');
-    expect(formatted.detailMessages[0].content).not.toContain('Grounded sources');
-    expect(formatted.detailMessages[0].content).toContain('No matching coverage found');
+    expect(formatted.detailMessages[0]?.content).not.toContain('Grounded sources');
+    expect(formatted.detailMessages[0]?.content).toContain('No matching coverage found');
   });
 
   it('escapes user-controlled Markdown in the echoed question', () => {
@@ -174,8 +174,8 @@ describe('buildAnswerThread', () => {
     });
 
     expect(answerMessages[0]).not.toContain('Context note:');
-    expect(detailMessages[0].content).toContain('Context note: An optional image');
-    expect(detailMessages[0].content).toContain('Context note: Thread history');
+    expect(detailMessages[0]?.content).toContain('Context note: An optional image');
+    expect(detailMessages[0]?.content).toContain('Context note: Thread history');
   });
 
   it('summarizes notice overflow instead of silently dropping it', () => {
@@ -187,8 +187,8 @@ describe('buildAnswerThread', () => {
       topScore: 0,
     });
 
-    expect(detailMessages[0].content).toContain('Limitation 5');
-    expect(detailMessages[0].content).toContain(
+    expect(detailMessages[0]?.content).toContain('Limitation 5');
+    expect(detailMessages[0]?.content).toContain(
       '2 additional context limitations were also applied',
     );
   });

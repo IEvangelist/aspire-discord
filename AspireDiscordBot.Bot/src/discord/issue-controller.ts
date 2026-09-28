@@ -1,14 +1,15 @@
 import { metrics, ROOT_CONTEXT, SpanKind, SpanStatusCode, trace } from '@opentelemetry/api';
 import {
   ActionRowBuilder,
-  AttachmentBuilder,
   ButtonBuilder,
   ButtonStyle,
   EmbedBuilder,
   MessageFlags,
+  type BaseMessageOptions,
   type ButtonInteraction,
   type Message,
   type MessageCreateOptions,
+  type MessageEditOptions,
   type User,
 } from 'discord.js';
 import type { Logger } from 'pino';
@@ -55,6 +56,11 @@ export interface DiscordIssueServices {
   readonly generator: Pick<IssueDraftGenerator, 'generate'>;
 }
 
+export interface IssuePreviewMessage {
+  readonly id: string;
+  edit(options: MessageEditOptions): Promise<unknown>;
+}
+
 interface DraftReference {
   readonly id: string;
   readonly version: number;
@@ -81,9 +87,14 @@ export class DiscordIssueController {
     bot: User,
     input: PreparedIssueFields,
     signal?: AbortSignal,
+    previewMessage?: IssuePreviewMessage,
   ): Promise<{ draftId: string; version: number }> {
     return await this.#observe(message.author.id, message.channelId, message.id, async () => {
       try {
+        signal?.throwIfAborted();
+        if (previewMessage && !previewMessage.id.trim()) {
+          throw new IssuePolicyError('The issue preview message is missing its identifier.');
+        }
         if (message.author.bot) {
           throw new IssuePolicyError('Only a human requester can prepare an issue draft.');
         }
@@ -104,6 +115,7 @@ export class DiscordIssueController {
         const combined = signal ? AbortSignal.any([signal, deadline]) : deadline;
         return await this.#limiter.run(async () => {
           const context = await this.#context(message, bot);
+          combined.throwIfAborted();
           const draft = await workflow.create(
             actor,
             {
@@ -118,7 +130,10 @@ export class DiscordIssueController {
             },
             combined,
           );
-          await this.#respond(message, actor, draft, combined);
+          if (draft.state !== 'draft') {
+            throw new IssueConflictError();
+          }
+          await this.#respond(message, actor, draft, combined, previewMessage);
           this.#recordOutcome(draft);
           return { draftId: draft.id, version: draft.version };
         }, combined);
@@ -364,19 +379,56 @@ export class DiscordIssueController {
     actor: IssueActor,
     draft: IssueDraft,
     signal?: AbortSignal,
+    previewMessage?: IssuePreviewMessage,
   ): Promise<void> {
+    signal?.throwIfAborted();
     if (draft.state !== 'draft') {
       await message.reply(textReply(outcomeText(draft)));
       return;
     }
-    const preview = await message.reply(issuePreview(draft));
-    await this.#configured().workflow.attachPreview(
-      actor,
-      draft.id,
-      draft.version,
-      preview.id,
-      signal,
-    );
+    let preview = previewMessage;
+    try {
+      if (previewMessage) {
+        await previewMessage.edit(issuePreview(draft));
+      } else {
+        preview = await message.reply(issuePreview(draft));
+      }
+      if (!preview?.id.trim()) {
+        throw new IssuePolicyError('The issue preview message is missing its identifier.');
+      }
+      signal?.throwIfAborted();
+      const attached = await this.#configured().workflow.attachPreview(
+        actor,
+        draft.id,
+        draft.version,
+        preview.id,
+        signal,
+      );
+      signal?.throwIfAborted();
+      if (
+        attached.state !== 'awaiting_confirmation' ||
+        attached.id !== draft.id ||
+        attached.version !== draft.version ||
+        attached.previewMessageId !== preview.id
+      ) {
+        throw new IssueConflictError();
+      }
+    } catch (error) {
+      if (preview) {
+        try {
+          await preview.edit({ components: [] });
+        } catch (cleanupError) {
+          this.logger.warn(
+            {
+              draftId: draft.id,
+              errorType: cleanupError instanceof Error ? cleanupError.name : 'Error',
+            },
+            'Could not remove incomplete issue preview controls.',
+          );
+        }
+      }
+      throw error;
+    }
   }
 
   #authorize(userId: string, guildId: string | null, channelId: string): IssueActor {
@@ -508,7 +560,7 @@ export class DiscordIssueController {
   }
 }
 
-export function issuePreview(draft: IssueDraft): MessageCreateOptions {
+export function issuePreview(draft: IssueDraft): BaseMessageOptions {
   const audience =
     draft.visibility === 'public'
       ? 'PUBLIC: visible to everyone'
@@ -528,21 +580,22 @@ export function issuePreview(draft: IssueDraft): MessageCreateOptions {
       value: duplicateLines.slice(0, 1_024),
     });
   }
+  const notices = draft.notices
+    .slice(0, 3)
+    .map((notice) => (notice.length > 250 ? `${notice.slice(0, 249)}…` : notice));
+  if (draft.notices.length > 3) {
+    notices.push(`${String(draft.notices.length - 3)} additional context notice(s).`);
+  }
+  if (notices.length) {
+    embed.addFields({ name: 'Context and limitations', value: notices.join('\n') });
+  }
   return {
     content: [
-      '**Review before publishing.** This draft contains a summary of Discord conversation data. Creating it will disclose the exact attached title/body to the repository audience and may notify subscribers.',
-      ...draft.notices.slice(0, 3).map((notice) => notice.slice(0, 400)),
-      'Reply to this preview with changes, or explicitly reply "create the issue". Only the requester can approve. A plain "yes" does not publish.',
+      `Review this draft for ${draft.repository}. Creating it makes the title/body ${draft.visibility === 'public' ? 'public' : 'visible to people with repository access'} and may notify subscribers. Review for sensitive information. Nothing posted yet.`,
+      'Only the requester can click **Create issue** or explicitly reply "create the issue". Reply with changes to revise. A plain "yes" does not publish.',
       `Issue draft: ${draft.id} v${String(draft.version)}.`,
-    ]
-      .join('\n\n')
-      .slice(0, 2_000),
+    ].join('\n\n'),
     embeds: [embed],
-    files: [
-      new AttachmentBuilder(Buffer.from(`# ${draft.title}\n\n${draft.body}\n`, 'utf8'), {
-        name: 'issue-preview.md',
-      }),
-    ],
     components: [
       new ActionRowBuilder<ButtonBuilder>().addComponents(
         new ButtonBuilder()

@@ -121,7 +121,7 @@ function createReplyChain(): ReplyChain {
       return createNode();
     });
     nodes.push({ edit, reply });
-    return { edit, reply } as unknown as Message;
+    return { id: String(index + 1000), edit, reply } as unknown as Message;
   };
   return { calls, nodes, root: createNode() };
 }
@@ -213,6 +213,163 @@ function replyContent(call: ReplyCall): string {
 }
 
 describe('Discord gateway behavior', () => {
+  it('passes OP evidence separately and retains it across a repository-only clarification', async () => {
+    const client = createClient();
+    const answers = createAnswers();
+    answers.answer.mockResolvedValueOnce({
+      answer: 'Which repository?',
+      citations: [],
+      isGrounded: false,
+      topScore: 0,
+      source: 'conversation',
+      requiresReply: true,
+      pendingIssue: {
+        title: 'Telemetry hook runs outside Aspire',
+        body: 'Reported pwsh failures after every tool call.',
+      },
+    });
+    const gateway = new DiscordGateway(
+      createTestConfig({ discord: { mentionEnabled: true, token: 'token' } }),
+      answers.service,
+      testLogger,
+      client.client,
+    );
+    await gateway.start();
+    const initial = createMessage({
+      id: 'first-context',
+      content: '<@bot> Draft an issue from the OP report; figure out title and description.',
+    });
+    const report =
+      'The hook ./aspire/hooks/track-telemetry.ps1 runs after every tool call, and pwsh is missing. Not sure whether an Aspire project was in the repo.';
+    const starter = {
+      id: 'report',
+      author: { id: 'op-user', bot: false },
+      content: report,
+      cleanContent: report,
+      createdTimestamp: 1,
+    };
+    Object.assign(initial.message.channel, {
+      name: 'Post Tool Call Hook Issue',
+      isThread: () => true,
+      permissionsFor: () => ({ has: () => true }),
+      fetchStarterMessage: async () => starter,
+      messages: { fetch: async () => new Map([['report', starter]]) },
+    });
+    emit(client.client, initial.message);
+    await vi.waitFor(() => expect(initial.chain.nodes[0]?.edit).toHaveBeenCalled());
+    expect(answers.answer.mock.calls[0]?.[3]?.sourceContext).toContain('track-telemetry.ps1');
+    expect(answers.answer.mock.calls[0]?.[3]?.history).not.toContain('track-telemetry.ps1');
+    expect(initial.chain.calls).toHaveLength(0);
+    const reply = createMessage({ id: 'repo-only', content: 'microsoft/aspire', mentioned: false });
+    emit(client.client, reply.message);
+    await vi.waitFor(() => expect(answers.answer).toHaveBeenCalledTimes(2));
+    expect(answers.answer.mock.calls[1]?.[3]).toMatchObject({
+      sourceContext: expect.stringContaining('track-telemetry.ps1'),
+      pendingIssue: expect.objectContaining({ title: 'Telemetry hook runs outside Aspire' }),
+      history: expect.stringContaining('figure out title'),
+    });
+    await gateway.stop();
+  });
+
+  it('reuses the progress reply for a prepared preview without a duplicate status or footer', async () => {
+    const client = createClient();
+    const answers = createAnswers();
+    const issues = new DiscordIssueController(undefined, () => disabledIssuePolicy, testLogger);
+    const prepare = vi
+      .spyOn(issues, 'prepareDraft')
+      .mockImplementation(async (_message, _bot, _input, _signal, target) => {
+        if (!target) throw new Error('Missing progress preview target.');
+        await target.edit({ content: 'Review this draft', embeds: [], components: [] });
+        return { draftId: 'draft', version: 1 };
+      });
+    answers.answer.mockImplementation(async (_question, signal, _progress, conversation) => {
+      await conversation?.prepareIssueDraft?.(
+        { repository: 'microsoft/aspire', title: 'Hook issue', body: 'Reported failure' },
+        signal,
+      );
+      return {
+        answer: 'I prepared the preview.',
+        citations: [],
+        isGrounded: false,
+        topScore: 0,
+        source: 'conversation',
+      };
+    });
+    const gateway = new DiscordGateway(
+      createTestConfig({ discord: { mentionEnabled: true, token: 'token' } }),
+      answers.service,
+      testLogger,
+      client.client,
+      undefined,
+      undefined,
+      issues,
+    );
+    await gateway.start();
+    const request = createMessage({ content: '<@bot> Draft this report' });
+    emit(client.client, request.message);
+    await vi.waitFor(() => expect(prepare).toHaveBeenCalledOnce());
+    await vi.waitFor(() =>
+      expect(request.chain.nodes[0]?.edit).toHaveBeenCalledWith(
+        expect.objectContaining({ content: 'Review this draft' }),
+      ),
+    );
+    expect(request.reply).toHaveBeenCalledOnce();
+    expect(request.chain.calls).toHaveLength(0);
+    expect(request.chain.nodes[0]?.edit).not.toHaveBeenCalledWith(
+      expect.objectContaining({ content: expect.stringContaining('I prepared') }),
+    );
+    await gateway.stop();
+  });
+
+  it('stops consuming unmentioned chatter after a feedback acknowledgment', async () => {
+    const client = createClient();
+    const answers = createAnswers();
+    answers.answer
+      .mockResolvedValueOnce({
+        answer: 'Which repository?',
+        citations: [],
+        isGrounded: false,
+        topScore: 0,
+        source: 'conversation',
+        requiresReply: true,
+        pendingIssue: { title: 'Hook issue', body: 'A reported failure' },
+      })
+      .mockResolvedValueOnce({
+        answer: 'You should not have to repeat that. I have kept the draft.',
+        citations: [],
+        isGrounded: false,
+        topScore: 0,
+        source: 'conversation',
+        requiresReply: false,
+        pendingIssue: { title: 'Hook issue', body: 'A reported failure' },
+      });
+    const gateway = new DiscordGateway(
+      createTestConfig({ discord: { mentionEnabled: true, token: 'token' } }),
+      answers.service,
+      testLogger,
+      client.client,
+    );
+    await gateway.start();
+    const start = createMessage({ id: 'start-feedback' });
+    emit(client.client, start.message);
+    await vi.waitFor(() => expect(start.chain.nodes[0]?.edit).toHaveBeenCalled());
+    const feedback = createMessage({
+      id: 'feedback',
+      content: 'This is frustrating',
+      mentioned: false,
+    });
+    emit(client.client, feedback.message);
+    await vi.waitFor(() => expect(feedback.chain.nodes[0]?.edit).toHaveBeenCalled());
+    const chatter = createMessage({ id: 'after-feedback', mentioned: false });
+    emit(client.client, chatter.message);
+    const resume = createMessage({ id: 'resume-mentioned', content: '<@bot> microsoft/aspire' });
+    emit(client.client, resume.message);
+    await vi.waitFor(() => expect(answers.answer).toHaveBeenCalledTimes(3));
+    expect(chatter.reply).not.toHaveBeenCalled();
+    expect(answers.answer.mock.calls[2]?.[3]?.pendingIssue?.title).toBe('Hook issue');
+    expect(feedback.chain.calls).toHaveLength(0);
+    await gateway.stop();
+  });
   it('does not consume a queued bare message after an earlier turn completes the pending task', async () => {
     const client = createClient();
     const answers = createAnswers();

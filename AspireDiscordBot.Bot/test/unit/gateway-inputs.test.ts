@@ -145,7 +145,8 @@ describe('Discord gateway mention context adapters', () => {
     });
     expect(answers.answer.mock.calls[0]?.[0]).toBe('How do I configure Aspire health checks?');
     expect(answers.answer.mock.calls[0]?.[3]).toMatchObject({
-      history: expect.stringContaining('How do I configure Aspire health checks?'),
+      history: '',
+      sourceContext: expect.stringContaining('How do I configure Aspire health checks?'),
       questionSource: 'reply',
     });
     expect(fetchReference).toHaveBeenCalledOnce();

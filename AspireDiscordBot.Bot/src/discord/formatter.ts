@@ -8,7 +8,7 @@ const closingFence = '```';
 
 export interface AnswerThread {
   readonly answerMessages: readonly [string, ...string[]];
-  readonly detailMessages: readonly [AnswerDetailMessage, ...AnswerDetailMessage[]];
+  readonly detailMessages: readonly AnswerDetailMessage[];
 }
 
 export interface AnswerDetailMessage {
@@ -21,6 +21,12 @@ export function buildAnswerThread(
   answer: GroundedAnswer,
   groundingDetailsMode: GroundingDetailsMode = 'collapsed',
 ): AnswerThread {
+  if (answer.source === 'conversation') {
+    const [first = 'Please clarify the request.', ...rest] = splitMarkdown(
+      redactSensitiveText(answer.answer.trim()),
+    );
+    return { answerMessages: [first, ...rest], detailMessages: [] };
+  }
   const answerSections = [
     `### ❓ ${truncate(escapeMarkdown(singleLine(redactSensitiveText(question))), 256)}`,
     answer.answer.trim(),
@@ -72,17 +78,13 @@ export function buildAnswerThread(
   }
 
   detailSections.push(
-    answer.source === 'conversation'
-      ? answer.requiresReply
-        ? '-# Waiting for your reply in this conversation. Nothing has been published.'
-        : '-# Nothing is published without approval of the issue preview.'
-      : answer.source === 'github'
-        ? answer.isGrounded
-          ? '-# Live GitHub evidence from the configured Aspire repositories; see report coverage and limits.'
-          : '-# GitHub lookup needs clarification or is unavailable; no documentation match is required.'
-        : answer.isGrounded
-          ? '-# Grounded in microsoft/aspire & aspire.dev'
-          : '-# No matching coverage found in microsoft/aspire or aspire.dev',
+    answer.source === 'github'
+      ? answer.isGrounded
+        ? '-# Live GitHub evidence from the configured Aspire repositories; see report coverage and limits.'
+        : '-# GitHub lookup needs clarification or is unavailable; no documentation match is required.'
+      : answer.isGrounded
+        ? '-# Grounded in microsoft/aspire & aspire.dev'
+        : '-# No matching coverage found in microsoft/aspire or aspire.dev',
   );
 
   const [firstAnswer = 'Sorry - I could not format that answer.', ...answerRest] = splitMarkdown(

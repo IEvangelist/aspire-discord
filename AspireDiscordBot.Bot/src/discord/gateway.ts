@@ -54,6 +54,7 @@ import type { DiscordIssueController } from './issue-controller.js';
 import {
   ConversationState,
   conversationKey,
+  combineSourceContext,
   type ConversationActor,
 } from './conversation-state.js';
 
@@ -574,6 +575,8 @@ export class DiscordGateway {
         update: async (content) => await response.edit(answerPayload(content)),
       });
       await progress.start(true);
+      const delivery = { preview: false };
+      let sourceContext: string | undefined;
       const answer = await this.#limiter.run(async () => {
         const conversation = await this.#loadConversation(
           resolved.context,
@@ -601,17 +604,29 @@ export class DiscordGateway {
         const previous = this.#conversations.get(this.#actor(message));
         const bot = this.#client.user;
         const issues = this.issues;
-        const history = [previous?.history, conversation?.history].filter(Boolean).join('\n\n');
+        const history = previous?.history;
+        sourceContext = combineSourceContext(previous?.sourceContext, conversation?.history);
         const combined: ConversationContext | undefined =
           conversation || previous || (issues && bot)
             ? {
                 ...conversation,
-                ...(history ? { history } : {}),
+                history: history ?? '',
+                ...(sourceContext ? { sourceContext } : {}),
                 ...(previous?.pendingIssue ? { pendingIssue: previous.pendingIssue } : {}),
                 ...(issues && bot
                   ? {
-                      prepareIssueDraft: (input, signal) =>
-                        issues.prepareDraft(received, bot, input, signal),
+                      prepareIssueDraft: async (input, signal) => {
+                        await progress?.stop();
+                        const receipt = await issues.prepareDraft(
+                          received,
+                          bot,
+                          input,
+                          signal,
+                          response,
+                        );
+                        delivery.preview = true;
+                        return receipt;
+                      },
                     }
                   : {}),
               }
@@ -625,6 +640,12 @@ export class DiscordGateway {
           combined,
         );
       }, requestSignal);
+      if (delivery.preview) {
+        // The controller already replaced this progress reply with the exact durable preview.
+        this.#conversations.clear(this.#actor(message));
+        observation.complete('issue_handled');
+        return;
+      }
       const formatted = buildAnswerThread(
         resolved.displayQuestion ?? question,
         answer,
@@ -632,7 +653,7 @@ export class DiscordGateway {
       );
       await progress.stop();
       await response.edit(answerPayload(formatted.answerMessages[0]));
-      this.#conversations.remember(this.#actor(message), question, answer);
+      this.#conversations.remember(this.#actor(message), question, answer, sourceContext);
       await replyInChain(response, [
         ...formatted.answerMessages.slice(1),
         ...formatted.detailMessages,
