@@ -92,10 +92,12 @@ describe('Discord gateway mention context adapters', () => {
       expect(answers.answer).toHaveBeenCalled();
     });
     expect(answers.answer.mock.calls[0]?.[0]).toBe(
-      'Why does this forwarded Aspire deployment fail?',
+      'Please help answer the referenced Aspire question.',
     );
     expect(answers.answer.mock.calls[0]?.[3]).toMatchObject({
       questionSource: 'forwarded',
+      referencedQuestion: 'Why does this forwarded Aspire deployment fail?',
+      referenceSource: 'forwarded',
     });
     expect(fetchReference).not.toHaveBeenCalled();
     await gateway.stop();
@@ -143,13 +145,96 @@ describe('Discord gateway mention context adapters', () => {
     await vi.waitFor(() => {
       expect(answers.answer).toHaveBeenCalled();
     });
-    expect(answers.answer.mock.calls[0]?.[0]).toBe('How do I configure Aspire health checks?');
+    expect(answers.answer.mock.calls[0]?.[0]).toBe('Please answer the referenced Aspire question.');
     expect(answers.answer.mock.calls[0]?.[3]).toMatchObject({
       history: '',
       sourceContext: expect.stringContaining('How do I configure Aspire health checks?'),
-      questionSource: 'reply',
+      questionSource: 'current',
+      referencedQuestion: 'How do I configure Aspire health checks?',
+      referenceSource: 'reply',
     });
     expect(fetchReference).toHaveBeenCalledOnce();
     await gateway.stop();
+  });
+
+  it('resolves the screenshot sequence: vague thread help, then "this" replying to the OP', async () => {
+    const client = createClient();
+    const answers = createAnswers();
+    const gateway = new DiscordGateway(
+      createTestConfig({ discord: { mentionEnabled: true } }),
+      answers.service,
+      testLogger,
+      client,
+    );
+    await gateway.start();
+    const original = 'How do I keep my custom Container Apps health probes across Aspire deployments?';
+    const starter = {
+      attachments: new Map(),
+      author: { bot: false, id: 'original-poster' },
+      cleanContent: original,
+      content: original,
+      createdTimestamp: 10,
+      embeds: [],
+      id: 'starter',
+    };
+    const channel = {
+      isThread: () => true,
+      permissionsFor: () => ({ has: () => true }),
+      fetchStarterMessage: vi.fn(async () => starter),
+      messages: { fetch: vi.fn(async () => new Map([
+        ['starter', starter],
+        ['complaint', {
+          ...starter,
+          author: { bot: false, id: 'other-person' },
+          cleanContent: 'The bot did not answer my question.',
+          content: 'The bot did not answer my question.',
+          createdTimestamp: 20,
+          id: 'complaint',
+        }],
+      ])) },
+      name: 'Health probes in Container Apps',
+      parent: null,
+      sendTyping: vi.fn(async () => undefined),
+    };
+    const createMention = (id: string, content: string, reference?: string): Message =>
+      ({
+        attachments: new Map(),
+        author: { bot: false, id: 'requester' },
+        channel,
+        channelId: 'thread',
+        content,
+        createdTimestamp: id === 'first' ? 100 : 200,
+        embeds: [],
+        fetchReference: vi.fn(async () => starter),
+        id,
+        mentions: { has: () => true },
+        reference: reference
+          ? { messageId: reference, type: MessageReferenceType.Default }
+          : null,
+        reply: vi.fn(async () => responseMessage()),
+        system: false,
+      }) as unknown as Message;
+
+    emit(client, createMention('first', '<@bot> can you help'));
+    await vi.waitFor(() => expect(answers.answer).toHaveBeenCalledTimes(1));
+    expect(answers.answer.mock.calls[0]?.[0]).toBe('Please answer the referenced Aspire question.');
+    expect(answers.answer.mock.calls[0]?.[3]).toMatchObject({
+      referencedQuestion: original,
+      referenceSource: 'thread',
+      sourceContext: expect.stringContaining(original),
+      allowIssueDraft: false,
+    });
+
+    emit(client, createMention('second', '<@bot> this', 'starter'));
+    await vi.waitFor(() => expect(answers.answer).toHaveBeenCalledTimes(2));
+    expect(answers.answer.mock.calls[1]?.[0]).toBe('Please answer the referenced Aspire question.');
+    expect(answers.answer.mock.calls[1]?.[3]).toMatchObject({
+      referencedQuestion: original,
+      referenceSource: 'reply',
+      sourceContext: expect.stringContaining(original),
+      allowIssueDraft: false,
+    });
+    await gateway.stop();
+    expect(channel.fetchStarterMessage).toHaveBeenCalledTimes(2);
   });
 });

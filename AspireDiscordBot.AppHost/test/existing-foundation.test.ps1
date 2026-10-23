@@ -189,20 +189,27 @@ function Invoke-StagedAzureCli {
     if ([Uri]::EscapeDataString($command).Length -gt 1800 -or $command -match 'fake-secret') {
         throw 'Unsafe diagnostic transport.'
     }
-    if ($script:probeScenario -eq 'missing-marker') { return 'fake-secret-do-not-log' }
-    if ($script:probeScenario -eq 'windows-newlines') { return "INFO: Connected`r`nASPIRE_STAGED_FEATURES_OK`r`r`n" }
-    return "INFO: Connected`r`nASPIRE_STAGED_FEATURES_OK`r`n"
+    if ($script:probeScenario -eq 'missing-marker' -or
+        ($script:probeScenario -eq 'missing-context-marker' -and $script:execCalls -eq 2)) {
+        return 'fake-secret-do-not-log'
+    }
+    $marker = if ($script:execCalls -eq 2) { 'ASPIRE_STAGED_CONTEXT_OK' } else { 'ASPIRE_STAGED_FEATURES_OK' }
+    if ($script:probeScenario -eq 'windows-newlines') { return "INFO: Connected`r`n$marker`r`r`n" }
+    return "INFO: Connected`r`n$marker`r`n"
 }
 Test-StagedFeatures -ApplicationName 'aspire-discord-blue' -ExpectedRevision $expectedRevision
-if ($script:execCalls -ne 1) { throw 'The staged feature diagnostic did not execute exactly once.' }
+if ($script:execCalls -ne 2) { throw 'Both staged feature diagnostics must execute exactly once.' }
 $script:probeScenario = 'windows-newlines'
+$script:execCalls = 0
 Test-StagedFeatures -ApplicationName 'aspire-discord-blue' -ExpectedRevision $expectedRevision
 $script:probeScenario = 'transition'
+$script:execCalls = 0
 $script:revisionReads = 0
 Test-StagedFeatures -ApplicationName 'aspire-discord-blue' -ExpectedRevision $expectedRevision
 if ($script:revisionReads -ne 2) { throw 'The staging revision transition was not awaited.' }
-foreach ($scenario in @('wrong-revision', 'not-ready', 'missing-marker')) {
+foreach ($scenario in @('wrong-revision', 'not-ready', 'missing-marker', 'missing-context-marker')) {
     $script:probeScenario = $scenario
+    $script:execCalls = 0
     Assert-Fails { Test-StagedFeatures -ApplicationName 'aspire-discord-blue' -ExpectedRevision $expectedRevision }
 }
 Assert-Fails { Test-StagedFeatures -ApplicationName $sourceApplication -ExpectedRevision $expectedRevision }

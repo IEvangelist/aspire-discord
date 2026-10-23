@@ -1,4 +1,7 @@
-import { isThreadOnlyReference, referencesThread } from './context-reference.js';
+import {
+  needsConversationReferent,
+  referencesThread,
+} from './context-reference.js';
 import type { ThreadContextResult } from './context-reader.js';
 import type { DiscordImageCandidate } from './image-context.js';
 import type { MessageObservation } from './reply-context.js';
@@ -17,6 +20,7 @@ export interface ModalityResolutionInput {
 }
 
 export interface ResolvedModalityRequest {
+  readonly allowIssueDraft?: boolean;
   readonly context?: string;
   readonly displayQuestion?: string;
   readonly fileCandidates?: readonly DiscordTextCandidate[];
@@ -25,6 +29,8 @@ export interface ResolvedModalityRequest {
   readonly problem: string;
   readonly question?: string;
   readonly questionSource: QuestionSource;
+  readonly referencedQuestion?: string;
+  readonly referenceSource?: 'forwarded' | 'reply' | 'thread';
   readonly requiresProcessedAttachment?: boolean;
 }
 
@@ -62,9 +68,32 @@ export function resolveModalities(input: ModalityResolutionInput): ResolvedModal
     ...(input.thread.notices ?? []),
     ...threadReadNotices(input.thread.status),
   ];
+  const reference = [
+    { question: forwarded.question, source: 'forwarded' as const },
+    { question: reply.question, source: 'reply' as const },
+    {
+      question: input.thread.starterQuestion ?? input.thread.referenceQuestion,
+      source: 'thread' as const,
+    },
+  ].find((candidate) => candidate.question?.trim() &&
+    !needsConversationReferent(candidate.question));
+  const dependsOnContext = needsConversationReferent(typed);
+  // Supplying a topic must not erase the current requester's action verb. The model still
+  // decides which capability, if any, that request is allowed to use.
+  const hasActionVerb =
+    /\b(?:approve|cancel|change|close|create|delete|deploy|draft|edit|file|fix|merge|publish|remove|run|update)\b/iu.test(
+      typed,
+    );
+  const answerOnly = !typed || (dependsOnContext && Boolean(reference?.question) && !hasActionVerb);
+  if (dependsOnContext && reply.status === 'error' && directImages.length === 0 &&
+      directFiles.length === 0 && forwarded.status === 'none') {
+    return unresolved(reply.notices[0] ?? 'The replied-to message could not be read.');
+  }
 
   const selection = selectQuestion(
-    typed,
+    typed && answerOnly && reference?.question
+      ? 'Please answer the referenced Aspire question.'
+      : typed,
     directFiles,
     directImages,
     directNotices,
@@ -72,6 +101,10 @@ export function resolveModalities(input: ModalityResolutionInput): ResolvedModal
     reply,
     input.thread,
   );
+  if (typed && dependsOnContext && !reference && !context && imageCandidates.length === 0 &&
+      fileCandidates.length === 0 && referencesThread(typed)) {
+    return unresolved(notices[0] ?? threadContextProblem(input.thread.status));
+  }
   if (selection.problem) {
     return unresolved(selection.problem);
   }
@@ -80,15 +113,25 @@ export function resolveModalities(input: ModalityResolutionInput): ResolvedModal
     question &&
     (!referencesThread(typed) || context || imageCandidates.length > 0 || fileCandidates.length > 0)
   ) {
+    const display = dependsOnContext && reference?.question
+      ? reference.question.trim()
+      : displayQuestion(question, questionSource);
     return {
       ...(context ? { context } : {}),
       ...(fileCandidates.length > 0 ? { fileCandidates } : {}),
       ...(imageCandidates.length > 0 ? { imageCandidates } : {}),
       ...(notices.length > 0 ? { notices: [...new Set(notices)] } : {}),
-      displayQuestion: displayQuestion(question, questionSource),
+      displayQuestion: display,
       problem: '',
       question,
       questionSource,
+      ...(reference?.question
+        ? {
+            referencedQuestion: reference.question.trim(),
+            referenceSource: reference.source,
+          }
+        : {}),
+      ...(answerOnly ? { allowIssueDraft: false } : {}),
       ...(selection.requiresProcessedAttachment ? { requiresProcessedAttachment: true } : {}),
     };
   }
@@ -136,7 +179,7 @@ function selectQuestion(
   readonly questionSource: QuestionSource;
   readonly requiresProcessedAttachment?: boolean;
 } {
-  if (typed && !isThreadOnlyReference(typed)) {
+  if (typed) {
     return { question: typed, questionSource: 'current' };
   }
   if (directImages.length > 0 || directFiles.length > 0) {
@@ -155,7 +198,10 @@ function selectQuestion(
   ] as const) {
     const question = observation.question?.trim();
     if (question) {
-      return { question, questionSource: source };
+      return {
+        question: 'Please help answer the referenced Aspire question.',
+        questionSource: source,
+      };
     }
     if (observation.context || observation.images.length > 0 || observation.files.length > 0) {
       return syntheticQuestion(source, observation.requiresAttachment === true);
@@ -168,7 +214,7 @@ function selectQuestion(
   const threadQuestion = thread.question?.trim();
   if (threadQuestion) {
     return {
-      question: threadQuestion,
+      question: 'Please help answer the question in this Aspire thread.',
       questionSource: 'thread',
       ...(thread.questionRequiresAttachment ? { requiresProcessedAttachment: true } : {}),
     };

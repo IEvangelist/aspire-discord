@@ -123,10 +123,19 @@ bounded UTF-8 code, configuration, Markdown, JSON, and log files can be attached
 mention.
 
 Inside a forum post/thread, a mention includes the forum title and tags plus a bounded,
-chronological snapshot of the starter, recent participant replies, and prior bot answers. A bare
-mention answers the latest readable user turn. Attachments and true inline image embeds from the
-current mention, replied-to or forwarded message, latest thread turn, and starter are considered
-using deterministic precedence. Article/link-preview thumbnails are ignored.
+chronological snapshot of the starter, recent participant replies, and prior bot answers.
+Short requests such as "can you help" and "this" resolve their topic from the direct reply
+first, otherwise the thread starter, then a readable recent turn. A bare mention requests help
+with that topic; historical issue-filing instructions never become a new request to create an
+issue. For an inferred help request, the issue-draft tool is not even offered to the agent;
+an explicit current requester drafting request is required to make it available. Direct replies
+follow up to four ancestors, including bot answer/detail chains. Thread
+reads fetch the starter and the latest 50 messages; a vague request can page through at most
+three more 50-message batches. At most 20 turns and 8,000 characters enter the agent context.
+Omitted or unreadable older history is reported, never presented as complete. Attachments and
+true inline image embeds from the current mention, replied-to or forwarded message, latest
+thread turn, and starter are considered using deterministic precedence. Article/link-preview
+thumbnails are ignored.
 
 All user content, history, files, and images are untrusted observations, never authoritative
 evidence. Common credential and private-key patterns are redacted before model or embedding calls,
@@ -136,13 +145,14 @@ context note.
 
 | Input combination               | Deterministic behavior                                             |
 | ------------------------------- | ------------------------------------------------------------------ |
-| Typed question plus any context | Typed question wins; context informs retrieval                     |
+| Substantive current request     | Current requester chooses the action; context provides only a topic |
+| Short "this"/"can you help"     | Ask about the replied-to question, or the safe thread starter       |
 | Current image/file without text | Current attachment becomes the active question                     |
-| Forwarded snapshot              | Forwarded message wins over reply/thread fallbacks                 |
-| Reply mention                   | Replied-to message wins over thread history                        |
-| Bare mention in a thread        | Latest human turn wins; forum title is the final fallback          |
+| Forwarded snapshot              | Clear forwarded topic precedes reply/thread topics                  |
+| Reply to a bot answer           | Follow the bounded chain to the human question                     |
+| Bare mention in a thread        | Ask about the starter or latest readable topic, never execute it    |
 | Unsafe current turn             | Request is blocked; older questions are never substituted          |
-| Unreadable optional context     | Remaining context is used and a visible note explains the omission |
+| Unreadable or truncated context | Use what is available and visibly note what was omitted             |
 
 Answers use standard Discord reply chains rather than fixed-width embeds. The first reply contains
 the focused answer, long-answer continuations reply to it in order, and grounded sources plus

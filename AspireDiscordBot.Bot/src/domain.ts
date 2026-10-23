@@ -50,9 +50,12 @@ export interface PreparedIssueFields {
 }
 
 export interface ConversationContext {
+  readonly allowIssueDraft?: boolean;
   readonly documents?: readonly AnswerDocument[];
   readonly history?: string;
   readonly sourceContext?: string;
+  readonly referencedQuestion?: string;
+  readonly referenceSource?: 'forwarded' | 'reply' | 'thread';
   readonly images?: readonly AnswerImage[];
   readonly notices?: readonly string[];
   readonly questionSource?: string;
