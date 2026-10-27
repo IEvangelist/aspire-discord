@@ -1,6 +1,6 @@
 # Building Aspirey Bot: the talk deck
 
-This reveal.js deck is a 30-minute, first-person talk about how Aspirey Bot was built (what it does, how it evolved, and where it stands today) on Aspire, the GitHub Copilot SDK, and Azure OpenAI. It publishes as a public-safe slide site at `https://ievangelist.github.io/aspire-discord/`. [DESIGN.md](../../deck/DESIGN.md) explains the story, pacing, and the rules the tests enforce.
+This reveal.js deck is a 30-minute, first-person talk about how Aspirey Bot was built (what it does, how it evolved, and where it stands today) on Aspire, the GitHub Copilot SDK, and Azure OpenAI. It publishes at `https://ievangelist.github.io/aspire-discord/`. [DESIGN.md](../../deck/DESIGN.md) explains the story, pacing, and the rules the tests enforce.
 
 ## Local development
 
@@ -124,7 +124,7 @@ To unpublish the site:
 gh api -X DELETE repos/IEvangelist/aspire-discord/pages
 ```
 
-The Pages site is public even though the repository is private, so treat every deck asset, excerpt, and note as public release material.
+The repository and Pages site are public, so treat every deck asset, excerpt, and note as public release material.
 
 ## Troubleshooting
 

@@ -12,6 +12,12 @@ read-only GitHub research. The runtime is intentionally polyglot:
 
 The bot refuses uncovered questions instead of filling gaps with model knowledge.
 
+**Presentation:** [Building Aspirey Bot](https://ievangelist.github.io/aspire-discord/) is a 30-minute
+reveal.js talk on how this Discord integration evolved. The [deck source](deck/) and
+[presenter guide](docs/deck/README.md) live here; the design follows
+[Inside Aspire](https://github.com/IEvangelist/inside-aspire) and the
+[Aspire deck template](https://github.com/IEvangelist/aspire-deck-template).
+
 ## Architecture
 
 ```text
@@ -674,10 +680,11 @@ metadata for operational tuning.
 
 ## Architecture deck
 
-The repository includes a reveal.js talk deck, "Building Aspirey Bot", published at `https://ievangelist.github.io/aspire-discord/`.
+The repository includes a reveal.js talk deck, [Building Aspirey Bot](https://ievangelist.github.io/aspire-discord/),
+and [Aspire-themed social artwork](deck/public/social/aspirey-bot-social.png) for sharing this repository.
 Run it locally with `npm run dev --prefix deck` or validate it with `npm run build --prefix deck` and `npm test --prefix deck`.
 See [`docs/deck/README.md`](docs/deck/README.md) for deck workflow, excerpt, asset, and publishing details.
-The published Pages site is public even though this repository is private.
+The [source repository](https://github.com/IEvangelist/aspire-discord) and its Pages site are public.
 
 ## Package feeds
 

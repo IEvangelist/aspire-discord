@@ -4,11 +4,25 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="color-scheme" content="light dark" />
+    <meta name="theme-color" content="#f5f6f8" />
     <meta name="description" content="Building Aspirey Bot: how a Discord assistant grew from a docs bot into one that reads GitHub and drafts issues, on Aspire, the GitHub Copilot SDK, and Azure OpenAI." />
     <meta property="og:title" content="Building Aspirey Bot" />
     <meta property="og:description" content="What a Discord assistant does, how it evolved over six weeks, and where it stands today, on Aspire, the GitHub Copilot SDK, and Azure OpenAI." />
     <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Building Aspirey Bot" />
+    <meta property="og:locale" content="en_US" />
     <meta property="og:url" content="https://ievangelist.github.io/aspire-discord/" />
+    <meta property="og:image" content="https://ievangelist.github.io/aspire-discord/social/aspirey-bot-og.png" />
+    <meta property="og:image:secure_url" content="https://ievangelist.github.io/aspire-discord/social/aspirey-bot-og.png" />
+    <meta property="og:image:type" content="image/png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt" content="Building Aspirey Bot, a talk by David Pine, with his public portrait and Aspire branding." />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Building Aspirey Bot" />
+    <meta name="twitter:description" content="What a Discord assistant does, how it evolved, and where it stands today, on Aspire, the GitHub Copilot SDK, and Azure OpenAI." />
+    <meta name="twitter:image" content="https://ievangelist.github.io/aspire-discord/social/aspirey-bot-og.png" />
+    <meta name="twitter:image:alt" content="Building Aspirey Bot, a talk by David Pine, with his public portrait and Aspire branding." />
     <link rel="icon" type="image/svg+xml" href="%BASE_URL%brand/aspire-icon-32.svg" />
     <link rel="canonical" href="https://ievangelist.github.io/aspire-discord/" />
     <title>Building Aspirey Bot</title>
@@ -30,13 +44,14 @@
       </button>
       <nav class="slide-navigation" aria-label="Slide navigation">
         <button id="previous" class="icon-button" type="button" aria-label="Previous slide or step"><span data-icon="arrowLeft"></span></button>
-        <output id="slide-position" aria-label="Slide 1 of 32">1 / 32</output>
         <button id="next" class="next-button" type="button" aria-label="Next slide or step"><span class="desktop-label">Next</span><span data-icon="arrowRight"></span></button>
         <button id="menu-toggle" class="icon-button" type="button" aria-label="Open presentation menu" aria-haspopup="dialog" aria-controls="deck-menu" aria-expanded="false"><span data-icon="menu"></span></button>
       </nav>
     </header>
+    <output id="slide-position" aria-label="Slide 1 of 32" aria-live="polite" aria-atomic="true">1 / 32</output>
     <dialog id="deck-menu" class="deck-menu" aria-labelledby="menu-title">
       <div class="menu-heading"><h2 id="menu-title">Building Aspirey Bot</h2><form method="dialog"><button class="icon-button" aria-label="Close presentation menu"><span data-icon="close"></span></button></form></div>
+      <div class="menu-links">
       <nav class="chapter-list" aria-label="Core chapters">
         <a href="#/what-it-does" data-slide="what-it-does" data-core-chapter="What it does"><span data-icon="chat"></span><span>What it does</span></a>
         <a href="#/timeline" data-slide="timeline" data-core-chapter="How it evolved"><span data-icon="versions"></span><span>How it evolved</span></a>
@@ -52,6 +67,7 @@
         <a href="#/appendix-graph" data-slide="appendix-graph"><span data-icon="table"></span><span>Appendix</span></a>
         <a href="#/sources" data-slide="sources"><span data-icon="file"></span><span>Sources</span></a>
       </nav>
+      </div>
       <div class="menu-controls" aria-label="Display and presenter tools">
         <button id="read-mode" type="button" aria-pressed="false"><span data-icon="book"></span><span class="control-label">Reading mode</span><kbd>R</kbd></button>
         <button id="overview" type="button"><span data-icon="screen"></span><span>Overview</span><kbd>Esc</kbd></button>
@@ -65,7 +81,7 @@
         <section id="intro" class="title-slide" data-chapter="Building Aspirey Bot">
           <div class="title-layout">
           <div class="title-copy">
-            <h1>Building Aspirey Bot</h1>
+            <h1>Building <span class="accent">Aspirey</span> Bot</h1>
             <p class="subtitle">A Discord assistant on Aspire, the GitHub Copilot SDK, and Azure OpenAI</p>
             <p class="lede">What it does, how it evolved, and where it stands today.</p>
             <a class="primary-link" href="#/what-it-does">Start presentation <span data-icon="arrowRight"></span></a>

@@ -1,6 +1,6 @@
 # Deck design
 
-This is a first-person talk about how one Discord assistant, Aspirey Bot, was built: what it does, how it evolved, and where it stands today. It is 30 minutes, presented remotely, and published as a public site. The visual identity is the official Aspire one: self-hosted Poppins, `#7455dd`/`#512bd4` purple, `#1f1e33` dark, light and dark themes that follow the system and the `T` key.
+This is a first-person talk about how one Discord assistant, Aspirey Bot, was built: what it does, how it evolved, and where it stands today. It is 30 minutes, presented remotely, and published as a public site. The visual identity adapts [Inside Aspire](https://github.com/IEvangelist/inside-aspire) and the [Aspire Deck Template](https://github.com/IEvangelist/aspire-deck-template): self-hosted Poppins and Fira Code, unchanged official Aspire SVGs, purple actions, a subtle title grid/glow, dark code windows, accessible light/dark palettes, and no new animation framework. The slides and their notes remain authored for this bot.
 
 ## Story
 
@@ -43,8 +43,8 @@ Keyboard navigation, stable slide ids and deep links, overview, speaker notes, r
 
 ## Public safety
 
-The Pages site is public although the repository is private. The deck contains no identifiers, resource names, endpoints, tokens, or links to the private repository, and its speaker notes are public-safe. `scripts/scan-public-output.mjs` enforces this on sources and on the built output in CI.
+The Pages site is public. The deck contains no private identifiers, resource names, endpoints, tokens, or real chat transcripts, and its speaker notes are public-safe. `scripts/scan-public-output.mjs` enforces this on sources and on the built output in CI.
 
 ## Imagery
 
-The portrait is the presenter's public profile image. Brand marks and icon families are unmodified; provenance and licenses are in `docs/deck/ASSETS.md` and `public/licenses/`.
+The portrait is the presenter's public profile image. The Open Graph and repository social-preview PNGs use that unchanged portrait and official Aspire icon. Regenerate both cards with `npm run social:render`. Brand marks and icon families are unmodified; provenance and licenses are in `docs/deck/ASSETS.md` and `public/licenses/`.
