@@ -1,0 +1,76 @@
+name: Architecture deck
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - deck/**
+      - docs/deck/**
+      - .github/workflows/deck.yml
+      - AspireDiscordBot.AppHost/apphost.mts
+      - AspireDiscordBot.AppHost/deployment-pipeline.mts
+      - AspireDiscordBot.Bot/src/telemetry.ts
+      - AspireDiscordBot.Bot/src/agent/copilot-runtime.ts
+      - AspireDiscordBot.Bot/src/agent/conversation-service.ts
+      - AspireDiscordBot.Bot/src/agent/embeddings.ts
+      - AspireDiscordBot.Bot/src/agent/grounding-tools.ts
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: architecture-deck-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  deck:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      pages: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: deck/package-lock.json
+      - name: Restore locked deck dependencies
+        run: npm ci --prefix deck --registry=https://registry.npmjs.org --no-fund --no-audit
+      - name: Build the reviewed deck
+        run: npm run build --prefix deck
+      - name: Prepare Playwright browser
+        run: node deck/node_modules/playwright/cli.js install --with-deps chromium
+      - name: Exercise the reviewed deck
+        run: npm test --prefix deck
+      - name: Scan built output for public-safe content
+        run: node deck/scripts/scan-public-output.mjs
+      - name: Scan deck sources for public-safe content
+        run: node deck/scripts/scan-public-output.mjs --sources
+      - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        with:
+          path: deck/dist
+
+  deploy:
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    needs: deck
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy the validated architecture deck
+        id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1

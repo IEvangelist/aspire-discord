@@ -1,0 +1,631 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="description" content="Building Aspirey Bot: how a Discord assistant grew from a docs bot into one that reads GitHub and drafts issues, on Aspire, the GitHub Copilot SDK, and Azure OpenAI." />
+    <meta property="og:title" content="Building Aspirey Bot" />
+    <meta property="og:description" content="What a Discord assistant does, how it evolved over six weeks, and where it stands today, on Aspire, the GitHub Copilot SDK, and Azure OpenAI." />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://ievangelist.github.io/aspire-discord/" />
+    <link rel="icon" type="image/svg+xml" href="%BASE_URL%brand/aspire-icon-32.svg" />
+    <link rel="canonical" href="https://ievangelist.github.io/aspire-discord/" />
+    <title>Building Aspirey Bot</title>
+  </head>
+  <body>
+    <!--
+    THESIS: Where does the truth live? A Discord assistant grew by learning new places to look, and each new source needed a boundary. Aspire carried all of it.
+    FORM: First person, in three parts. What it does (staged chat scenes), how it evolved (six chapters: what broke, what I changed), where it stands. Code excerpts are injected from the real source at build time.
+    LENGTH: 30 minutes, presented remotely. Appendix slides are untimed and exist for questions.
+    PUBLIC SAFETY: this deck is published publicly. No identifiers, resource names, endpoints, third parties, real chats, or links to the private repository. Every chat scene is staged and labeled as such: the asker uses the presenter's own first name and every other name is made up.
+    -->
+    <a class="skip-link" href="#presentation">Skip to presentation</a>
+    <header class="toolbar" aria-label="Presentation controls">
+      <a class="brand-link" href="https://aspire.dev" aria-label="Aspire documentation">
+        <img src="%BASE_URL%brand/aspire-icon-32.svg" width="32" height="32" alt="Aspire" />
+      </a>
+      <button id="chapter-toggle" class="chapter-toggle" type="button" aria-haspopup="dialog" aria-controls="deck-menu" aria-expanded="false">
+        <span id="chapter-label">Building Aspirey Bot</span><span data-icon="book"></span>
+      </button>
+      <nav class="slide-navigation" aria-label="Slide navigation">
+        <button id="previous" class="icon-button" type="button" aria-label="Previous slide or step"><span data-icon="arrowLeft"></span></button>
+        <output id="slide-position" aria-label="Slide 1 of 32">1 / 32</output>
+        <button id="next" class="next-button" type="button" aria-label="Next slide or step"><span class="desktop-label">Next</span><span data-icon="arrowRight"></span></button>
+        <button id="menu-toggle" class="icon-button" type="button" aria-label="Open presentation menu" aria-haspopup="dialog" aria-controls="deck-menu" aria-expanded="false"><span data-icon="menu"></span></button>
+      </nav>
+    </header>
+    <dialog id="deck-menu" class="deck-menu" aria-labelledby="menu-title">
+      <div class="menu-heading"><h2 id="menu-title">Building Aspirey Bot</h2><form method="dialog"><button class="icon-button" aria-label="Close presentation menu"><span data-icon="close"></span></button></form></div>
+      <nav class="chapter-list" aria-label="Core chapters">
+        <a href="#/what-it-does" data-slide="what-it-does" data-core-chapter="What it does"><span data-icon="chat"></span><span>What it does</span></a>
+        <a href="#/timeline" data-slide="timeline" data-core-chapter="How it evolved"><span data-icon="versions"></span><span>How it evolved</span></a>
+        <a href="#/architecture" data-slide="architecture" data-core-chapter="Where it stands"><span data-icon="stack"></span><span>Where it stands</span></a>
+      </nav>
+      <nav class="chapter-list direct-jumps" aria-label="Direct jump slides">
+        <a href="#/intro" data-slide="intro"><span data-icon="person"></span><span>Title</span></a>
+        <a href="#/scene-issue" data-slide="scene-issue"><span data-icon="check"></span><span>Issue approval</span></a>
+        <a href="#/typescript" data-slide="typescript"><span data-icon="code"></span><span>TypeScript AppHost</span></a>
+        <a href="#/pipeline" data-slide="pipeline"><span data-icon="rocket"></span><span>Deploy pipeline</span></a>
+        <a href="#/acts" data-slide="acts"><span data-icon="shield"></span><span>Safety boundary</span></a>
+        <a href="#/lessons" data-slide="lessons"><span data-icon="lightBulb"></span><span>Lessons</span></a>
+        <a href="#/appendix-graph" data-slide="appendix-graph"><span data-icon="table"></span><span>Appendix</span></a>
+        <a href="#/sources" data-slide="sources"><span data-icon="file"></span><span>Sources</span></a>
+      </nav>
+      <div class="menu-controls" aria-label="Display and presenter tools">
+        <button id="read-mode" type="button" aria-pressed="false"><span data-icon="book"></span><span class="control-label">Reading mode</span><kbd>R</kbd></button>
+        <button id="overview" type="button"><span data-icon="screen"></span><span>Overview</span><kbd>Esc</kbd></button>
+        <button id="theme" type="button"><span data-icon="sun"></span><span>Switch theme</span><kbd>T</kbd></button>
+        <button id="notes" type="button"><span data-icon="person"></span><span>Speaker notes</span><kbd>S</kbd></button>
+        <a id="print-link" href="?print-pdf" target="_blank" rel="noopener"><span data-icon="file"></span><span>Print the deck</span></a>
+      </div>
+    </dialog>
+    <main id="presentation" class="reveal" tabindex="-1" aria-label="Building Aspirey Bot presentation" data-duration-minutes="30">
+      <div class="slides">
+        <section id="intro" class="title-slide" data-chapter="Building Aspirey Bot">
+          <div class="title-layout">
+          <div class="title-copy">
+            <h1>Building Aspirey Bot</h1>
+            <p class="subtitle">A Discord assistant on Aspire, the GitHub Copilot SDK, and Azure OpenAI</p>
+            <p class="lede">What it does, how it evolved, and where it stands today.</p>
+            <a class="primary-link" href="#/what-it-does">Start presentation <span data-icon="arrowRight"></span></a>
+          </div>
+          <figure class="speaker">
+            <img class="speaker-portrait" src="%BASE_URL%speaker/david-pine.webp" width="300" height="300" alt="David Pine's actual public profile portrait" fetchpriority="high" decoding="async" />
+            <figcaption>
+              <div class="speaker-bio"><strong>David Pine</strong><span>Microsoft's Aspire team</span></div>
+              <nav class="speaker-socials" aria-label="David Pine's social profiles">
+                <a href="https://github.com/IEvangelist" data-social="github" aria-label="David Pine on GitHub" title="GitHub" target="_blank" rel="noopener noreferrer"><img class="image-for-light" src="%BASE_URL%github/invertocat-black.svg" width="24" height="24" alt="" /><img class="image-for-dark" src="%BASE_URL%github/invertocat-white.svg" width="24" height="24" alt="" /></a>
+                <a href="https://x.com/davidpine7" data-social="x" aria-label="David Pine on X" title="X" target="_blank" rel="noopener noreferrer"><span data-icon="socialX"></span></a>
+                <a href="https://bsky.app/profile/davidpine.dev" data-social="bluesky" aria-label="David Pine on Bluesky" title="Bluesky" target="_blank" rel="noopener noreferrer"><span data-icon="socialBluesky"></span></a>
+                <a href="https://www.linkedin.com/in/dpine/" data-social="linkedin" aria-label="David Pine on LinkedIn" title="LinkedIn" target="_blank" rel="noopener noreferrer"><span data-icon="socialLinkedIn"></span></a>
+              </nav>
+            </figcaption>
+          </figure>
+          </div>
+          <aside class="notes">0:00-0:01. Welcome. This is the story of how I built a Discord assistant: what it can do, how it grew over six weeks, and where it stands today. Three technologies run through all of it. Aspire runs it, the GitHub Copilot SDK drives the agent, and Azure OpenAI supplies the models. Advance with Start presentation.</aside>
+        </section>
+
+        <section id="what-it-does" class="ladder-slide" data-chapter="What it does" data-purpose="why">
+          <p class="kicker">What it does</p>
+          <h2>Four things it does, and where each one finds the truth.</h2>
+          <ol class="ladder">
+            <li class="rung">
+              <span data-icon="book"></span>
+              <h3>It answers</h3>
+              <p>Aspire questions, with citations.</p>
+              <p class="truth"><span class="label">Truth</span>The docs and the API</p>
+            </li>
+            <li class="rung">
+              <span data-icon="repo"></span>
+              <h3>It looks things up</h3>
+              <p>What changed on GitHub, and who did it.</p>
+              <p class="truth"><span class="label">Truth</span>Live, <span class="nowrap">read-only</span> GitHub</p>
+            </li>
+            <li class="rung">
+              <span data-icon="chat"></span>
+              <h3>It reads the room</h3>
+              <p>The thread, the reply, the screenshot.</p>
+              <p class="truth"><span class="label">Truth</span>The conversation</p>
+            </li>
+            <li class="rung">
+              <span data-icon="check"></span>
+              <h3>It takes action</h3>
+              <p>Drafts a GitHub issue for you to approve.</p>
+              <p class="truth"><span class="label">Truth</span>Your click</p>
+            </li>
+          </ol>
+          <aside class="notes">0:01-0:02. The whole product in four steps. Each step is a bigger promise, and each one needs a new place to find the truth. It answers from the docs and the API surface. It looks things up on GitHub, read-only. It reads the room: the thread, the reply, the screenshot. And it takes action, but only by drafting an issue that a person approves. The next four slides show each step as a short chat. They are staged examples. If you are demoing live, run them in Discord instead.</aside>
+        </section>
+
+        <section id="scene-ask" class="scene-slide" data-chapter="What it does" data-purpose="proof">
+          <p class="kicker">1 · It answers</p>
+          <h2>Ask a question. Get a cited answer.</h2>
+          <div class="scene">
+            <figure class="chat" aria-label="Staged example: a question about resource dependencies, and the bot's cited answer">
+              <p class="chat-label">Staged example</p>
+              <div class="msg">
+                <span class="avatar" aria-hidden="true">D</span>
+                <div class="msg-body">
+                  <p class="msg-head"><strong class="name">david</strong></p>
+                  <p class="msg-text"><span class="mention">@Aspirey Bot</span> how do I make my API wait for the database?</p>
+                </div>
+              </div>
+              <div class="msg fragment" data-fragment-index="0">
+                <span class="avatar bot" aria-hidden="true"><span data-icon="agent"></span></span>
+                <div class="msg-body">
+                  <p class="msg-head"><strong class="name">Aspirey Bot</strong><span class="tag">BOT</span></p>
+                  <p class="msg-title">❓ how do I make my API wait for the database?</p>
+                  <p class="msg-text">Add a wait dependency from the API to the database, so the API starts only after the database is ready [1]. For a one-time setup job, wait for completion instead [2]. <span class="pin" aria-hidden="true">1</span></p>
+                  <div class="msg-actions"><span class="chip">[1] Resource dependencies</span><span class="chip">[2] Wait for completion</span><span class="pin" aria-hidden="true">2</span></div>
+                  <p class="msg-sub">Grounded in microsoft/aspire &amp; aspire.dev <span class="pin" aria-hidden="true">3</span></p>
+                </div>
+              </div>
+            </figure>
+            <ol class="callouts fragment" data-fragment-index="0">
+              <li><strong>Cited</strong><span>Every claim points at a source.</span></li>
+              <li><strong>Sources are buttons</strong><span>One click to the page.</span></li>
+              <li><strong>Says what it used</strong><span>Docs, source, and API only.</span></li>
+            </ol>
+          </div>
+          <aside class="notes">0:02-0:03. Scene one. Someone mentions the bot and asks how to make an API wait for its database. While it works, its first reply edits itself through reading, checking the docs, and writing. The answer cites its sources as link buttons right under it, and a footer says what it was grounded in. Click once to reveal the reply. LIVE OPTION: switch to Discord and ask the same question. FALLBACK: stay on this slide.</aside>
+        </section>
+
+        <section id="scene-github" class="scene-slide" data-chapter="What it does" data-purpose="proof">
+          <p class="kicker">2 · It looks things up</p>
+          <h2>Ask what changed. It reads GitHub live.</h2>
+          <div class="scene">
+            <figure class="chat" aria-label="Staged example: a request for a GitHub activity report, and the bot's summary">
+              <p class="chat-label">Staged example</p>
+              <div class="msg">
+                <span class="avatar" aria-hidden="true">D</span>
+                <div class="msg-body">
+                  <p class="msg-head"><strong class="name">david</strong></p>
+                  <p class="msg-text"><span class="mention">@Aspirey Bot</span> what has example-dev worked on in the Aspire repos over the last two weeks?</p>
+                </div>
+              </div>
+              <div class="msg fragment" data-fragment-index="0">
+                <span class="avatar bot" aria-hidden="true"><span data-icon="agent"></span></span>
+                <div class="msg-body">
+                  <p class="msg-head"><strong class="name">Aspirey Bot</strong><span class="tag">BOT</span></p>
+                  <p class="msg-text">In the last 14 days, example-dev opened 3 pull requests and 2 issues, and left 4 reviews and 6 comments [1] [2] [3]. <span class="pin" aria-hidden="true">1</span></p>
+                  <p class="msg-sub">Coverage: authored issues and PRs, comments, reviews, and default-branch commits. Not a complete history. <span class="pin" aria-hidden="true">3</span></p>
+                  <div class="msg-actions"><span class="chip">[1] Pull request</span><span class="chip">[2] Pull request</span><span class="chip">[3] Issue</span><span class="pin" aria-hidden="true">2</span></div>
+                </div>
+              </div>
+            </figure>
+            <ol class="callouts fragment" data-fragment-index="0">
+              <li><strong>Live and read-only</strong><span>Asked of GitHub on demand. It cannot write.</span></li>
+              <li><strong>Bounded</strong><span>One username, and a date range of at most a year.</span></li>
+              <li><strong>Honest about limits</strong><span>It says what the report leaves out.</span></li>
+            </ol>
+          </div>
+          <aside class="notes">0:03-0:04. Scene two. It can also look things up on GitHub, read-only. This is a user activity report across the two Aspire repositories. The tool takes a username and an explicit date range of at most a year, and the answer states what the report covers and what it leaves out. The GitHub user and the numbers here are invented. LIVE OPTION: ask for your own GitHub activity over the last two weeks.</aside>
+        </section>
+
+        <section id="scene-context" class="scene-slide" data-chapter="What it does" data-purpose="proof">
+          <p class="kicker">3 · It reads the room</p>
+          <h2>Reply to a screenshot. It reads that too.</h2>
+          <div class="scene">
+            <figure class="chat" aria-label="Staged example: a reply to a message with a screenshot, and the bot's diagnosis">
+              <p class="chat-label">Staged example</p>
+              <div class="msg">
+                <span class="avatar alt" aria-hidden="true">R</span>
+                <div class="msg-body">
+                  <p class="msg-head"><strong class="name">robin</strong></p>
+                  <p class="msg-text">Why does my app hang on startup?</p>
+                  <div class="attachment" role="img" aria-label="Staged screenshot: the api resource is waiting for db, and db is running but not healthy">
+                    <span>api&nbsp;&nbsp;&nbsp;Waiting for db</span>
+                    <span>db&nbsp;&nbsp;&nbsp;&nbsp;Running · not healthy</span>
+                  </div>
+                </div>
+              </div>
+              <div class="msg">
+                <span class="avatar" aria-hidden="true">D</span>
+                <div class="msg-body">
+                  <p class="msg-head"><strong class="name">david</strong><span class="reply-ref">replying to robin <span class="pin" aria-hidden="true">1</span></span></p>
+                  <p class="msg-text"><span class="mention">@Aspirey Bot</span> what is going on here?</p>
+                </div>
+              </div>
+              <div class="msg fragment" data-fragment-index="0">
+                <span class="avatar bot" aria-hidden="true"><span data-icon="agent"></span></span>
+                <div class="msg-body">
+                  <p class="msg-head"><strong class="name">Aspirey Bot</strong><span class="tag">BOT</span></p>
+                  <p class="msg-text">The api is waiting on db, and db never reports healthy. Check its health check and logs in the dashboard [1]. <span class="pin" aria-hidden="true">2</span></p>
+                  <div class="msg-actions"><span class="chip">[1] Health checks</span></div>
+                </div>
+              </div>
+            </figure>
+            <ol class="callouts fragment" data-fragment-index="0">
+              <li><strong>Reads the reply</strong><span>The message you reply to is context.</span></li>
+              <li><strong>Reads the screenshot</strong><span>It looks at the image, not just the text.</span></li>
+              <li><strong>Treats it as data</strong><span>Redacted and bounded. Never obeyed as instructions.</span></li>
+            </ol>
+          </div>
+          <aside class="notes">0:04-0:05. Scene three. It reads the room. Reply to someone's message that has a screenshot, mention the bot, and it uses the reply and the image as context. That context is redacted, bounded, and treated as data: it can inform the answer, but it can never give the bot instructions. The other person and the screenshot are invented. LIVE OPTION: reply to any message that has a screenshot.</aside>
+        </section>
+
+        <section id="scene-issue" class="scene-slide" data-chapter="What it does" data-purpose="proof">
+          <p class="kicker">4 · It takes action</p>
+          <h2>Say “turn this into an issue.” You click to approve.</h2>
+          <div class="scene">
+            <figure class="chat" aria-label="Staged example: a request to turn a thread into an issue, and the bot's draft preview with Create issue and Cancel buttons">
+              <p class="chat-label">Staged example</p>
+              <div class="msg">
+                <span class="avatar" aria-hidden="true">D</span>
+                <div class="msg-body">
+                  <p class="msg-head"><strong class="name">david</strong><span class="reply-ref">replying to robin</span></p>
+                  <p class="msg-text"><span class="mention">@Aspirey Bot</span> turn this into an issue</p>
+                </div>
+              </div>
+              <div class="msg fragment" data-fragment-index="0">
+                <span class="avatar bot" aria-hidden="true"><span data-icon="agent"></span></span>
+                <div class="msg-body">
+                  <p class="msg-head"><strong class="name">Aspirey Bot</strong><span class="tag">BOT</span></p>
+                  <p class="msg-text">Review this draft. Nothing posted yet.</p>
+                  <div class="embed">
+                    <p class="embed-title">AppHost hangs when a dependency never becomes healthy <span class="pin" aria-hidden="true">1</span></p>
+                    <p class="embed-text">Reported: the api resource never starts and waits on db. Unknown: Aspire version and the db health check.</p>
+                    <p class="embed-field"><span class="label">Repository</span> microsoft/aspire <span class="pin" aria-hidden="true">2</span></p>
+                  </div>
+                  <div class="msg-actions"><span class="chip primary">Create issue</span><span class="chip">Cancel</span><span class="chip">Check status</span><span class="pin" aria-hidden="true">3</span></div>
+                </div>
+              </div>
+            </figure>
+            <ol class="callouts fragment" data-fragment-index="0">
+              <li><strong>Written from the thread</strong><span>Title, body, and sourced investigation.</span></li>
+              <li><strong>Repository inferred</strong><span>It asks only when it cannot tell.</span></li>
+              <li><strong>Nothing posts until you click</strong><span>Only the requester can approve.</span></li>
+            </ol>
+          </div>
+          <aside class="notes">0:05-0:07. Scene four, the one that raises the stakes. Say turn this into an issue and the bot writes a title and body from the conversation, picks the repository when it is obvious, and posts a preview. Nothing is posted until the requester clicks Create issue. Click once to reveal the preview. LIVE OPTION: click Cancel, never Create issue. The bot replies that the draft was cancelled and nothing was published.</aside>
+        </section>
+
+        <section id="rules" class="statement-slide" data-chapter="What it does" data-purpose="proof">
+          <p class="kicker">The rules it never breaks</p>
+          <h2>The model proposes. Code decides.</h2>
+          <div class="thesis-path" data-three-points>
+            <div><span data-icon="book"></span><strong data-takeaway>No source, no answer</strong><p>A factual reply must cite something a tool returned.</p></div>
+            <div><span data-icon="lock"></span><strong data-takeaway>No click, no write</strong><p>Only the requester can approve an issue.</p></div>
+            <div><span data-icon="person"></span><strong data-takeaway>Only the list</strong><p>Allow-listed people, rate-limited. Open access is an explicit opt-in.</p></div>
+          </div>
+          <p class="large-copy">It can draft an issue. <strong>It cannot file one.</strong></p>
+          <aside class="notes">0:07-0:08. Three rules hold all of that together. No source, no answer: a factual reply has to cite something a tool returned, or it becomes a refusal. No click, no write: only the requester can approve an issue. Only the list: access is allow-listed and rate-limited, and opening it up takes an explicit opt-in. The line to remember is that the model can draft an issue, but it cannot file one. The rest of the talk is how those rules came to exist.</aside>
+        </section>
+
+        <section id="timeline" class="timeline-slide" data-chapter="How it evolved" data-purpose="why">
+          <p class="kicker">How it evolved</p>
+          <h2>Six weeks, six chapters.</h2>
+          <ol class="timeline">
+            <li><span class="tl-date">Aug 17</span><span class="tl-dot" aria-hidden="true"></span><div><h3>It answers</h3><p>A docs bot with a hard “not covered” refusal.</p></div></li>
+            <li><span class="tl-date">Aug 20</span><span class="tl-dot" aria-hidden="true"></span><div><h3>It finds more truth</h3><p>An agent loop, API search, and GitHub issue search.</p></div></li>
+            <li><span class="tl-date">Aug 24–27</span><span class="tl-dot" aria-hidden="true"></span><div><h3>It’s rebuilt</h3><p>The official Copilot SDK, then TypeScript.</p></div></li>
+            <li><span class="tl-date">Aug 28</span><span class="tl-dot" aria-hidden="true"></span><div><h3>It ships</h3><p>Azure Container Apps, AI Search, safe deploys.</p></div></li>
+            <li><span class="tl-date">Aug 31–Sep 1</span><span class="tl-dot" aria-hidden="true"></span><div><h3>It sees and listens</h3><p>Images, mention-only replies, traces, live config.</p></div></li>
+            <li><span class="tl-date">Sep 23–28</span><span class="tl-dot" aria-hidden="true"></span><div><h3>It acts</h3><p>Approved issues, typed tools, smarter drafts.</p></div></li>
+          </ol>
+          <aside class="notes">0:08-0:09. Six weeks, six chapters, from August 17 to September 28. It answered. It found more truth. It was rebuilt. It shipped. It learned to see and listen. Then it learned to act. For each chapter I will show what changed and what I kept. Aspire, the Copilot SDK, and Azure OpenAI show up exactly where they solved a real problem.</aside>
+        </section>
+
+        <section id="docs-bot" class="scene-slide" data-chapter="How it evolved" data-purpose="proof">
+          <p class="kicker">Aug 17 · Chapter 1 · It answers</p>
+          <h2>It started as a docs bot that knew its limits.</h2>
+          <div class="scene">
+            <figure class="chat" aria-label="Staged example: an off-topic question, and the bot's refusal">
+              <p class="chat-label">Staged example</p>
+              <div class="msg">
+                <span class="avatar" aria-hidden="true">D</span>
+                <div class="msg-body">
+                  <p class="msg-head"><strong class="name">david</strong></p>
+                  <p class="msg-text"><span class="mention">@Aspirey Bot</span> where can I get good pizza in Seattle?</p>
+                </div>
+              </div>
+              <div class="msg">
+                <span class="avatar bot" aria-hidden="true"><span data-icon="agent"></span></span>
+                <div class="msg-body">
+                  <p class="msg-head"><strong class="name">Aspirey Bot</strong><span class="tag">BOT</span></p>
+                  <p class="msg-text">I couldn’t find this in the official Aspire documentation (microsoft/aspire and aspire.dev),                   so I can’t answer it confidently. Try rephrasing, or check the docs at aspire.dev.</p>
+                                    <p class="msg-sub">No matching coverage found in microsoft/aspire or aspire.dev <span class="pin" aria-hidden="true">1</span></p>
+                </div>
+              </div>
+            </figure>
+            <ol class="callouts">
+              <li><strong>A hard refusal</strong><span>If the docs do not cover it, say so.</span></li>
+              <li><strong>Three days later: too hard</strong><span>It refused an EF Core question the docs covered.</span></li>
+              <li><strong>So I rebalanced</strong><span>A looser prompt, and an eval harness.</span></li>
+            </ol>
+          </div>
+          <ol class="strip" aria-label="One C# AppHost started three resources">
+            <li class="node host"><span data-icon="stack"></span>C# AppHost</li>
+            <li class="strip-arrow" aria-hidden="true"><span data-icon="arrowRight"></span></li>
+            <li class="node"><span data-icon="database"></span>Qdrant</li>
+            <li class="node"><span data-icon="package"></span>Ingestion worker</li>
+            <li class="node"><span data-icon="chat"></span>Discord bot</li>
+          </ol>
+          <aside class="notes">0:09-0:11. August 17: a docs bot. One C# AppHost started Qdrant, an ingestion worker, and the bot, and it answered only from the official docs, with citations and a hard refusal. That refusal was the best feature, until August 20, when it refused a question about EF Core migrations that the docs clearly covered. My prompt was too strict. I loosened it and added an answer-quality eval harness so quality stays locked in. Lesson to carry forward: refusals can be wrong too.</aside>
+        </section>
+
+        <section id="gaps" data-chapter="How it evolved" data-purpose="proof">
+          <p class="kicker">Aug 20 · Chapter 2 · It finds more truth</p>
+          <h2>Every gap became a tool.</h2>
+          <ul class="lesson-list">
+            <li><span>One search missed multi-part questions.</span><span data-icon="arrowRight"></span><strong>An agent loop that plans, searches, and reads again.</strong></li>
+            <li><span>It could not answer about real APIs.</span><span data-icon="arrowRight"></span><strong>A Roslyn-built API index and <code>search_api</code>.</strong></li>
+            <li><span>The real answer lived in an issue thread.</span><span data-icon="arrowRight"></span><strong>Live GitHub code and issue search.</strong></li>
+            <li><span>The agent was a black box.</span><span data-icon="arrowRight"></span><strong>OpenTelemetry traces in the Aspire dashboard.</strong></li>
+          </ul>
+          <aside class="notes">0:11-0:12. August 20 was the big day. Each gap became a tool. One search was not enough for multi-part questions, so the bot became an agent loop that plans, searches, reads, and searches again. It could not answer questions about real APIs, so a Roslyn parser built an API index. A question about running a command inside a container had its real answer in an open issue thread, so I added live GitHub search. And the agent was a black box, so I added OpenTelemetry GenAI traces that light up the Aspire dashboard. OPTIONAL: if your local AppHost is running, open its dashboard's GenAI view for the last request.</aside>
+        </section>
+
+        <section id="sdk" data-chapter="How it evolved" data-purpose="proof">
+          <p class="kicker">Aug 24 · Chapter 3 · It’s rebuilt</p>
+          <h2>I replaced my agent plumbing with the Copilot SDK.</h2>
+          <figure class="code-panel">
+            <figcaption><span data-icon="lock"></span>Copilot SDK client and session <span>TypeScript, selected lines</span></figcaption>
+            <pre id="empty-mode-code" data-label="Runtime configuration excerpt" data-excerpt-id="empty-mode"><code class="language-typescript">// Excerpt injected at build time from the repository source.</code></pre>
+          </figure>
+          <span class="code-step fragment" data-code="empty-mode-code" data-parts="1" aria-hidden="true"></span>
+          <span class="code-step fragment" data-code="empty-mode-code" data-parts="2" aria-hidden="true"></span>
+          <span class="code-step fragment" data-code="empty-mode-code" data-parts="3" aria-hidden="true"></span>
+          <p class="source-line">The SDK gives me sessions, streaming, and tool calls. I start it with nothing: only the tools I register.</p>
+          <aside class="notes">0:12-0:13. August 24: I replaced my agent plumbing with the official GitHub Copilot SDK. Until then I had my own device-flow sign-in, token exchange, and tool loop. On August 18 the Aspire dashboard even showed the sign-in code through the interaction service. The SDK gives me sessions, streaming, and tool calling. What I kept is control. Step through the excerpt: the client starts in empty mode, only my custom tools are available, and config discovery, file hooks, host Git, the session store, and skills are all off.</aside>
+        </section>
+
+        <section id="typescript" data-chapter="How it evolved" data-purpose="proof">
+          <p class="kicker">Aug 27 · Chapter 3 · It’s rebuilt</p>
+          <h2>I rewrote it in TypeScript to see if Aspire could handle it.</h2>
+          <figure class="code-panel">
+            <figcaption><span data-icon="code"></span>AppHost <span>TypeScript, selected lines</span></figcaption>
+            <pre id="apphost-code" data-label="AppHost excerpt" data-excerpt-id="apphost"><code class="language-typescript">// Excerpt injected at build time from the repository source.</code></pre>
+          </figure>
+          <span class="code-step fragment" data-code="apphost-code" data-parts="1" aria-hidden="true"></span>
+          <span class="code-step fragment" data-code="apphost-code" data-parts="2" aria-hidden="true"></span>
+          <span class="code-step fragment" data-code="apphost-code" data-parts="3" aria-hidden="true"></span>
+          <p class="source-line">It could. A TypeScript AppHost runs a Qdrant container, a .NET worker, and a Node.js bot.</p>
+          <aside class="notes">0:13-0:15. August 27: I rewrote the bot and the AppHost in TypeScript. The reason is simple. I wanted to know whether Aspire could handle it. The AppHost models a Qdrant container, a .NET ingestion project, and a Node.js bot, in one file, in TypeScript. Step through the three parts: the store, the .NET worker, and the bot with its dependency on the worker. It could handle it. Same dashboard, same health checks, same one command.</aside>
+        </section>
+
+        <section id="azure-search" data-chapter="How it evolved" data-purpose="proof">
+          <p class="kicker">Aug 28 · Chapter 4 · It ships</p>
+          <h2>Qdrant did not survive the move to Azure.</h2>
+          <ul class="cards pair">
+            <li><span data-icon="database"></span><div><h3>On my laptop</h3><p>Qdrant runs as a container resource in the AppHost, with a data volume.</p></div></li>
+            <li><span data-icon="search"></span><div><h3>In Azure</h3><p>Production uses Azure AI Search, a managed service.</p></div></li>
+          </ul>
+          <ol class="strip" aria-label="What happened to Qdrant in Azure">
+            <li class="node"><span data-icon="database"></span>Qdrant on Container Apps</li>
+            <li class="strip-arrow" aria-hidden="true"><span data-icon="arrowRight"></span></li>
+            <li class="node bad"><span data-icon="close"></span>NFS storage: unsupported</li>
+            <li class="strip-arrow" aria-hidden="true"><span data-icon="arrowRight"></span></li>
+            <li class="node host"><span data-icon="check"></span>Azure AI Search</li>
+          </ol>
+          <p class="source-line">One retrieval interface, two stores. A setting chooses which: <code>VECTOR_STORE_PROVIDER</code>.</p>
+          <aside class="notes">0:15-0:16. August 28: the move to Azure Container Apps. My first deployment ran Qdrant on NFS-backed storage, and that turned out to be unsupported, so production moved to Azure AI Search. Locally, Qdrant is still one line in the AppHost. The retrieval code does not care: one interface, two stores, and a single setting chooses between them.</aside>
+        </section>
+
+        <section id="azure-keyless" data-chapter="How it evolved" data-purpose="proof">
+          <p class="kicker">Aug 28 · Chapter 4 · It ships</p>
+          <h2>In Azure, there are no API keys.</h2>
+          <figure class="code-panel">
+            <figcaption><span data-icon="plug"></span>Provider configuration <span>TypeScript</span></figcaption>
+            <pre id="byok-code" data-label="Provider configuration excerpt" data-excerpt-id="byok"><code class="language-typescript">// Excerpt injected at build time from the repository source.</code></pre>
+          </figure>
+          <p class="source-line">A token provider replaces the key, for chat and for embeddings. In Azure, the app’s managed identity gets the token, and the SDK keeps the same loop and tools.</p>
+          <aside class="notes">0:16-0:17. In Azure there are no API keys. The Copilot SDK lets you bring your own model provider, and I give it a token provider instead of a key. In Azure that resolves to the container app's managed identity. On a laptop it resolves to my own az login, and the SDK's default models come from GitHub Copilot. The embeddings client uses the same token provider. Same agent loop, same tools; only the provider block changes. That is also why production does not need a personal Copilot login.</aside>
+        </section>
+
+        <section id="pipeline" class="diagram-slide" data-chapter="How it evolved" data-purpose="machinery">
+          <p class="kicker">Aug 28–31 · Chapter 4 · It ships</p>
+          <h2>Deploys had to be boring.</h2>
+          <div data-diagram="pipeline"></div>
+          <p class="diagram-caption"><span data-icon="shield"></span> aspire deploy runs a pipeline I own. Nothing cuts over until the new slot passes its live checks.</p>
+          <aside class="notes">0:17-0:19. Deploys had to be boring. aspire deploy runs a pipeline I own. Preflight checks for a clean commit and valid Azure access. Images are tagged by Git SHA, so every deployment is immutable. A new slot starts with Discord disabled and must pass live checks against GitHub, MCP, and storage. Only then does one Discord session cut over, and if that fails the previous slot returns. If you are running long, compress this to one sentence: nothing cuts over until the new slot proves itself.</aside>
+        </section>
+
+        <section id="sees-listens" class="cards-slide" data-chapter="How it evolved" data-purpose="proof">
+          <p class="kicker">Aug 31–Sep 1 · Chapter 5 · It sees and listens</p>
+          <h2>Then it learned to see, listen, and explain itself.</h2>
+          <ul class="cards">
+            <li><span data-icon="eye"></span><div><h3>Images</h3><p>It reads the screenshot you attach.</p></div></li>
+            <li><span data-icon="chat"></span><div><h3>Mention-only</h3><p>No slash command. Mention it, then reply to keep going.</p></div></li>
+            <li><span data-icon="pulse"></span><div><h3>Traces</h3><p>One trace ID from Discord message to model call.</p></div></li>
+            <li><span data-icon="gear"></span><div><h3>Live config</h3><p>Change who can use it without a deploy.</p></div></li>
+          </ul>
+          <aside class="notes">0:19-0:20. Four quick upgrades in one week. It reads images and screenshots. It became mention-only: no slash command, and replies to the bot keep the conversation going. Production got traces: one trace ID from the Discord message to the model call, in the Aspire dashboard locally and in Application Insights in Azure. And runtime configuration is live, so I can change who may use it without a deploy.</aside>
+        </section>
+
+        <section id="acts" class="diagram-slide" data-chapter="How it evolved" data-purpose="machinery">
+          <p class="kicker">Sep 23 · Chapter 6 · It acts</p>
+          <h2>Then I let it act, carefully.</h2>
+          <div data-diagram="boundary"></div>
+          <p class="diagram-caption"><span data-icon="lock"></span> No publish tool. No approve tool. The signing key never leaves Key Vault.</p>
+          <aside class="notes">0:20-0:22. September 23: I let it act. This is the most important design decision in the project. The model can call prepare_issue_draft, but there is no publish tool and no approve tool. The draft becomes a durable preview with the exact title and body. Only the requester can approve it, with an authenticated button. Deterministic code re-checks the user, server, repository, and expiry. Key Vault signs the GitHub App's token so the key never leaves, and a one-repository token creates the issue. The gate boxes are code, not prompts.</aside>
+        </section>
+
+        <section id="routing" data-chapter="How it evolved" data-purpose="proof">
+          <p class="kicker">Sep 23–28 · Chapter 6 · It acts</p>
+          <h2>A regex missed the word “test”.</h2>
+          <div class="duo">
+            <figure class="chat" aria-label="Staged example: a test issue request that the keyword router ignored">
+              <p class="chat-label">Staged · before: a keyword router</p>
+              <div class="msg">
+                <span class="avatar" aria-hidden="true">D</span>
+                <div class="msg-body">
+                  <p class="msg-head"><strong class="name">david</strong></p>
+                  <p class="msg-text"><span class="mention">@Aspirey Bot</span> create a test issue</p>
+                </div>
+              </div>
+              <div class="msg silent">
+                <span class="avatar bot" aria-hidden="true"><span data-icon="agent"></span></span>
+                <div class="msg-body">
+                  <p class="msg-head"><strong class="name">Aspirey Bot</strong><span class="tag">BOT</span></p>
+                  <p class="msg-text">No reply. The pattern had no match.</p>
+                </div>
+              </div>
+              <p class="duo-note">One missing word broke it.</p>
+            </figure>
+            <figure class="chat" aria-label="Staged example: the same request handled by an agent with typed tools">
+              <p class="chat-label">Staged · now: one agent, typed tools</p>
+              <div class="msg">
+                <span class="avatar" aria-hidden="true">D</span>
+                <div class="msg-body">
+                  <p class="msg-head"><strong class="name">david</strong></p>
+                  <p class="msg-text"><span class="mention">@Aspirey Bot</span> create a test issue</p>
+                </div>
+              </div>
+              <div class="msg">
+                <span class="avatar bot" aria-hidden="true"><span data-icon="agent"></span></span>
+                <div class="msg-body">
+                  <p class="msg-head"><strong class="name">Aspirey Bot</strong><span class="tag">BOT</span></p>
+                  <p class="msg-text">Which repository should I use: microsoft/aspire or microsoft/aspire.dev?</p>
+                  <div class="msg-actions"><span class="chip">prepare_issue_draft</span></div>
+                </div>
+              </div>
+              <p class="duo-note">The model picks the tool. Code validates every argument.</p>
+            </figure>
+          </div>
+          <p class="source-line">Sep 28: drafts now get an AI-written title and body, plus sourced investigation.</p>
+          <aside class="notes">0:22-0:23. A real failure. Someone asked the bot to create a test issue and it was ignored, because my regular expression did not allow the word test. I patched it once, then removed the whole approach. Now one conversation agent sees typed tools and chooses which to call, including asking a clarifying question or cancelling. Code still validates every argument. On September 28 drafts got smarter too: the title and body are written from the conversation, with sourced investigation.</aside>
+        </section>
+
+        <section id="architecture" class="diagram-slide" data-chapter="Where it stands" data-purpose="why">
+          <p class="kicker">Where it stands</p>
+          <h2>Today, on one page.</h2>
+          <div data-diagram="system"></div>
+          <p class="diagram-caption"><span data-icon="stack"></span> Aspire starts, connects, observes, and deploys every box.</p>
+          <aside class="notes">0:23-0:25. Where it stands today, on one page. Discord mentions reach the Node.js bot. The bot runs a Copilot SDK agent session that calls Azure OpenAI. It reads GitHub through read-only MCP tools and queries Azure AI Search. A separate .NET worker turns published docs and pinned source into the indexes the bot searches. Aspire starts, connects, observes, and deploys every box. This is the production path. On a laptop the same SDK defaults to GitHub Copilot's models, and Qdrant stands in for Azure AI Search. Step through the diagram one layer at a time.</aside>
+        </section>
+
+        <section id="lessons" data-chapter="Where it stands" data-purpose="proof">
+          <p class="kicker">Where it stands</p>
+          <h2>What I’d tell myself on Aug 17.</h2>
+          <ul class="cards">
+            <li><span data-icon="beaker"></span><div><p class="incident">It refused what the docs covered.</p><h3>Test for <span class="nowrap">over-refusal</span>, not just leaks.</h3></div></li>
+            <li><span data-icon="tools"></span><div><p class="incident">A regex missed the word “test”.</p><h3>Let the model pick typed tools.</h3></div></li>
+            <li><span data-icon="pulse"></span><div><p class="incident">Agents are hard to debug.</p><h3>Trace every request from day one.</h3></div></li>
+            <li><span data-icon="shield"></span><div><p class="incident">Acting raised the stakes.</p><h3>Keep the boundary in code, not the prompt.</h3></div></li>
+          </ul>
+          <aside class="notes">0:25-0:28. Four lessons, each from a real incident. Test for over-refusal, not just leaks: my first refusal rule was too strict. Let the model pick typed tools instead of matching keywords. Trace every request from day one, because that is what made the agent debuggable. And once it can act, keep the boundary in code, not in the prompt: a prompt is not a policy. If there is time, ask the audience which of these they have already hit in their own agents.</aside>
+        </section>
+
+        <section id="close" class="closing-slide" data-chapter="Where it stands">
+          <p class="kicker">Where it stands</p>
+          <h2>Aspire could handle it.</h2>
+          <p class="large-copy">A TypeScript AppHost, a Node.js bot, a .NET worker, and one dashboard.</p>
+          <div class="thesis-path">
+            <div><span data-icon="stack"></span><strong>Aspire</strong><p>Ran it.</p></div>
+            <div><span data-icon="workflow"></span><strong>GitHub Copilot SDK</strong><p>Drove it.</p></div>
+            <div><span data-icon="cloud"></span><strong>Azure OpenAI</strong><p>Powered it.</p></div>
+          </div>
+          <div class="closing-links">
+            <a href="https://aspire.dev"><span data-icon="rocket"></span><span>aspire.dev</span></a>
+            <a href="https://github.com/github/copilot-sdk"><span data-icon="github"></span><span>GitHub Copilot SDK</span></a>
+            <a href="https://github.com/IEvangelist/inside-aspire"><span data-icon="github"></span><span>Inside Aspire</span></a>
+          </div>
+          <aside class="notes">0:28-0:30. I wanted to know whether Aspire could handle a real, production assistant, including a TypeScript rewrite. It could. Aspire ran it, the GitHub Copilot SDK drove it, and Azure OpenAI powered it. Point to aspire.dev, the Copilot SDK, and Inside Aspire, the deck this one is modeled on. Thank you, and I am happy to take questions. The appendix has the diagrams and code for follow-ups.</aside>
+        </section>
+
+        <section id="appendix-graph" class="diagram-slide" data-chapter="Appendix" data-appendix="true">
+          <h2>The AppHost resource graph.</h2>
+          <div data-diagram="graph"></div>
+          <p class="diagram-caption"><span data-icon="stack"></span> Locally, Qdrant stands in for Azure AI Search. Ollama is an opt-in local model.</p>
+          <aside class="notes">Appendix only. The AppHost starts Qdrant, ingestion, and the bot. Ingestion publishes indexes and the bot waits for it. Secrets stay in Aspire's secret store and reach the bot as environment values. Both services send OTLP to the dashboard. Configuration selects the provider; the bot code stays the same.</aside>
+        </section>
+
+        <section id="appendix-agent" class="diagram-slide" data-chapter="Appendix" data-appendix="true">
+          <h2>One request through the agent.</h2>
+          <div data-diagram="agent"></div>
+          <p class="diagram-caption"><span data-icon="shield"></span> Authorization, limits, and input rules run before any model call.</p>
+          <aside class="notes">Appendix only. Before any model call, deterministic code checks authorization, rate limits, duplicate messages, and input rules. Context from threads, replies, and attachments is redacted and bounded. A fresh agent session prompts Azure OpenAI, which chooses tools and reads their results. The answer gate requires a citation that a tool actually returned; otherwise the bot refuses. The progress reply is edited in place into the answer, with its sources right under it.</aside>
+        </section>
+
+        <section id="appendix-ingestion" class="diagram-slide" data-chapter="Appendix" data-appendix="true">
+          <h2>Ingestion builds memory off the hot path.</h2>
+          <div data-diagram="ingestion"></div>
+          <p class="diagram-caption"><span data-icon="versions"></span> A failed refresh is rolled back. The last usable index stays online.</p>
+          <aside class="notes">Appendix only. Memory is built off the hot path by a .NET worker. It reads published docs and a pinned commit of the Aspire source, parses the public API with Roslyn, chunks the content, and embeds it with Azure OpenAI. Results go to staged index generations. One alias swap publishes docs and API together so the bot never sees a half-built pair. If anything fails, the build is rolled back and the last good index stays online.</aside>
+        </section>
+
+        <section id="appendix-trace" class="diagram-slide" data-chapter="Appendix" data-appendix="true">
+          <h2>One trace from Discord message to model call.</h2>
+          <div data-diagram="trace"></div>
+          <p class="diagram-caption"><span data-icon="pulse"></span> One trace ID across the dashboard and Application Insights.</p>
+          <aside class="notes">Appendix only. Each Discord request is the root span and records an outcome such as answered, not grounded, rate limited, or failed. The agent span is its child, with GenAI attributes and duration, and the embedding spans add token usage. Tool calls create embedding and search spans. In development the SDK runtime also exports model spans over OTLP, and the bot passes the active trace context to the SDK so those spans join the same trace. Locally it lands in the Aspire dashboard; in Azure it lands in Application Insights.</aside>
+        </section>
+
+        <section id="appendix-telemetry" data-chapter="Appendix" data-appendix="true">
+          <h2>Same code. Different telemetry sink.</h2>
+          <figure class="code-panel">
+            <figcaption><span data-icon="pulse"></span>Telemetry mode <span>TypeScript</span></figcaption>
+            <pre id="telemetry-code" data-label="Telemetry mode excerpt" data-excerpt-id="telemetry-modes"><code class="language-typescript">// Excerpt injected at build time from the repository source.</code></pre>
+          </figure>
+          <p class="source-line">When Aspire runs the bot, OTLP settings are present and traces land in the dashboard. In Azure, an Application Insights connection string selects Azure Monitor.</p>
+          <aside class="notes">Appendix only. The bot picks its telemetry sink from the environment. When Aspire runs it, OTLP settings are present, so spans and metrics go to the dashboard. In Azure, an Application Insights connection string selects Azure Monitor, authenticated with managed identity. With neither, telemetry is off.</aside>
+        </section>
+
+        <section id="appendix-pipeline" data-chapter="Appendix" data-appendix="true">
+          <h2>Custom steps join the Aspire pipeline.</h2>
+          <figure class="code-panel">
+            <figcaption><span data-icon="rocket"></span>Deployment pipeline <span>TypeScript, selected lines</span></figcaption>
+            <pre id="pipeline-code-block" data-label="Deployment pipeline excerpt" data-excerpt-id="pipeline-code"><code class="language-typescript">// Excerpt injected at build time from the repository source.</code></pre>
+          </figure>
+          <span class="code-step fragment" data-code="pipeline-code-block" data-parts="1" aria-hidden="true"></span>
+          <span class="code-step fragment" data-code="pipeline-code-block" data-parts="2" aria-hidden="true"></span>
+          <span class="code-step fragment" data-code="pipeline-code-block" data-parts="3" aria-hidden="true"></span>
+          <p class="source-line"><code>dependsOn</code> orders the steps. <code>requiredBy</code> puts the blue/green step inside <code>aspire deploy</code>.</p>
+          <aside class="notes">Appendix only. A custom step is added to the Aspire pipeline and wired with dependsOn and requiredBy, so aspire deploy runs preflight first and the blue/green step as part of the deploy. Aspire owns the entry point, the step order, and cancellation. The step itself delegates the Azure operations to a reviewed script.</aside>
+        </section>
+
+        <section id="appendix-tools" data-chapter="Appendix" data-appendix="true">
+          <h2>Every capability is a typed tool.</h2>
+          <figure class="code-panel">
+            <figcaption><span data-icon="tools"></span>Tool input schema <span>TypeScript</span></figcaption>
+            <pre id="typed-tools-code" data-label="Tool schema excerpt" data-excerpt-id="typed-tools"><code class="language-typescript">// Excerpt injected at build time from the repository source.</code></pre>
+          </figure>
+          <p class="source-line">The model can request a report. It cannot request ten years of history. Invalid calls fail before any request is made.</p>
+          <aside class="notes">Appendix only. A tool is a zod schema, a handler, and a budget. This schema is the contract for the GitHub activity report: a fixed set of report kinds, a validated username, ISO dates, and a rule that the range is at most 366 days. An invalid call is rejected before any request is made. Tool results come back as untrusted data with citations.</aside>
+        </section>
+
+        <section id="appendix-providers" data-chapter="Appendix" data-appendix="true">
+          <h2>Chat and embeddings are configured independently.</h2>
+          <table>
+            <thead><tr><th scope="col">Provider</th><th scope="col">Chat</th><th scope="col">Embeddings</th><th scope="col">Notes</th></tr></thead>
+            <tbody>
+              <tr><th scope="row">GitHub Copilot</th><td data-label="Chat">Yes, default</td><td data-label="Embeddings">No</td><td data-label="Notes">Official Copilot SDK models</td></tr>
+              <tr><th scope="row">Azure AI Foundry</th><td data-label="Chat">Yes</td><td data-label="Embeddings">Yes</td><td data-label="Notes">Entra token, OpenAI-compatible Responses API. Used in production.</td></tr>
+              <tr><th scope="row">Azure OpenAI</th><td data-label="Chat">Yes</td><td data-label="Embeddings">Yes</td><td data-label="Notes">Key-based, Responses API</td></tr>
+              <tr><th scope="row">OpenAI</th><td data-label="Chat">Yes</td><td data-label="Embeddings">Yes</td><td data-label="Notes">Key-based, Responses API</td></tr>
+              <tr><th scope="row">Ollama</th><td data-label="Chat">Yes</td><td data-label="Embeddings">Yes</td><td data-label="Notes">Explicit local fallback</td></tr>
+            </tbody>
+          </table>
+          <aside class="notes">Appendix only. Chat and embeddings are configured independently. In production both run on an Azure AI Foundry resource (Azure OpenAI models), authenticated by managed identity. Locally the default chat provider is GitHub Copilot through the SDK, and embeddings default to Foundry. Local development can also use Ollama for both.</aside>
+        </section>
+
+        <section id="appendix-mcp" data-chapter="Appendix" data-appendix="true">
+          <h2>GitHub access is read-only, enforced twice.</h2>
+          <ul class="point-list">
+            <li><span data-icon="lock"></span><div><strong>The server</strong><small>A read-only header and an exact tool allow-list.</small></div></li>
+            <li><span data-icon="repo"></span><div><strong>The application</strong><small>A repository allow-list, rejected scope expansion, and bounded queries.</small></div></li>
+            <li><span data-icon="key"></span><div><strong>Separate from issue creation</strong><small>Issues use a different GitHub App and a different code path.</small></div></li>
+          </ul>
+          <aside class="notes">Appendix only. GitHub access is read-only by construction: the server enforces a read-only header and an exact tool list, and the application enforces a repository allow-list and bounded queries. Issue creation uses a separate GitHub App.</aside>
+        </section>
+
+        <section id="appendix-azure" data-chapter="Appendix" data-appendix="true">
+          <h2>The Azure footprint is keyless.</h2>
+          <ul class="point-list">
+            <li><span data-icon="container"></span><div><strong>Container Apps and Registry</strong><small>Two slots, one active Discord session, Git-SHA image tags.</small></div></li>
+            <li><span data-icon="cloud"></span><div><strong>Azure OpenAI and AI Search</strong><small>Chat and embedding deployments, versioned indexes behind aliases.</small></div></li>
+            <li><span data-icon="gear"></span><div><strong>App Configuration and Key Vault</strong><small>Live policy, and signing without exposing the key.</small></div></li>
+            <li><span data-icon="pulse"></span><div><strong>Application Insights and storage</strong><small>Logs, traces, metrics, and durable issue drafts.</small></div></li>
+          </ul>
+          <aside class="notes">Appendix only. The Azure footprint, deliberately keyless: a managed identity with narrow role assignments reaches every service. Resource names are intentionally omitted from this public deck.</aside>
+        </section>
+
+        <section id="sources" data-chapter="Appendix" data-appendix="true">
+          <h2>Sources and notices</h2>
+          <div class="closing-links">
+            <a href="https://aspire.dev"><span data-icon="rocket"></span><span>aspire.dev</span></a>
+            <a href="https://github.com/github/copilot-sdk"><span data-icon="github"></span><span>GitHub Copilot SDK</span></a>
+            <a href="https://learn.microsoft.com/azure/ai-foundry/openai/"><span data-icon="cloud"></span><span>Azure OpenAI</span></a>
+            <a href="https://learn.microsoft.com/azure/container-apps/"><span data-icon="container"></span><span>Azure Container Apps</span></a>
+            <a href="https://learn.microsoft.com/azure/search/"><span data-icon="search"></span><span>Azure AI Search</span></a>
+            <a href="https://github.com/IEvangelist/inside-aspire"><span data-icon="github"></span><span>Inside Aspire</span></a>
+          </div>
+          <p class="source-line">Community material, not an endorsement. Chat scenes are staged examples, not real conversations. Official Aspire marks are unchanged. Licenses for Poppins, reveal.js, highlight.js, Octicons, and Font Awesome brand icons are served with this site under <code>licenses/</code>.</p>
+          <aside class="notes">Appendix only. Public references and notices.</aside>
+        </section>
+      </div>
+    </main>
+    <p id="deck-status" class="deck-status" role="status" aria-live="polite"></p>
+    <noscript>
+      <style>
+        .reveal { height: auto; overflow: visible; }
+        .reveal .slides { position: static; width: auto; height: auto; transform: none; }
+        .reveal .slides section { display: block !important; position: static !important; width: auto; height: auto; transform: none !important; opacity: 1; visibility: visible; padding: 28px 24px; }
+      </style>
+      <p>JavaScript is disabled. The deck remains readable, but staged reveals and presentation controls are unavailable.</p>
+    </noscript>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

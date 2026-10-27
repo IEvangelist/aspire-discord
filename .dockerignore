@@ -14,3 +14,5 @@
 .env
 aspire-output
 infra/.deployment
+deck
+docs

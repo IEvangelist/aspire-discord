@@ -34,3 +34,8 @@ secrets.json
 ## OS
 .DS_Store
 Thumbs.db
+
+## Deck
+deck/dist*/
+deck/playwright-report/
+deck/test-results/

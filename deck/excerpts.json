@@ -1,0 +1,44 @@
+{
+  "apphost": {
+    "file": "AspireDiscordBot.AppHost/apphost.mts",
+    "language": "typescript",
+    "parts": [
+      { "from": "const qdrant = builder.addQdrant(\"qdrant\");" },
+      { "from": "const ingestion = builder.addProject(", "to": "@block" },
+      { "from": "const bot = builder.addJavaScriptApp(", "to": "@block" }
+    ]
+  },
+  "telemetry-modes": {
+    "file": "AspireDiscordBot.Bot/src/telemetry.ts",
+    "language": "typescript",
+    "parts": [{ "from": "export function resolveTelemetryMode", "to": "@block" }]
+  },
+  "pipeline-code": {
+    "file": "AspireDiscordBot.AppHost/deployment-pipeline.mts",
+    "language": "typescript",
+    "parts": [
+      { "from": "const pipeline = await builder.pipeline();" },
+      { "from": "await pipeline.addStep(preflightStep", "to": "@block" },
+      { "from": "dependsOn: [preflightStep],", "to": "requiredBy: [\"deploy\"]," }
+    ]
+  },
+  "empty-mode": {
+    "file": "AspireDiscordBot.Bot/src/agent/copilot-runtime.ts",
+    "language": "typescript",
+    "parts": [
+      { "from": "mode: 'empty'," },
+      { "from": "availableTools: ['custom:*']," },
+      { "from": "enableConfigDiscovery: false,", "to": "enableSkills: false," }
+    ]
+  },
+  "typed-tools": {
+    "file": "AspireDiscordBot.Bot/src/agent/conversation-service.ts",
+    "language": "typescript",
+    "parts": [{ "from": "const activityParameters = z", "to": "}, 'Use an ordered UTC date range" }]
+  },
+  "byok": {
+    "file": "AspireDiscordBot.Bot/src/agent/copilot-runtime.ts",
+    "language": "typescript",
+    "parts": [{ "from": "case 'azureaifoundry':", "to": "};" }]
+  }
+}

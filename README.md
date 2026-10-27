@@ -662,6 +662,13 @@ content capture disabled and does not write Discord question text to application
 only content-free outcome, duration, citation count, similarity, question-source, and modality-count
 metadata for operational tuning.
 
+## Architecture deck
+
+The repository includes a reveal.js talk deck, "Building Aspirey Bot", published at `https://ievangelist.github.io/aspire-discord/`.
+Run it locally with `npm run dev --prefix deck` or validate it with `npm run build --prefix deck` and `npm test --prefix deck`.
+See [`docs/deck/README.md`](docs/deck/README.md) for deck workflow, excerpt, asset, and publishing details.
+The published Pages site is public even though this repository is private.
+
 ## Package feeds
 
 `nuget.config` pins the internal mirrors required in this environment for Aspire and .NET packages.
