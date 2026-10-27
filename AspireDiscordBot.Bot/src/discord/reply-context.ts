@@ -1,6 +1,7 @@
 import { MessageReferenceType } from 'discord.js';
 import type { Logger } from 'pino';
-import { sanitizeForAgent, truncateAtGrapheme } from '../safety.js';
+import { evaluateQuestion, sanitizeForAgent, truncateAtGrapheme } from '../safety.js';
+import { needsConversationReferent } from './context-reference.js';
 import {
   extractMessageFiles,
   extractMessageImages,
@@ -12,13 +13,19 @@ import type { DiscordTextCandidate } from './text-context.js';
 
 const maximumReplyCharacters = 2_000;
 const maximumForwardCharacters = 4_000;
+const maximumReplyDepth = 4;
 
 export interface DiscordReplySource {
-  readonly fetchReference: () => Promise<ThreadMessageSnapshot>;
+  readonly fetchReference: () => Promise<ReferencedMessage>;
   readonly reference: {
     readonly messageId: string | undefined;
     readonly type?: MessageReferenceType;
   } | null;
+}
+
+export interface ReferencedMessage extends ThreadMessageSnapshot {
+  readonly fetchReference?: () => Promise<ReferencedMessage>;
+  readonly reference?: DiscordReplySource['reference'];
 }
 
 export interface DiscordForwardSource {
@@ -57,18 +64,46 @@ export async function readReplyContext(
     return emptyObservation('none');
   }
   try {
-    const referenced = await source.fetchReference();
-    return buildMessageObservation(
-      referenced,
-      referenced.author.id === botUserId
-        ? 'Replied-to assistant answer'
-        : referenced.author.bot
-          ? 'Replied-to bot message'
-          : 'Replied-to user message',
-      'replied-to message',
-      maximumReplyCharacters,
-      !referenced.author.bot,
-    );
+    const seen = new Set<string>();
+    const observations: MessageObservation[] = [];
+    let referenced = await source.fetchReference();
+    while (observations.length < maximumReplyDepth && !seen.has(referenced.id)) {
+      seen.add(referenced.id);
+      observations.push(
+        buildMessageObservation(
+          referenced,
+          referenced.author.id === botUserId
+            ? 'Replied-to assistant answer'
+            : referenced.author.bot
+              ? 'Replied-to bot message'
+              : 'Replied-to user message',
+          'replied-to message',
+          maximumReplyCharacters,
+          !referenced.author.bot,
+        ),
+      );
+      if (
+        !referenced.reference?.messageId ||
+        (referenced.reference.type !== undefined &&
+          referenced.reference.type !== MessageReferenceType.Default) ||
+        !referenced.fetchReference
+      ) break;
+      try {
+        referenced = await referenced.fetchReference();
+      } catch (error) {
+        logger.info(
+          { errorType: error instanceof Error ? error.name : 'Error' },
+          'Could not read an earlier Discord reply ancestor.',
+        );
+        return mergeReplyObservations(observations, [
+          'An earlier message in the reply chain could not be read.',
+        ]);
+      }
+    }
+    return mergeReplyObservations(observations, referenced.reference?.messageId &&
+      observations.length === maximumReplyDepth
+      ? ['The reply chain is longer than the context that was read.']
+      : []);
   } catch (error) {
     logger.info(
       { errorType: error instanceof Error ? error.name : 'Error' },
@@ -79,6 +114,38 @@ export async function readReplyContext(
       notices: ['The replied-to message could not be read, so it was omitted from context.'],
     };
   }
+}
+
+function mergeReplyObservations(
+  observations: readonly MessageObservation[],
+  extraNotices: readonly string[],
+): MessageObservation {
+  const question = observations.find(
+    (observation) => observation.question && !needsConversationReferent(observation.question),
+  )?.question ?? observations.find((observation) => observation.question)?.question;
+  const contexts = observations
+    .map((observation) => observation.context)
+    .filter((context): context is string => Boolean(context))
+    .reverse();
+  const context = truncateAtGrapheme(contexts.join('\n\n'), maximumForwardCharacters);
+  const notices = [...new Set([
+    ...observations.flatMap((observation) => observation.notices),
+    ...extraNotices,
+  ])];
+  return {
+    ...(context ? { context } : {}),
+    files: observations.flatMap((observation) => observation.files),
+    images: observations.flatMap((observation) => observation.images),
+    ...(observations[0]?.messageId ? { messageId: observations[0].messageId } : {}),
+    notices,
+    ...(question ? { question } : {}),
+    ...(observations.some((observation) => observation.requiresAttachment)
+      ? { requiresAttachment: true }
+      : {}),
+    status: observations.some((observation) => observation.status === 'error')
+      ? 'error'
+      : observations.some((observation) => observation.status === 'found') ? 'found' : 'empty',
+  };
 }
 
 export function readForwardedContext(source: DiscordForwardSource): MessageObservation {
@@ -115,6 +182,12 @@ function buildMessageObservation(
   useAsQuestion: boolean,
 ): MessageObservation {
   const text = (message.cleanContent.trim() || message.content.trim()).trim();
+  if (text && !evaluateQuestion(text, maximumCharacters).isAllowed) {
+    return {
+      ...emptyObservation('error'),
+      notices: ['The referenced message failed safety checks and was omitted from context.'],
+    };
+  }
   const images = extractMessageImages(message).map(
     (attachment) =>
       ({

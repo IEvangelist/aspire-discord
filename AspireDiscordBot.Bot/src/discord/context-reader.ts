@@ -25,6 +25,8 @@ export interface ThreadContextResult {
   readonly notices?: readonly string[];
   readonly question?: string;
   readonly questionRequiresAttachment?: boolean;
+  readonly referenceQuestion?: string;
+  readonly starterQuestion?: string;
   readonly status: ThreadContextStatus;
 }
 
@@ -32,6 +34,7 @@ export interface ThreadContextReadOptions {
   readonly beforeMessageId?: string;
   readonly beforeTimestamp?: number;
   readonly botUserId?: string;
+  readonly includeOlderHistory?: boolean;
   readonly maxQuestionLength: number;
 }
 
@@ -101,9 +104,40 @@ export async function readThreadContext(
       channel.fetchStarterMessage(),
       channel.messages.fetch(fetchOptions),
     ]);
+    const messages = [...recent.values()];
+    let historyIsPartial = false;
+    let olderHistoryFailed = false;
+    if (options.includeOlderHistory) {
+      let page = recent;
+      for (let index = 1; index < 4 && page.size === maximumFetchedMessages; index++) {
+        const oldest = [...page.values()].sort(
+          (left, right) =>
+            left.createdTimestamp - right.createdTimestamp ||
+            left.id.length - right.id.length ||
+            left.id.localeCompare(right.id),
+        )[0];
+        if (!oldest) break;
+        try {
+          page = await channel.messages.fetch({ before: oldest.id, limit: maximumFetchedMessages });
+        } catch (error) {
+          if (isForbidden(error)) throw error;
+          logger.warn(
+            { errorType: error instanceof Error ? error.name : 'Error', threadId: channel.id },
+            'Unable to read older Discord thread pages.',
+          );
+          olderHistoryFailed = true;
+          historyIsPartial = true;
+          break;
+        }
+        messages.push(...page.values());
+      }
+      historyIsPartial ||= page.size === maximumFetchedMessages;
+    } else {
+      historyIsPartial = recent.size === maximumFetchedMessages;
+    }
     const conversation = buildThreadConversation(
       starter,
-      recent.values(),
+      messages,
       options,
       readThreadMetadata(channel),
     );
@@ -112,6 +146,16 @@ export async function readThreadContext(
     }
     return {
       ...conversation,
+      ...(historyIsPartial
+        ? {
+            notices: [
+              ...(conversation.notices ?? []),
+              olderHistoryFailed
+                ? 'Older thread history could not be read; earlier replies may be missing.'
+                : 'This thread has more history than was read; earlier replies may be missing.',
+            ],
+          }
+        : {}),
       status: 'found',
     };
   } catch (error) {
@@ -178,7 +222,12 @@ export function buildThreadConversation(
   const notices = latestTurn
     ? [...new Set([...latestTurn.notices, ...(starterTurn?.notices ?? [])])]
     : [];
+  if (selected.length < turns.length) {
+    notices.push('Thread context was condensed; some older messages are not included.');
+  }
   const latestQuestion = latestHumanMessage ? messageText(latestHumanMessage) : '';
+  const referenceQuestion = contextCurrent?.isHuman ? contextCurrent.question : '';
+  const starterQuestion = starterTurn?.isHuman ? starterTurn.question : '';
   const questionRequiresAttachment =
     !latestQuestion &&
     Boolean(latestTurn && (latestTurn.images.length > 0 || latestTurn.files.length > 0));
@@ -205,6 +254,8 @@ export function buildThreadConversation(
     ...(notices.length > 0 ? { notices } : {}),
     ...(question ? { question } : {}),
     ...(questionRequiresAttachment ? { questionRequiresAttachment: true } : {}),
+    ...(referenceQuestion ? { referenceQuestion } : {}),
+    ...(starterQuestion ? { starterQuestion } : {}),
   };
 }
 

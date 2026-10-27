@@ -15,6 +15,7 @@ import type { AnswerService, ConversationContext } from '../domain.js';
 import type { RuntimeConfig, RuntimeConfigSnapshot } from '../runtime-config.js';
 import { WorkLimiter, WorkQueueFullError } from '../work-limiter.js';
 import { isUserAllowed } from './authorizer.js';
+import { needsConversationReferent } from './context-reference.js';
 import {
   extractMessageFiles,
   extractMessageImages,
@@ -611,7 +612,12 @@ export class DiscordGateway {
             ? {
                 ...conversation,
                 history: history ?? '',
+                ...(resolved.allowIssueDraft === false ? { allowIssueDraft: false } : {}),
                 ...(sourceContext ? { sourceContext } : {}),
+                ...(resolved.referencedQuestion
+                  ? { referencedQuestion: resolved.referencedQuestion }
+                  : {}),
+                ...(resolved.referenceSource ? { referenceSource: resolved.referenceSource } : {}),
                 ...(previous?.pendingIssue ? { pendingIssue: previous.pendingIssue } : {}),
                 ...(issues && bot
                   ? {
@@ -736,6 +742,10 @@ export class DiscordGateway {
               {
                 ...boundary,
                 ...(this.#client.user ? { botUserId: this.#client.user.id } : {}),
+                includeOlderHistory:
+                  needsConversationReferent(typed) &&
+                  reply?.status !== 'found' &&
+                  forwarded?.status !== 'found',
                 maxQuestionLength: this.config.safety.maxQuestionLength,
               },
               this.logger,

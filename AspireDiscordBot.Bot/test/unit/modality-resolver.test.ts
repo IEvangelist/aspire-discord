@@ -25,61 +25,62 @@ function observation(
 describe('modality resolver scenario matrix', () => {
   it.each<{
     expected: string;
+    display: string;
     source: QuestionSource;
     title: string;
     value: Parameters<typeof resolveModalities>[0];
   }>([
     {
       expected: 'Current question',
+      display: 'Current question',
       source: 'current',
       title: 'substantive current text outranks every context source',
       value: {
         forwarded: observation('Forwarded question', 'Forwarded'),
         reply: observation('Reply question', 'Reply'),
-        thread: { question: 'Thread question', status: 'found' },
+        thread: { question: 'Thread question', referenceQuestion: 'Thread question', status: 'found' },
         typed: 'Current question',
       },
     },
     {
-      expected: 'Forwarded question',
+      expected: 'Please help answer the referenced Aspire question.',
+      display: 'Forwarded question',
       source: 'forwarded',
       title: 'forwarded current content outranks a reply and thread',
       value: {
         forwarded: observation('Forwarded question', 'Forwarded'),
         reply: observation('Reply question', 'Reply'),
-        thread: { question: 'Thread question', status: 'found' },
+        thread: { question: 'Thread question', referenceQuestion: 'Thread question', status: 'found' },
         typed: '',
       },
     },
     {
-      expected: 'Reply question',
-      source: 'reply',
+      expected: 'Please answer the referenced Aspire question.',
+      display: 'Reply question',
+      source: 'current',
       title: 'reply target outranks thread history',
       value: {
         reply: observation('Reply question', 'Reply'),
-        thread: { question: 'Thread question', status: 'found' },
+        thread: { question: 'Thread question', referenceQuestion: 'Thread question', status: 'found' },
         typed: 'answer the message above',
       },
     },
     {
-      expected: 'Thread question',
+      expected: 'Please help answer the question in this Aspire thread.',
+      display: 'How do I add Redis?',
       source: 'thread',
       title: 'bare mention resolves to latest thread question',
       value: {
-        thread: { context: 'Thread context', question: 'Thread question', status: 'found' },
+        thread: { context: 'Thread context', question: 'How do I add Redis?', referenceQuestion: 'How do I add Redis?', status: 'found' },
         typed: '',
       },
     },
-  ])('$title', ({ expected, source, value }) => {
+  ])('$title', ({ expected, display, source, value }) => {
     const result = resolveModalities(value);
 
     expect(result.question).toBe(expected);
     expect(result.questionSource).toBe(source);
-    expect(result.displayQuestion).toBe(
-      source === 'current' || source === 'thread'
-        ? expected
-        : `Question from ${source === 'reply' ? 'replied-to' : source} message`,
-    );
+    expect(result.displayQuestion).toBe(display);
   });
 
   it('fails closed when explicit current media is unsupported instead of falling back', () => {
@@ -169,7 +170,8 @@ describe('modality resolver scenario matrix', () => {
       typed: '',
     });
 
-    expect(result.question).toBe('Forwarded question');
+    expect(result.question).toBe('Please help answer the referenced Aspire question.');
+    expect(result.referencedQuestion).toBe('Forwarded question');
     expect(result.questionSource).toBe('forwarded');
   });
 
@@ -185,7 +187,119 @@ describe('modality resolver scenario matrix', () => {
     });
 
     expect(result.context).not.toContain('[Reply]');
-    expect(result.question).toBe('Reply question');
+    expect(result.question).toBe('Please help answer the referenced Aspire question.');
+    expect(result.referencedQuestion).toBe('Reply question');
+    expect(result.displayQuestion).toBe('Reply question');
+  });
+
+  it('uses the original question for a vague mention despite a later complaint in the thread', () => {
+    const original = 'How can I keep custom Container Apps health probes across Aspire deployments?';
+    const result = resolveModalities({
+      typed: 'can you help',
+      thread: {
+        context: `[Original poster]\n${original}\n\n[Participant 1]\nThe bot was confused.`,
+        question: 'The bot was confused.',
+        starterQuestion: original,
+        status: 'found',
+      },
+    });
+    expect(result).toMatchObject({
+      question: 'Please answer the referenced Aspire question.',
+      displayQuestion: original,
+      referencedQuestion: original,
+      referenceSource: 'thread',
+      questionSource: 'current',
+      allowIssueDraft: false,
+    });
+  });
+
+  it('anchors "this" to the replied-to question without inheriting its intent', () => {
+    const original = 'How do I configure health-probe timings in Aspire?';
+    const result = resolveModalities({
+      typed: 'this',
+      reply: observation(original, 'Replied-to user message'),
+      thread: {
+        context: '[Original poster]\nOther question',
+        question: 'Other question',
+        starterQuestion: 'Other question',
+        status: 'found',
+      },
+    });
+    expect(result).toMatchObject({
+      question: 'Please answer the referenced Aspire question.',
+      displayQuestion: original,
+      referencedQuestion: original,
+      referenceSource: 'reply',
+      questionSource: 'current',
+      allowIssueDraft: false,
+    });
+    const issue = resolveModalities({
+      typed: 'create an issue about this',
+      reply: observation(original, 'Replied-to user message'),
+      thread: { status: 'not-a-thread' },
+    });
+    expect(issue.question).toBe('create an issue about this');
+    expect(issue.displayQuestion).toBe('create an issue about this');
+    expect(issue.allowIssueDraft).toBeUndefined();
+    const fix = resolveModalities({
+      typed: 'fix this',
+      reply: observation(original, 'Replied-to user message'),
+      thread: { status: 'not-a-thread' },
+    });
+    expect(fix.question).toBe('fix this');
+    expect(fix.referencedQuestion).toBe(original);
+    expect(fix.allowIssueDraft).toBeUndefined();
+  });
+
+  it('does not treat an old poster request to file an issue as the current request', () => {
+    const result = resolveModalities({
+      typed: '',
+      thread: {
+        context: '[Original poster]\nPlease file an issue about the failing health check.',
+        question: 'Please file an issue about the failing health check.',
+        referenceQuestion: 'Please file an issue about the failing health check.',
+        starterQuestion: 'Please file an issue about the failing health check.',
+        status: 'found',
+      },
+    });
+    expect(result.question).toBe('Please help answer the question in this Aspire thread.');
+    expect(result.allowIssueDraft).toBe(false);
+    expect(result.referenceSource).toBe('thread');
+    expect(result.referencedQuestion).toContain('Please file an issue');
+  });
+
+  it('does not elevate a vague forwarded message above a clear thread question', () => {
+    const threadQuestion = 'How do I configure the Aspire health check?';
+    const result = resolveModalities({
+      typed: 'can you help',
+      forwarded: observation('yeah', 'Forwarded'),
+      thread: {
+        context: `[Original poster]\n${threadQuestion}`,
+        starterQuestion: threadQuestion,
+        status: 'found',
+      },
+    });
+    expect(result.displayQuestion).toBe(threadQuestion);
+    expect(result.referenceSource).toBe('thread');
+    expect(result.referencedQuestion).toBe(threadQuestion);
+  });
+
+  it('refuses to guess what "this" meant when its explicit reply cannot be fetched', () => {
+    const result = resolveModalities({
+      typed: 'this',
+      reply: {
+        ...emptyObservation(),
+        notices: ['The replied-to message could not be read.'],
+        status: 'error',
+      },
+      thread: {
+        context: '[Original poster]\nAnother Aspire question',
+        referenceQuestion: 'Another Aspire question',
+        status: 'found',
+      },
+    });
+    expect(result.question).toBeUndefined();
+    expect(result.problem).toContain('replied-to message');
   });
 
   it('orders media deterministically by source precedence and merges notices', () => {

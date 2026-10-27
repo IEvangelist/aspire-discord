@@ -518,6 +518,22 @@ function Test-StagedFeatures {
         throw 'Staged feature checks failed; source remains active and diagnostic output is withheld.'
     }
     Write-Host 'ASPIRE_STAGED_FEATURES_OK'
+
+    $contextPath = Join-Path $repoRoot 'infra\verify-staged-context.cjs'
+    $contextPayload = & node -e "process.stdout.write(require('node:zlib').brotliCompressSync(require('node:fs').readFileSync(process.argv[1])).toString('base64url'))" $contextPath
+    if ($LASTEXITCODE -ne 0 -or $contextPayload -cnotmatch '^[A-Za-z0-9_-]+$') {
+        throw 'Unable to encode staged context diagnostic.'
+    }
+    $contextCommand = "node -e `"eval(require('node:zlib').brotliDecompressSync(Buffer.from('$contextPayload','base64url')).toString())`""
+    if ([Uri]::EscapeDataString($contextCommand).Length -gt 1800) {
+        throw 'Staged context diagnostic exceeds the console command limit.'
+    }
+    $contextOutput = Invoke-StagedAzureCli -Arguments (@('containerapp', 'exec') + $scope +
+        @('--revision', $ExpectedRevision, '--replica', $replica.name, '--container', 'bot', '--command', $contextCommand))
+    if ($contextOutput.Replace("`r`r`n", "`r`n") -cnotmatch '(?m)^ASPIRE_STAGED_CONTEXT_OK\r?$') {
+        throw 'Staged context checks failed; source remains active and diagnostic output is withheld.'
+    }
+    Write-Host 'ASPIRE_STAGED_CONTEXT_OK'
 }
 
 function Get-ActiveRevision {
