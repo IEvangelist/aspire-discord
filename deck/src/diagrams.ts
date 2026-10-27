@@ -76,7 +76,7 @@ const diagrams: Record<string, Diagram> = {
     width: 1280,
     height: 480,
     nodes: [
-      { id: 'apphost', title: 'TypeScript AppHost', detail: ['Models every runtime', 'Orders startup + health'], icon: 'code', x: 20, y: 185, w: 320, h: 130, step: 0, kind: 'hub' },
+      { id: 'apphost', title: 'TS AppHost', detail: ['Models every runtime', 'Orders startup + health'], icon: 'code', x: 20, y: 185, w: 320, h: 130, step: 0, kind: 'hub' },
       { id: 'qdrant', title: 'Qdrant', detail: ['Vector store + volume'], icon: 'database', x: 450, y: 20, w: 300, h: 100, step: 1 },
       { id: 'ingestion', title: '.NET ingestion', detail: ['Builds the indexes'], icon: 'package', x: 450, y: 200, w: 300, h: 100, step: 1 },
       { id: 'bot', title: 'Node.js bot', detail: ['Waits, then connects'], icon: 'agent', x: 450, y: 360, w: 300, h: 100, step: 1 },
@@ -130,7 +130,7 @@ const diagrams: Record<string, Diagram> = {
     nodes: [
       { id: 'mention', title: 'Mention', detail: ['Allowlisted user'], icon: 'chat', x: 10, y: 25, w: 240, h: 100, step: 0 },
       { id: 'guard', title: 'Guards', detail: ['Limits + input rules'], icon: 'shield', x: 310, y: 25, w: 270, h: 100, step: 0, kind: 'gate' },
-      { id: 'context', title: 'Context', detail: ['Redacted + bounded'], icon: 'stack', x: 640, y: 25, w: 270, h: 100, step: 0 },
+      { id: 'context', title: 'Context', detail: ['Redacted, capped'], icon: 'stack', x: 640, y: 25, w: 270, h: 100, step: 0 },
       { id: 'session', title: 'Agent session', detail: ['Fresh per request'], icon: 'agent', x: 970, y: 25, w: 300, h: 100, step: 1, kind: 'hub' },
       { id: 'model', title: 'Azure OpenAI', detail: ['Chooses tools + writes'], icon: 'cloud', x: 970, y: 205, w: 300, h: 100, step: 2 },
       { id: 'tools', title: 'Typed tools', detail: ['Docs, API, GitHub'], icon: 'tools', x: 970, y: 385, w: 300, h: 100, step: 2 },
@@ -181,12 +181,12 @@ const diagrams: Record<string, Diagram> = {
     nodes: [
       { id: 'docs', title: 'Published docs', detail: ['CLI or GitHub'], icon: 'book', x: 10, y: 25, w: 260, h: 100, step: 0 },
       { id: 'source', title: 'Pinned source', detail: ['One exact commit'], icon: 'repo', x: 10, y: 215, w: 260, h: 100, step: 0 },
-      { id: 'chunk', title: 'Chunks', detail: ['Cleaned + bounded'], icon: 'stack', x: 340, y: 25, w: 260, h: 100, step: 1 },
+      { id: 'chunk', title: 'Chunks', detail: ['Cleaned, capped'], icon: 'stack', x: 340, y: 25, w: 260, h: 100, step: 1 },
       { id: 'roslyn', title: 'Roslyn parser', detail: ['API + XML docs'], icon: 'code', x: 340, y: 215, w: 260, h: 100, step: 1 },
       { id: 'embed', title: 'Azure OpenAI', detail: ['Embedding batches'], icon: 'cloud', x: 680, y: 25, w: 270, h: 100, step: 2 },
       { id: 'stage', title: 'Staged index', detail: ['New generations'], icon: 'table', x: 1000, y: 25, w: 270, h: 100, step: 3 },
       { id: 'alias', title: 'Alias swap', detail: ['Docs + API together'], icon: 'sync', x: 1000, y: 215, w: 270, h: 100, step: 4, kind: 'gate' },
-      { id: 'abort', title: 'Roll back', detail: ['Last good index stays'], icon: 'versions', x: 680, y: 215, w: 270, h: 100, step: 4 },
+      { id: 'abort', title: 'Roll back', detail: ['Last index stays'], icon: 'versions', x: 680, y: 215, w: 270, h: 100, step: 4 },
       { id: 'bot', title: 'Node.js bot', detail: ['Queries the alias'], icon: 'agent', x: 680, y: 405, w: 270, h: 100, step: 5 },
       { id: 'search', title: 'Azure AI Search', detail: ['Live aliases'], icon: 'search', x: 1000, y: 405, w: 270, h: 100, step: 5 },
     ],
